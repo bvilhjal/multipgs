@@ -1,0 +1,70 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "multipgs"
+dynamic = ["version"]                # single-sourced from multipgs.__version__
+description = "Multivariate polygenic scoring: combine many polygenic scores into one, built on ldpred3"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Bjarni Vilhjálmsson" }]
+# ldpred3 supplies genotype I/O, allele harmonisation, the LDpred model behind
+# panel_from_sumstats, and the Numba shim the coordinate-descent kernels reuse.
+#
+# A range, not an exact pin. ldpred3 is on no package index, so an exact
+# specifier makes pip search for a distribution it can never find whenever the
+# installed version differs, which breaks the sibling-checkout development
+# recipe in the README. Reproducibility is carried where it belongs: the exact
+# revision in the README install command. The upper bound is the seam guard --
+# multipgs/_ldpred3_compat.py touches a private module (`ldpred3._numba`) that
+# may change across a minor release.
+dependencies = ["numpy>=1.20", "ldpred3>=0.4.5,<0.5"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+
+[project.urls]
+Homepage = "https://github.com/bvilhjal/multipgs"
+Repository = "https://github.com/bvilhjal/multipgs"
+Issues = "https://github.com/bvilhjal/multipgs/issues"
+
+[project.scripts]
+multipgs = "multipgs.cli:main"
+
+[project.optional-dependencies]
+fast = [
+    "numba>=0.59; python_version < '3.14'",
+    "numba>=0.66; python_version >= '3.14'",
+]
+test = ["pytest>=7"]
+lint = ["ruff>=0.5"]
+
+[tool.setuptools]
+packages = ["multipgs"]
+
+[tool.setuptools.dynamic]
+version = { attr = "multipgs.__version__" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+# Lint for real defects, not style: like ldpred3 and bipred, this codebase uses
+# compact multi-statement lines (E702) and long lines, so enforce only
+# pyflakes (F).
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["F"]

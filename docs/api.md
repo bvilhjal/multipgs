@@ -1,0 +1,102 @@
+# Python API
+
+Every name below is importable directly from `multipgs`. Use `help(name)` for
+the complete signature and validation rules.
+
+```python
+from multipgs import panel_from_catalog, multi_pgs_fit, evaluate, combine_weights
+```
+
+## Combining scores
+
+**Table 1. Combiners.**
+
+| Name | Purpose |
+|---|---|
+| `multi_pgs_fit` | learn a combination from a training phenotype (CMSA elastic net) |
+| `meta_pgs` | combine same-trait scores with no phenotype, from `n_eff` or fitted accuracy |
+| `MultiPGSFit`, `MetaPGS` | result containers; both expose `.multi_pgs(scores)` and `.selected()` |
+| `FoldFit` | what one CMSA fold selected, and how it did |
+
+`MultiPGSFit.multi_pgs(scores)` is the combined score — what you evaluate.
+`.predict(scores, covar)` is the full linear predictor including covariates, and
+is a different thing; see [guide.md §5](guide.md#5-evaluating-and-the-ways-this-goes-wrong).
+
+Pass a `ScorePanel` to `.multi_pgs()` rather than a bare matrix and the score
+ids are checked against the fit. A bare matrix is matched by **position**, and a
+separately built panel can have the same columns in a different order.
+
+## Building the panel
+
+**Table 2. Panel construction.**
+
+| Name | Purpose |
+|---|---|
+| `panel_from_catalog` | score PGS Catalog files against a target, in one genotype pass |
+| `panel_from_sumstats` | fit each GWAS with LDpred3 and score it on the target |
+| `ScorePanel` | the `n × K` matrix, its per-variant weights and provenance |
+| `combine_weights` | collapse a panel plus a fit into one deployable weight file |
+| `read_panel`, `write_panel` | plain-text score matrices (`FID IID <scores...>`) |
+
+`ScorePanel` methods: `.select(columns)` by index, id or mask; `.align(other)` to
+match two panels on `FID:IID`; `.summary()` for matched-variant and weight-mass
+counts; `.index_of(score_id)`.
+
+## Scoring files
+
+**Table 3. PGS Catalog I/O.**
+
+| Name | Purpose |
+|---|---|
+| `read_scoring_file` | parse a scoring file, its `#key=value` header and its quirks |
+| `ScoringFile` | parsed variants, weights, metadata and parse log |
+| `harmonize_scoring_file` | align one to a genotype variant table via `ldpred3.harmonize` |
+
+Odds-ratio weights are log-transformed on read; non-additive rows
+(`is_dominant`, `is_haplotype`, ...) are dropped and counted; harmonized
+`hm_*` columns are preferred when present.
+
+## Screening and expected accuracy
+
+**Table 4. Architecture.**
+
+| Name | Purpose |
+|---|---|
+| `daetwyler_r2` | expected r² of a score for its own trait, from `h²`, `p`, `n_eff` |
+| `Architecture` | per-score `h²`, polygenicity, inferred r², convergence, `n_eff` |
+| `architectures_from_panel` | read those back out of an LDpred3-built panel |
+| `screen`, `ScreenResult` | the Hansen et al. inclusion gates, with per-score reasons |
+| `penalty_from_accuracy` | expected accuracy → elastic-net penalty factors |
+
+## Evaluation
+
+**Table 5. Metrics.**
+
+| Name | Purpose |
+|---|---|
+| `evaluate`, `EvalResult` | every applicable metric with bootstrap intervals |
+| `r2` | squared correlation of score and phenotype |
+| `incremental_r2` | R² added over covariates — the quantity to report when they exist |
+| `auc` | Mann–Whitney AUC, ties counted as ½ |
+| `nagelkerke_r2` | pseudo-R² over the covariate-only logistic model |
+| `liability_r2` | observed → liability scale (Lee et al. 2012, with the θ term) |
+
+`liability_r2` includes the ascertainment correction; `ldpred3.h2_liability`
+applies only the leading factor, which is right for a heritability and
+understates the shrinkage for a large R².
+
+## Simulation
+
+**Table 6. Synthetic data.**
+
+| Name | Purpose |
+|---|---|
+| `simulate_panel` | correlated scores, a few of which drive the phenotype |
+| `simulate_same_trait_panel` | several scores for *one* trait, with optional cohort overlap |
+| `simulate_target` | a small PLINK fileset plus matching scoring files |
+| `SimPanel` | the simulated problem, with the answer in `beta_true` |
+
+## Command line
+
+`multipgs panel | fit | meta | evaluate`. See `multipgs <command> --help`, or
+[guide.md](guide.md). `python -m multipgs` is the same entry point.
