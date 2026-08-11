@@ -290,6 +290,58 @@ The complete per-seed rows, summary, command, versions, and platform are in
 [`benchmarks/results`](../benchmarks/results); regenerate them with
 [`benchmarks/meta_rules.py`](../benchmarks/meta_rules.py).
 
+#### "Well-specified" is a much stronger condition than it sounds
+
+The table above says decorrelation wins with a well-specified `ρ`, and the
+caveat below it says `sqrt(n_eff)` is not one. On a real panel **neither
+supplied accuracy is**, including `expected_r2`.
+
+Twenty-four PGS Catalog coronary-artery-disease scores, aligned to the bigsnpr
+HapMap3+ reference and scored against CARDIoGRAMplusC4D 2015
+([`benchmarks/real_meta_rules.py`](../benchmarks/real_meta_rules.py)), against
+each score's *true* correlation with the target recovered from the evaluation
+moments:
+
+| `ρ` supplied | `corr(ρ, ρ_true)` | `C⁻¹ρ` | `ρ` alone |
+|---|---:|---:|---:|
+| true `cor(score, target)` | 1.00 | **0.542** | 0.273 |
+| `expected_r2` via `daetwyler_r2` | 0.22 | 0.003 | 0.169 |
+| `sqrt(n_eff)` | 0.11 | 0.0002 | 0.156 |
+
+With an accurate `ρ` the rule is the best available, doubling what the same
+accuracies achieve without decorrelation — the formula is sound. With either
+supplied proxy it is roughly fifty times worse than not decorrelating.
+
+Two reasons the proxies fail here and not in simulation. The panel shares one
+trait, so `daetwyler_r2` makes accuracy a deterministic function of `n_eff`
+alone and carries almost no genuine between-score information. And `ρ_true`
+runs from −0.51 to +0.65: two of the twenty-four scores are *negatively*
+correlated with the target, which no accuracy proxy can express, since both are
+positive by construction. `C⁻¹` amplifies a sign error hardest.
+
+`ridge` does not rescue this, and the sweep shows why. With accurate `ρ` a
+larger ridge monotonically destroys the advantage (0.542 → 0.323 from ridge
+1e-3 to 10); with proxy `ρ` it helps only by dragging the answer back toward
+`ρ` alone, which it never quite reaches. The best a ridge can do is undo the
+decorrelation. Pruning near-duplicate scores does not rescue it either: the
+problem is not one duplicate pair but that every score in a same-trait panel is
+similar, so `C`'s small-eigenvalue directions are differences that carry no
+signal.
+
+**Use `decorrelated` only when `ρ` is known accurately per score** — for
+instance from each component's own LDpred3-auto `r2_est`, available when the
+panel is built by `panel_from_sumstats` rather than downloaded as weights.
+Otherwise prefer `expected_r2`. **There is no in-sample check that will warn you.** `meta_pgs` logs
+`rho_alignment`, the cosine between the returned weights and the supplied
+accuracies, but only as description. It was tried as a detector and fails: on
+this panel the configuration scoring 0.00001 had alignment 0.67, while one
+scoring three hundred times better had 0.40. Negative-weight counts do not
+separate them either (8 against 3), and the condition number cannot, since it
+is a property of `C`, which is identical across all of them. It must be this
+way — those configurations differ only in `ρ`, and it is `ρ`'s accuracy that
+decides the outcome, which is precisely the quantity nobody has. The
+precondition has to be met by construction, not verified after the fact.
+
 > An earlier version of this table reported the opposite ranking for the two
 > `C = I` rules. It was measuring a defect in `simulate_same_trait_panel`, which
 > set each score's accuracy to `sqrt(daetwyler_r2)` — the *phenotypic* r², i.e.

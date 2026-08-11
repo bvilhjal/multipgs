@@ -171,7 +171,20 @@ def meta_pgs(scores, *, n_eff=None, expected_r2=None, method="sqrt_n_eff",
         Ridge added to the correlation matrix's diagonal before inversion in
         ``"decorrelated"``. Near-duplicate scores make ``C`` ill-conditioned,
         and an unregularised inverse answers with two enormous weights of
-        opposite sign that cancel to noise.
+        opposite sign that cancel to noise. It does not rescue a mis-specified
+        ``expected_r2``: raising it only drags the answer back toward the
+        undecorrelated weighted sum, which it never quite reaches.
+
+        ``"decorrelated"`` requires accuracies that are right per score, not
+        merely correctly ordered, because ``C**-1`` amplifies their error along
+        the directions where the panel's scores differ least -- which in a
+        same-trait panel is noise. Accuracies derived from ``n_eff`` or
+        :func:`multipgs.daetwyler_r2` do not meet that bar on real panels: see
+        ``docs/algorithm.md``, where both are measured against the truth and
+        decorrelating comes out about fifty times worse than not. Use it when
+        each component carries its own fitted accuracy, such as LDpred3-auto's
+        ``r2_est`` from :func:`multipgs.panel_from_sumstats`; otherwise prefer
+        ``method="expected_r2"``.
     center, scale : array ``(K,)``, optional
         Standardization to apply instead of this cohort's own. Pass the
         training cohort's values to score a second cohort on the same scale.
@@ -264,6 +277,20 @@ def meta_pgs(scores, *, n_eff=None, expected_r2=None, method="sqrt_n_eff",
             w = np.linalg.solve(A, rho)
         except np.linalg.LinAlgError:
             w = np.linalg.lstsq(A, rho, rcond=None)[0]
+        # How far the inverse moved the answer, as description only. This is
+        # deliberately *not* a failure detector, and the attempt to make one is
+        # worth recording so it is not retried: on a real 24-score panel where
+        # this rule returned R2 0.00001 against 0.156 for the same accuracies
+        # undecorrelated, the alignment was 0.67 -- higher than the 0.40 of a
+        # configuration that scored three hundred times better. Alignment,
+        # negative-weight count and condition number all fail to separate those
+        # cases, and they must: the four differ only in rho, and it is rho's
+        # accuracy that decides the outcome. That is unobservable here, so no
+        # in-sample statistic can stand in for it. The precondition is
+        # documented instead, in docs/algorithm.md.
+        norm_product = float(np.linalg.norm(w) * np.linalg.norm(rho))
+        log["rho_alignment"] = (float(w @ rho) / norm_product
+                                if norm_product > 0 else float("nan"))
         n_neg = int(np.count_nonzero(w < 0))
         if n_neg:
             # Not an error: a negative weight is the correct answer when a

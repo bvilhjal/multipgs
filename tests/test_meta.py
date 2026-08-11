@@ -163,3 +163,31 @@ def test_multi_pgs_checks_the_column_count():
         res.multi_pgs(sim.scores[:, :2])
     with pytest.raises(ValueError, match="3 columns"):
         res.multi_pgs(np.zeros((2, 3, 1)))
+
+
+def test_decorrelated_records_but_does_not_police_rho_alignment():
+    """The alignment is descriptive; it must not be sold as a failure detector.
+
+    On the real panel that motivated this, the configuration scoring R2 0.00001
+    had alignment 0.67 while one scoring three hundred times better had 0.40, so
+    a threshold would have reassured the caller in exactly the worst case. This
+    pins the value as logged and unpoliced, so the temptation is not retried.
+    """
+    rng = np.random.default_rng(0)
+    n, k = 4000, 6
+    shared = rng.standard_normal(n)
+    columns = [shared + 0.02 * rng.standard_normal(n) for _ in range(k - 1)]
+    columns.append(rng.standard_normal(n))
+    duplicated = meta_pgs(np.column_stack(columns), n_eff=np.full(k, 1e5),
+                          method="decorrelated")
+    independent = meta_pgs(rng.standard_normal((n, k)), n_eff=np.full(k, 1e5),
+                           method="decorrelated")
+
+    for fit in (duplicated, independent):
+        assert "rho_alignment" in fit.log
+        assert -1.0 <= fit.log["rho_alignment"] <= 1.0
+        assert "alignment_warning" not in fit.log
+
+    # It does describe what it claims to: an orthogonal panel needs no
+    # correction, a duplicate-heavy one gets a large one.
+    assert independent.log["rho_alignment"] > duplicated.log["rho_alignment"]
