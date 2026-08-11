@@ -1,7 +1,8 @@
 """Command-line interface: ``multipgs <command>``.
 
-Four commands, matching the four steps of the analysis::
+Five commands, matching the steps of the analysis::
 
+    multipgs fetch     get scoring files and metadata from the PGS Catalog
     multipgs panel     build the n x K score matrix from a target cohort
     multipgs fit       learn a combination from a training phenotype
     multipgs meta      combine same-trait scores with no phenotype at all
@@ -187,6 +188,76 @@ def _read_score_vector(path, score_ids, *, name):
 # Commands
 # ---------------------------------------------------------------------------
 
+def _cmd_fetch(args):
+    import os
+
+    from .fetch import (cohort_overlap, download_scores, search_scores,
+                        write_score_metadata)
+
+    def note(text):
+        if not args.quiet:
+            print(text, file=sys.stderr, flush=True)
+
+    selector = {}
+    if args.trait:
+        selector["trait_id"] = args.trait
+    elif args.pgs:
+        selector["pgs_ids"] = args.pgs
+    elif args.pmid:
+        selector["pmid"] = args.pmid
+    else:
+        selector["publication_id"] = args.publication
+
+    try:
+        records = search_scores(include_children=args.include_children,
+                                cache_dir=args.cache, **selector)
+    except ValueError as exc:
+        raise SystemExit(f"fetch: {exc}") from exc
+    note(f"{len(records)} score(s) found")
+
+    os.makedirs(args.out, exist_ok=True)
+    if args.metadata_only:
+        paths, log = [], {"n_downloaded": 0, "n_failed": 0}
+    else:
+        def progress(i, n, pgs_id):
+            note(f"[{i + 1}/{n}] {pgs_id}")
+
+        paths, log = download_scores(
+            records, args.out, build=args.build, overwrite=args.overwrite,
+            on_error="skip" if args.skip_errors else "raise",
+            progress=progress)
+        # Metadata must describe what is actually on disk, or a downstream
+        # --n-eff file will name scores the panel does not contain.
+        records = [r for r, p in zip(records, paths) if p is not None]
+
+    meta_path = os.path.join(args.out, "metadata.tsv")
+    n_eff_path = os.path.join(args.out, "n_eff.tsv")
+    write_score_metadata(records, meta_path)
+    write_score_metadata(records, n_eff_path, columns=["N_EFF"])
+
+    n_missing = sum(1 for r in records if not np.isfinite(r.n_eff))
+    print(f"{len(records)} score(s) in {args.out}")
+    print(f"  downloaded {log['n_downloaded']}, failed {log['n_failed']}")
+    print(f"  wrote {meta_path} and {n_eff_path}")
+    if n_missing:
+        print(f"  {n_missing} score(s) have no sample size in the Catalog and "
+              f"are NA in n_eff.tsv; screen(min_n_eff=...) will reject them")
+
+    if args.cohort_overlap and len(records) > 1:
+        overlap, ids = cohort_overlap(records)
+        pairs = [(overlap[j, i], ids[j], ids[i])
+                 for j in range(len(ids)) for i in range(j + 1, len(ids))
+                 if np.isfinite(overlap[j, i]) and overlap[j, i] > 0]
+        pairs.sort(reverse=True)
+        print(f"  {len(pairs)} score pair(s) share a named discovery cohort")
+        for value, left, right in pairs[:10]:
+            print(f"    {left} {right}  jaccard {value:.2f}")
+        if pairs:
+            print("  shared discovery samples are invisible to "
+                  "cross-validation; see docs/theory.md")
+    return 0
+
+
 def _cmd_panel(args):
     from .panel import panel_from_catalog, panel_from_sumstats, write_panel
 
@@ -340,6 +411,43 @@ def build_parser():
     p.add_argument("--version", action="version",
                    version=f"multipgs {__version__}")
     sub = p.add_subparsers(dest="command", required=True)
+
+    fetch = sub.add_parser("fetch", help="get scoring files and metadata from "
+                                         "the PGS Catalog")
+    who = fetch.add_mutually_exclusive_group(required=True)
+    who.add_argument("--trait", metavar="ID",
+                     help="Catalog trait identifier, e.g. MONDO_0004989. "
+                          "These are migrating from EFO to MONDO; a retired "
+                          "identifier is an error, not an empty panel")
+    who.add_argument("--pgs", nargs="+", metavar="PGS",
+                     help="explicit score identifiers")
+    who.add_argument("--pmid", help="every score from one publication's PMID")
+    who.add_argument("--publication", metavar="PGP",
+                     help="every score from one Catalog publication")
+    fetch.add_argument("--out", required=True,
+                       help="output directory for scoring files, metadata.tsv "
+                            "and n_eff.tsv")
+    fetch.add_argument("--build", default="GRCh37",
+                       choices=("GRCh37", "GRCh38"),
+                       help="must match the build of your target genotypes")
+    fetch.add_argument("--include-children", action="store_true",
+                       help="with --trait, also take scores registered against "
+                            "child traits (the Catalog keeps them separate, so "
+                            "without this they are silently omitted)")
+    fetch.add_argument("--cache", help="directory for raw API responses, so a "
+                                       "re-run costs no requests")
+    fetch.add_argument("--metadata-only", action="store_true",
+                       help="write the tables without downloading any file")
+    fetch.add_argument("--overwrite", action="store_true",
+                       help="re-download files already present")
+    fetch.add_argument("--cohort-overlap", action="store_true",
+                       help="report score pairs sharing a named discovery "
+                            "cohort")
+    fetch.add_argument("--skip-errors", action="store_true",
+                       help="skip scores that fail to download instead of "
+                            "stopping")
+    fetch.add_argument("--quiet", action="store_true")
+    fetch.set_defaults(func=_cmd_fetch)
 
     panel = sub.add_parser("panel", help="build the n x K score matrix")
     src = panel.add_mutually_exclusive_group(required=True)

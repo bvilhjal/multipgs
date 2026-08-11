@@ -288,3 +288,104 @@ def test_version_and_help_are_wired():
     assert excinfo.value.code == 0
     with pytest.raises(SystemExit):
         main([])
+
+
+# ---------------------------------------------------------------------------
+# fetch
+# ---------------------------------------------------------------------------
+
+def _fake_catalog(monkeypatch, records, trait=None):
+    """Route multipgs.fetch's single network seam at a fixed payload."""
+    from multipgs import fetch
+
+    def fake_json(url, *, timeout=30):
+        if trait is not None and "/trait/" in url:
+            return trait
+        return {"size": len(records), "count": len(records), "next": None,
+                "previous": None, "results": records}
+
+    monkeypatch.setattr(fetch, "_fetch_json", fake_json)
+    monkeypatch.setattr(fetch, "_download_file",
+                        lambda *a, **k: pytest.fail("no download expected"))
+
+
+def _catalog_record(pgs_id, *, n=50000, cohorts=()):
+    return {
+        "id": pgs_id, "name": f"n_{pgs_id}",
+        "ftp_scoring_file": "https://ftp.example/x.txt.gz",
+        "ftp_harmonized_scoring_files": {
+            "GRCh37": {"positions": f"https://ftp.example/{pgs_id}.txt.gz"}},
+        "publication": {"PMID": 1, "doi": "10.1/x"},
+        "samples_variants": [{"sample_number": n, "sample_cases": None,
+                              "sample_controls": None,
+                              "cohorts": [{"name_short": c} for c in cohorts]}],
+        "samples_training": [], "trait_reported": "Trait",
+        "trait_efo": [{"id": "MONDO_0000001", "label": "t"}],
+        "method_name": "m", "variants_number": 10, "weight_type": "beta",
+        "ancestry_distribution": {"gwas": {"dist": {"EUR": 100.0}}},
+    }
+
+
+def test_fetch_writes_metadata_that_the_other_commands_can_read(
+        tmp_path, monkeypatch, capsys):
+    _fake_catalog(monkeypatch, [_catalog_record("PGS000001", n=20000),
+                                _catalog_record("PGS000002", n=80000)])
+    out = str(tmp_path / "panel")
+    assert main(["fetch", "--pgs", "PGS000001", "PGS000002", "--out", out,
+                 "--metadata-only", "--quiet"]) == 0
+
+    values = _read_score_vector(f"{out}/n_eff.tsv",
+                                ["PGS000001", "PGS000002"], name="n_eff")
+    assert values.tolist() == [20000.0, 80000.0]
+    header = open(f"{out}/metadata.tsv", encoding="utf-8").readline()
+    assert header.startswith("SCORE\t") and "N_EFF" in header
+
+
+def test_fetch_reports_shared_discovery_cohorts(tmp_path, monkeypatch, capsys):
+    _fake_catalog(monkeypatch, [
+        _catalog_record("PGS000001", cohorts=("UKB", "WHI")),
+        _catalog_record("PGS000002", cohorts=("UKB", "WHI"))])
+    assert main(["fetch", "--pgs", "PGS000001", "PGS000002", "--out",
+                 str(tmp_path / "p"), "--metadata-only", "--cohort-overlap",
+                 "--quiet"]) == 0
+    printed = capsys.readouterr().out
+    assert "share a named discovery cohort" in printed
+    assert "jaccard 1.00" in printed
+    assert "invisible to cross-validation" in printed
+
+
+def test_fetch_reports_scores_with_no_sample_size(tmp_path, monkeypatch,
+                                                  capsys):
+    record = _catalog_record("PGS000001")
+    record["samples_variants"] = []
+    _fake_catalog(monkeypatch, [record])
+    main(["fetch", "--pgs", "PGS000001", "--out", str(tmp_path / "p"),
+          "--metadata-only", "--quiet"])
+    assert "no sample size in the Catalog" in capsys.readouterr().out
+
+
+def test_fetch_can_include_child_traits(tmp_path, monkeypatch):
+    _fake_catalog(monkeypatch,
+                  [_catalog_record("PGS000001"), _catalog_record("PGS000002")],
+                  trait={"id": "MONDO_0000001",
+                         "associated_pgs_ids": ["PGS000001"],
+                         "child_associated_pgs_ids": ["PGS000002"]})
+    out = str(tmp_path / "p")
+    main(["fetch", "--trait", "MONDO_0000001", "--out", out,
+          "--metadata-only", "--include-children", "--quiet"])
+    ids = [ln.split("\t")[0] for ln in
+           open(f"{out}/n_eff.tsv", encoding="utf-8").read().splitlines()[1:]]
+    assert ids == ["PGS000001", "PGS000002"]
+
+
+def test_fetch_turns_a_retired_trait_id_into_a_clean_exit(tmp_path,
+                                                          monkeypatch):
+    _fake_catalog(monkeypatch, [], trait={})
+    with pytest.raises(SystemExit, match="MONDO"):
+        main(["fetch", "--trait", "EFO_0000305", "--out", str(tmp_path / "p"),
+              "--metadata-only", "--quiet"])
+
+
+def test_fetch_requires_exactly_one_selector(tmp_path):
+    with pytest.raises(SystemExit):
+        main(["fetch", "--out", str(tmp_path / "p")])
