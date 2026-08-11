@@ -311,6 +311,29 @@ are **declared assumptions**: Catalog scores carry no fitted architecture, so
 without them the two `expected_r2` rules do not run at all, and with them those
 two rows are conditional on the two numbers being right for the trait.
 
+### Estimating the architecture instead of declaring it
+
+`--h2` and `--m-causal` set every score's Daetwyler `expected_r2`, so a declared
+architecture is a declared ranking. `--h2-ldsc` estimates the heritability from
+the target GWAS by LD Score regression; `--h2-auto` additionally runs
+LDpred3-auto's multi-chain sampler, which is the more accurate of the two where
+there is signal and, crucially, is the only one that identifies **polygenicity**
+— LDSC's slope is `N h2 ell / M` whatever the causal fraction, so no LDSC run
+can ever replace `--m-causal`. Auto is preferred unless its `h2` falls below
+`--h2-near-zero`, where a sampler with nothing to condition on degrades and the
+regression does not.
+
+On the 24-score CAD panel the declared values were wrong by roughly an order of
+magnitude each — h2 0.4 against 0.0512 [0.0477, 0.0547] from auto and 0.0866
+from LDSC, and 20,000 causal variants against about 2,000 — and `expected_r2`
+moved by 1.3%. That is structural: in a same-trait panel every score shares one
+architecture, so h2 and p only warp the common n_eff-to-accuracy mapping and the
+normalised weights barely move. Expect them to matter in a cross-trait panel,
+where each score carries its own.
+
+The two estimators disagree by more than auto's credible interval covers, so
+neither should be quoted as the trait's heritability; both are recorded.
+
 ## Summary-statistic cost at real dimensions
 
 `stack_scaling.py` above times the individual-level fit and warns that its

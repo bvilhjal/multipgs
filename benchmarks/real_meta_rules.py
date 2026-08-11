@@ -462,6 +462,104 @@ def _single_score(index, score_sd):
     return beta
 
 
+def _ldsc_h2_from_gwas(z, covered, ld_scores, n_eff, m_reference):
+    """SNP heritability of the target GWAS, by LD Score regression.
+
+    ``--h2`` otherwise arrives as an assertion, and it propagates: it sets
+    every score's Daetwyler ``expected_r2``, which is what the ``expected_r2``
+    and ``decorrelated_expected_r2`` rules weight by. A declared heritability
+    is therefore a declared ranking, and estimating it from the same GWAS the
+    rules are scored against at least makes it a measurement.
+
+    ``ldpred3.ldsc_h2`` wants chi-square. These effects are on the standardized
+    scale, where the exact relation is ``z^2 = N b^2 / (1 - b^2)``, not the
+    weak-effect approximation ``N b^2`` -- the difference matters precisely at
+    the large-effect variants that carry the most leverage in this regression.
+
+    Only variants the GWAS actually covered enter. Everywhere else ``z`` is
+    zero by construction, and feeding those in as genuine null chi-squares
+    would drag the intercept down and the slope with it.
+    """
+    from ldpred3 import ldsc_h2
+
+    covered = np.asarray(covered, dtype=bool)
+    b = np.asarray(z, dtype=float)[covered]
+    ell = np.asarray(ld_scores, dtype=float)[covered]
+    safe = np.clip(b * b, 0.0, 1.0 - 1e-12)
+    chisq = n_eff * safe / (1.0 - safe)
+    # m_snps is the reference map the LD scores were summed over, not the
+    # covered subset: the regressor is N * ell / M, so passing the subset size
+    # would inflate the slope by M_reference / covered.
+    return ldsc_h2(chisq, ell, n_eff, m_snps=m_reference)
+
+
+def _auto_h2_and_polygenicity(blocks, z, n_eff, chains, iters, cores, seed=0):
+    """``(h2, p)`` and their credible intervals from LDpred3-auto.
+
+    Two quantities, both otherwise supplied by assertion. ``daetwyler_r2``
+    needs a heritability *and* a polygenicity, and LD Score regression
+    identifies only the first — its slope is ``N h2 ell / M`` whatever the
+    causal fraction. LDpred3-auto's sampler infers both jointly, with credible
+    intervals, so ``--m-causal`` stops being a number somebody made up.
+
+    This is the more accurate estimator of the two where there is signal to
+    find, which is why the caller prefers it. It is also the one that degrades
+    first when there is not: a sampler asked to apportion a heritability
+    indistinguishable from zero has nothing to condition on, chains wander, and
+    the multi-chain filter can discard most of them. Near zero the caller falls
+    back to LD Score regression, which has no such failure mode because it is
+    a regression, not a sampler. ``n_chains_kept`` is returned so that decision
+    is auditable rather than silent.
+    """
+    from ldpred3 import ldpred3_auto_infer
+
+    result = ldpred3_auto_infer(blocks, np.asarray(z, dtype=float), n_eff,
+                                n_chains=int(chains), num_iter=int(iters),
+                                burn_in=int(iters), ncores=int(cores),
+                                seed=seed)
+    return result
+
+
+def _prune_redundant(correlation, n_eff, alive, threshold):
+    """Greedily keep one score from each set correlated above ``threshold``.
+
+    A real same-trait panel accumulates near-duplicates: the same method
+    re-deposited across Catalog releases, or two studies differing only by a
+    later data freeze. The CAD panel this was written against contains a pair
+    at correlation 1.0000 and a third at 0.9957. Rules that invert the score
+    covariance cannot survive that, and rules that do not invert it still spend
+    weight several times on one piece of information.
+
+    Redundancy is measured here by the **score** correlation, the off-diagonal
+    of ``W' D W`` normalised — which is what actually enters the fit. It is not
+    the genetic correlation of the underlying traits. Estimating that would
+    take each score's discovery GWAS marginal effects and bivariate LD Score
+    regression; the PGS Catalog distributes weights, not summary statistics, so
+    it is unavailable here. The two answer different questions in any case:
+    genetic correlation is a property of the traits, while this is a property
+    of the score vectors as the panel actually holds them, including whatever
+    shrinkage each method applied.
+
+    Ties are broken by ``n_eff``, so the better-powered member of a redundant
+    set survives, and by index where ``n_eff`` is unknown, which keeps the
+    result deterministic rather than dependent on dictionary order.
+    """
+    k = correlation.shape[0]
+    order = sorted(range(k), key=lambda j: (-(n_eff[j] if np.isfinite(n_eff[j])
+                                              else -np.inf), j))
+    keep, dropped = [], {}
+    for j in order:
+        if not alive[j]:
+            continue
+        clash = next((i for i in keep
+                      if abs(correlation[i, j]) > threshold), None)
+        if clash is None:
+            keep.append(j)
+        else:
+            dropped[j] = (clash, float(correlation[clash, j]))
+    return sorted(keep), dropped
+
+
 def _evaluate(beta, c, gram, regime, var_y):
     """Rescale to unit combined-score variance in the reference, then score.
 
@@ -511,6 +609,24 @@ def main(argv=None):
                         help="declared number of causal variants, with --h2")
     parser.add_argument("--ridge", type=float, default=1e-3,
                         help="meta_pgs ridge on C before inversion")
+    parser.add_argument("--h2-auto", action="store_true",
+                        help="also estimate h2 and polygenicity from --gwas "
+                             "with LDpred3-auto's multi-chain sampler, and "
+                             "prefer it over LDSC unless h2 is near zero")
+    parser.add_argument("--h2-auto-chains", type=int, default=10)
+    parser.add_argument("--h2-auto-iter", type=int, default=200)
+    parser.add_argument("--h2-auto-cores", type=int, default=4)
+    parser.add_argument("--h2-near-zero", type=float, default=0.01,
+                        help="below this the LDpred3-auto estimate is not "
+                             "trusted and the LDSC one is used instead")
+    parser.add_argument("--h2-ldsc", action="store_true",
+                        help="estimate the target trait's SNP heritability "
+                             "from --gwas by LD Score regression instead of "
+                             "taking --h2 on trust")
+    parser.add_argument("--prune-correlation", type=float, default=None,
+                        help="drop a score whose |correlation| with an "
+                             "already-kept score exceeds this, keeping the "
+                             "larger-n_eff member of each redundant set")
     parser.add_argument("--high-correlation", type=float, default=0.5,
                         help="|correlation| above which a score pair counts as "
                              "highly correlated in the cohort cross-tab")
@@ -544,7 +660,11 @@ def main(argv=None):
     if spec.get("n") is None and args.gwas_n_eff is None:
         parser.error(f"--gwas-format {args.gwas_format} has no sample-size "
                      "column, so --gwas-n-eff is required")
-    if (args.h2 is None) != (args.m_causal is None):
+    if args.h2_ldsc and args.m_causal is None:
+        parser.error("--h2-ldsc estimates h2 but daetwyler_r2 also needs "
+                     "--m-causal; polygenicity is not identified by LD Score "
+                     "regression")
+    if (args.h2 is None) != (args.m_causal is None) and not args.h2_ldsc:
         parser.error("--h2 and --m-causal must be given together")
     if args.h2 is not None and not 0.0 < args.h2 <= 1.0:
         parser.error("--h2 must lie in (0, 1]; daetwyler_r2 returns nan "
@@ -696,6 +816,43 @@ def main(argv=None):
     observed = np.array(correlation, dtype=float)
     observed[~alive, :] = np.nan
     observed[:, ~alive] = np.nan
+    # Pruning happens after the moments and before anything is fitted, so
+    # every rule, every correlation report and the cohort cross-tab all see the
+    # same panel. Doing it later would let the reported correlations describe a
+    # panel the rules never saw.
+    ids_before = list(np.asarray(score_ids, dtype=object))
+    n_pruned = 0
+    pruned_detail = {}
+    if args.prune_correlation is not None:
+        keep, pruned_detail = _prune_redundant(
+            correlation, n_eff, alive, args.prune_correlation)
+        n_pruned = k - len(keep)
+        if len(keep) < 2:
+            raise SystemExit(
+                f"--prune-correlation {args.prune_correlation} leaves "
+                f"{len(keep)} score(s); nothing to combine")
+        if n_pruned:
+            index = np.array(keep, dtype=int)
+            c, gram = c[index], gram[np.ix_(index, index)]
+            score_sd, n_eff, alive = score_sd[index], n_eff[index], alive[index]
+            score_ids = np.asarray(score_ids, dtype=object)[index]
+            panel_records = [panel_records[j] for j in keep]
+            k = len(keep)
+            safe_sd = np.where(alive, score_sd, 1.0)
+            correlation = gram / np.outer(safe_sd, safe_sd)
+            correlation[~alive, :] = 0.0
+            correlation[:, ~alive] = 0.0
+            correlation[np.arange(k), np.arange(k)] = 1.0
+            observed = np.array(correlation, dtype=float)
+            observed[~alive, :] = np.nan
+            observed[:, ~alive] = np.nan
+            eigenvalues = np.linalg.eigvalsh(0.5 * (correlation + correlation.T))
+            print(f"prune: |r| > {args.prune_correlation} dropped {n_pruned} "
+                  f"of {n_pruned + k} score(s), leaving {k}")
+            for j, (kept, r) in sorted(pruned_detail.items()):
+                print(f"    dropped {ids_before[j]} (|r| {abs(r):.4f} with "
+                      f"{ids_before[kept]})")
+
     surrogate, clipped_mass, psd_correlation = _surrogate_cohort(correlation)
     with np.errstate(invalid="ignore", divide="ignore"):
         # A dead score's surrogate column is constant once meta_pgs zeroes it,
@@ -711,11 +868,52 @@ def main(argv=None):
     # move a number; it keeps p meaning the genome-wide polygenicity fraction
     # rather than a per-chromosome one that would have to be read differently
     # under --chrom than without it.
+    h2_used, h2_ldsc, auto = args.h2, None, None
+    p_used = (args.m_causal / meta["n_variants_total"]
+              if args.m_causal is not None else None)
+    if args.h2_ldsc:
+        from ldpred3 import ld_scores as _ld_scores
+        h2_ldsc = _ldsc_h2_from_gwas(
+            z, covered, _ld_scores(blocks),
+            float(args.gwas_n_eff if args.gwas_n_eff is not None
+                  else np.median(raw[-1][raw[-1] > 0])),
+            meta["n_variants_total"])
+        estimate = float(getattr(h2_ldsc, "h2", h2_ldsc))
+        print(f"h2 by LD Score regression: {estimate:.4f}"
+              + (f" (declared {args.h2})" if args.h2 is not None else ""))
+        if not 0.0 < estimate <= 1.0:
+            print("  WARNING: the LDSC estimate is outside (0, 1], so it "
+                  "cannot drive daetwyler_r2; falling back to --h2 and "
+                  "recording both")
+        else:
+            h2_used = estimate
+
+    if args.h2_auto:
+        t_auto = time.perf_counter()
+        auto = _auto_h2_and_polygenicity(
+            blocks, z, float(args.gwas_n_eff), args.h2_auto_chains,
+            args.h2_auto_iter, args.h2_auto_cores)
+        print(f"h2 by LDpred3-auto: {auto.h2_est:.4f} "
+              f"[{auto.h2_ci[0]:.4f}, {auto.h2_ci[1]:.4f}], "
+              f"p {auto.p_est:.3g} [{auto.p_ci[0]:.3g}, {auto.p_ci[1]:.3g}], "
+              f"{auto.n_chains_kept}/{auto.n_chains} chains kept "
+              f"({time.perf_counter() - t_auto:.0f}s)")
+        # LDpred3-auto is the more accurate of the two where there is signal,
+        # and the first to fail where there is not. The threshold is on the
+        # estimate itself rather than on chain agreement because a sampler
+        # given nothing to condition on can agree precisely and wrongly.
+        if auto.h2_est >= args.h2_near_zero:
+            h2_used = float(auto.h2_est)
+            p_used = float(auto.p_est)
+        else:
+            print(f"  h2 below --h2-near-zero {args.h2_near_zero}: keeping "
+                  "the LD Score regression estimate, which has no sampler to "
+                  "fail")
+
     expected_r2 = None
-    if args.h2 is not None:
+    if h2_used is not None and p_used is not None:
         total_variants = meta["n_variants_total"]
-        expected_r2 = daetwyler_r2(args.h2, args.m_causal / total_variants,
-                                   n_eff, total_variants)
+        expected_r2 = daetwyler_r2(h2_used, p_used, n_eff, total_variants)
 
     center = np.zeros(k)
     combinations = []
