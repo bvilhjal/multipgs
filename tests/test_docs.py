@@ -58,3 +58,41 @@ def test_internal_doc_links_resolve():
         for target in re.findall(r"\]\((?!https?:|#)([^)#]+)", text):
             resolved = (path.parent / target).resolve()
             assert resolved.exists(), f"{path.name} links to missing {target}"
+
+
+def test_every_benchmark_named_in_the_docs_exists():
+    """A documented benchmark that is not in the tree is worse than none.
+
+    ``test_internal_doc_links_resolve`` only inspects markdown links, but a
+    benchmark is normally named in prose as ``benchmark.py`` or inside a fenced
+    shell command, neither of which is a link. A script deleted or renamed
+    without touching its documentation therefore leaves instructions that
+    silently fail for whoever follows them.
+
+    Only ``benchmarks/<name>.py`` in *this* repository counts. A sibling
+    project's script is referenced with its own prefix — ldpred3's
+    ``ldpred3/benchmarks/convert_bigsnpr_ldref.py`` builds the LD reference
+    several of these benchmarks take as input — and cannot be checked here.
+    """
+    scripts = {path.name for path in (ROOT / "benchmarks").glob("*.py")}
+    # Not preceded by another path component, which is what distinguishes this
+    # repository's benchmarks/ from a sibling project's.
+    referenced = re.compile(r"(?<![\w/])benchmarks/([a-z0-9_]+\.py)")
+    # benchmarks/README.md is where benchmarks are described, and it is
+    # deliberately not in DOCS, which covers the prose documentation set.
+    for path in [*DOCS, ROOT / "benchmarks" / "README.md"]:
+        text = path.read_text(encoding="utf-8")
+        missing = set(referenced.findall(text)) - scripts
+        assert not missing, (f"{path.name} gives instructions for benchmark "
+                             f"script(s) that do not exist: {sorted(missing)}")
+
+
+def test_every_benchmark_is_documented():
+    """A benchmark nobody can find is evidence nobody will run."""
+    readme = (ROOT / "benchmarks" / "README.md").read_text(encoding="utf-8")
+    for script in sorted((ROOT / "benchmarks").glob("*.py")):
+        if script.name.startswith("_"):
+            continue
+        assert script.name in readme, (
+            f"benchmarks/{script.name} is not mentioned in "
+            "benchmarks/README.md")
