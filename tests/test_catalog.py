@@ -103,6 +103,20 @@ def test_harmonized_columns_are_preferred(tmp_path):
     assert raw.pos[0] == 999
 
 
+def test_inferred_other_allele_is_a_row_wise_fallback(tmp_path):
+    path = _write(
+        tmp_path,
+        [("rs1", 1, 100, "A", "G", "T", 0.5),
+         ("rs2", 1, 200, "C", "", "A", 0.3),
+         ("rs3", 1, 300, "G", "NA", "C", -0.2)],
+        ["rsID", "chr_name", "chr_position", "effect_allele",
+         "other_allele", "hm_inferOtherAllele", "effect_weight"])
+    sf = read_scoring_file(path)
+    assert list(sf.oa) == ["G", "A", "C"]
+    assert sf.log["n_inferred_other_allele"] == 2
+    assert sf.log["columns_used"]["oa_fallback"] == "hm_inferotherallele"
+
+
 def test_unparsable_weights_are_skipped(tmp_path):
     path = _write(tmp_path, [("rs1", 1, 100, "A", "G", "NA"),
                              ("rs2", 2, 200, "C", "T", 0.3)],

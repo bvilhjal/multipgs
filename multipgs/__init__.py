@@ -1,10 +1,9 @@
 """multipgs — multivariate polygenic scoring: many scores in, one score out.
 
-A single-trait polygenic score uses one GWAS. Most traits have a small GWAS and
-a great many genetically correlated neighbours with larger ones, and that
-correlated information is simply discarded. **Multi-PGS** does not discard it:
-it computes polygenic scores for many traits and combines them, which improves
-prediction most exactly where single-trait scores are weakest.
+A single-trait polygenic score uses one GWAS. Many traits have smaller discovery
+GWAS than genetically correlated phenotypes. **Multi-PGS** can borrow from that
+auxiliary information by computing and combining scores for many traits; gains
+are possible when those signals generalize to the target cohort.
 
 Two combiners, for two situations:
 
@@ -44,7 +43,7 @@ from __future__ import annotations
 
 import importlib
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 # Public name -> submodule it lives in. No module name may equal one of its own
 # exported names: importing a submodule binds it on this package, and the cache

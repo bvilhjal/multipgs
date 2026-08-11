@@ -405,6 +405,14 @@ def enet_path_binomial(X, y, *, pf, alpha, lambdas, beta_init=None,
             eta = b0 + X @ beta
             if float(np.max(np.abs(eta - eta_old))) < irls_tol:
                 break
+        # The lasso contract is exact sparsity.  At lambda_max, the IRLS
+        # intercept can move the gradient by a few ulps and leave coefficients
+        # such as 1e-15 instead of mathematical zero.  Remove only floating
+        # dust; besides making support stable across BLAS implementations, this
+        # prevents warm starts from treating numerical noise as an active set.
+        zero_tol = 32.0 * np.finfo(np.float64).eps * \
+            max(1.0, float(np.max(np.abs(beta), initial=0.0)))
+        beta[np.abs(beta) <= zero_tol] = 0.0
         b0s[li] = b0
         coefs[li] = beta
         if int(np.count_nonzero(beta[pf > 0.0])) > dfmax:

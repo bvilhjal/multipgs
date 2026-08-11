@@ -62,6 +62,7 @@ _NON_ADDITIVE = ("is_dominant", "is_recessive", "is_haplotype", "is_diplotype",
                  "is_interaction")
 _RATIO_WEIGHTS = ("or", "hr", "odds_ratio", "hazard_ratio")
 _TRUE = ("true", "t", "yes", "y", "1")
+_MISSING_ALLELE = ("", ".", "NA", "N/A", "NULL")
 
 
 @dataclass
@@ -179,6 +180,11 @@ def read_scoring_file(path, *, prefer_harmonized=True, drop_non_additive=True):
         i, chosen = _pick(header, candidates)
         idx[field_name] = i
         used[field_name] = chosen
+    # Harmonized files can carry both columns, with ``other_allele`` populated
+    # only on some rows. Choosing one column for the whole file silently loses
+    # the row-wise inference supplied by the Catalog.
+    inferred_oa_idx, inferred_oa_name = _pick(
+        header, ("hm_inferotherallele",))
     if idx["weight"] is None:
         raise ValueError(f"{path}: no effect_weight column in {header}")
     if idx["ea"] is None:
@@ -190,7 +196,7 @@ def read_scoring_file(path, *, prefer_harmonized=True, drop_non_additive=True):
     flag_cols = [i for i, name in enumerate(header)
                  if name.strip().lower() in _NON_ADDITIVE]
     n_read = len(rows)
-    n_flagged = n_bad_weight = 0
+    n_flagged = n_bad_weight = n_inferred_oa = 0
     ids, chroms, poss, eas, oas, ws = [], [], [], [], [], []
     width = len(header)
     for fields in rows:
@@ -215,8 +221,15 @@ def read_scoring_file(path, *, prefer_harmonized=True, drop_non_additive=True):
         poss.append(fields[idx["pos"]].strip()
                     if idx["pos"] is not None else "0")
         eas.append(fields[idx["ea"]].strip().upper())
-        oas.append(fields[idx["oa"]].strip().upper()
-                   if idx["oa"] is not None else "")
+        oa = (fields[idx["oa"]].strip().upper()
+              if idx["oa"] is not None else "")
+        if (oa in _MISSING_ALLELE and inferred_oa_idx is not None
+                and inferred_oa_idx != idx["oa"]):
+            inferred = fields[inferred_oa_idx].strip().upper()
+            if inferred not in _MISSING_ALLELE:
+                oa = inferred
+                n_inferred_oa += 1
+        oas.append(oa)
         ws.append(w)
 
     pos = np.array([int(p) if p.lstrip("-").isdigit() else 0 for p in poss],
@@ -225,6 +238,7 @@ def read_scoring_file(path, *, prefer_harmonized=True, drop_non_additive=True):
 
     log = {"n_rows": n_read, "n_kept": int(weight.size),
            "n_non_additive": n_flagged, "n_unparsable_weight": n_bad_weight,
+           "n_inferred_other_allele": n_inferred_oa,
            "columns_used": {k: v for k, v in used.items() if v},
            "harmonized_columns": bool(used["pos"]
                                       and used["pos"].startswith("hm_"))}
@@ -232,6 +246,8 @@ def read_scoring_file(path, *, prefer_harmonized=True, drop_non_additive=True):
         log["build_used"] = (meta.get("hmpos_build")
                              or meta.get("harmonized_build")
                              or meta.get("genome_build", ""))
+    if n_inferred_oa:
+        log["columns_used"]["oa_fallback"] = inferred_oa_name
 
     weight_type = meta.get("weight_type", "").strip().lower()
     if weight_type in _RATIO_WEIGHTS:

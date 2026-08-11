@@ -1,10 +1,15 @@
 """Panel construction from genotypes, and folding a fit back to one weight set."""
 
+import copy
+import pickle
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 
-from multipgs import (combine_weights, multi_pgs_fit, panel_from_catalog,
-                      read_panel, simulate_target, write_panel)
+from multipgs import (ScorePanel, architectures_from_panel, combine_weights,
+                      multi_pgs_fit, panel_from_catalog, panel_from_sumstats,
+                      read_panel, screen, simulate_target, write_panel)
 
 
 @pytest.fixture(scope="module")
@@ -48,6 +53,47 @@ def test_panel_records_target_allele_frequency_and_sd(target):
         assert np.all(np.isfinite(table["af"]))
         assert np.all(table["sd"] > 0)
         assert np.all((table["af"] >= 0) & (table["af"] <= 1))
+
+
+def test_catalog_weight_metadata_is_shared_and_compact(tmp_path):
+    """A fully overlapping panel stores metadata once, not K times."""
+    made = simulate_target(str(tmp_path / "shared"), n=20, n_variants=128,
+                           n_scores=8, n_per_score=128, seed=17)
+    panel = panel_from_catalog(made["scoring_files"], made["prefix"])
+    shared = panel.weights[0].variant_table
+    assert all(table.variant_table is shared for table in panel.weights)
+
+    compact_bytes = sum(array.nbytes for array in shared.values())
+    compact_bytes += sum(table.index.nbytes + table["weight"].nbytes
+                         for table in panel.weights)
+    legacy_bytes = sum(
+        table["weight"].nbytes
+        + sum(table[key].nbytes
+              for key in ("id", "chrom", "pos", "a1", "a2", "af", "sd"))
+        for table in panel.weights)
+    # Eight completely overlapping scores should need far below half of the
+    # legacy arrays. This counts NumPy buffers only; Python-string payloads are
+    # shared already and would not make the compact representation look better.
+    assert compact_bytes < 0.35 * legacy_bytes
+
+    # The legacy mapping interface remains available and materializes the
+    # score-specific rows only when requested.
+    assert set(panel.weights[0]) == {
+        "id", "chrom", "pos", "a1", "a2", "weight", "af", "sd"}
+    assert np.array_equal(panel.weights[0]["id"], made["variants"].id)
+
+
+def test_compact_catalog_panel_is_pickleable_and_deepcopyable(target):
+    panel = panel_from_catalog(target["scoring_files"], target["prefix"])
+    for restored in (pickle.loads(pickle.dumps(panel)), copy.deepcopy(panel)):
+        shared = restored.weights[0].variant_table
+        assert all(table.variant_table is shared for table in restored.weights)
+        assert np.allclose(restored.scores, panel.scores)
+        assert np.array_equal(restored.weights[0]["id"],
+                              panel.weights[0]["id"])
+        assert not shared["id"].flags.writeable
+        with pytest.raises(TypeError):
+            shared["id"] = np.array([], dtype=object)
 
 
 def test_min_matched_rejects_a_thin_score(target):
@@ -144,6 +190,13 @@ def test_select_by_id_index_and_mask(target):
     with pytest.raises(KeyError):
         panel.index_of("nope")
 
+    one = panel.select(1)
+    assert one.scores.shape == (len(panel), 1)
+    assert list(one.score_ids) == ["PGS000002"]
+    empty = panel.select([])
+    assert empty.scores.shape == (len(panel), 0)
+    assert empty.n_scores == 0
+
 
 def test_align_matches_individuals_across_panels(target):
     panel = panel_from_catalog(target["scoring_files"], target["prefix"])
@@ -161,3 +214,136 @@ def test_align_without_shared_individuals_is_an_error(target):
     other.sample_fid = other.sample_iid
     with pytest.raises(ValueError, match="share no individuals"):
         panel.align(other)
+
+
+def test_align_uses_tuple_keys_and_rejects_duplicate_samples(target):
+    left = panel_from_catalog(target["scoring_files"], target["prefix"])._rows([0])
+    right = left._rows([0])
+    left.sample_fid = np.array(["a:b"], dtype=object)
+    left.sample_iid = np.array(["c"], dtype=object)
+    right.sample_fid = np.array(["a"], dtype=object)
+    right.sample_iid = np.array(["b:c"], dtype=object)
+    with pytest.raises(ValueError, match="share no individuals"):
+        left.align(right)
+
+    duplicate = left._rows([0, 0])
+    with pytest.raises(ValueError, match="duplicate FID:IID"):
+        duplicate.align(left)
+
+
+def test_empty_panel_round_trips_with_its_two_dimensional_shape(target,
+                                                                tmp_path):
+    panel = panel_from_catalog(target["scoring_files"], target["prefix"])
+    cases = (panel._rows([]), panel.select([]))
+    for i, case in enumerate(cases):
+        path = tmp_path / f"empty_{i}.tsv"
+        write_panel(case, path)
+        back = read_panel(path)
+        assert back.scores.shape == case.scores.shape
+        assert list(back.score_ids) == list(case.score_ids)
+
+
+def _ldpred3_result(*, fid=("F1", "F2"), iid=("I1", "I2"), inference=None):
+    return SimpleNamespace(
+        sample_fid=np.array(fid, dtype=object),
+        sample_iid=np.array(iid, dtype=object),
+        scores=np.array([0.1, 0.2]), var_index=np.array([0]),
+        harmonize_log={}, qc_log={}, inference=inference,
+        variant_id=np.array(["rs1"], dtype=object),
+        chrom=np.array(["1"], dtype=object), pos=np.array([100]),
+        effect_allele=np.array(["A"], dtype=object),
+        other_allele=np.array(["G"], dtype=object),
+        beta_adjusted=np.array([0.3]), af=np.array([0.2]), sd=np.array([0.5]))
+
+
+def test_panel_from_sumstats_accepts_missing_inference_and_preserves_mapping(
+        monkeypatch):
+    import ldpred3
+
+    results = iter([_ldpred3_result(inference=None),
+                    _ldpred3_result(inference={"n_chains": 50,
+                                               "shrink_corr": 0.7})])
+    monkeypatch.setattr(ldpred3, "run_ldpred3_prs",
+                        lambda *args, **kwargs: next(results))
+    panel = panel_from_sumstats({"one": "one.tsv", "two": "two.tsv"},
+                                "target")
+    assert panel.meta[0]["inference"] == {}
+    assert panel.meta[1]["inference"] == {"n_chains": 50,
+                                           "shrink_corr": 0.7}
+
+
+def test_panel_from_sumstats_compares_both_fid_and_iid(monkeypatch):
+    import ldpred3
+
+    results = iter([_ldpred3_result(),
+                    _ldpred3_result(fid=("OTHER", "F2"))])
+    monkeypatch.setattr(ldpred3, "run_ldpred3_prs",
+                        lambda *args, **kwargs: next(results))
+    with pytest.raises(RuntimeError, match="different sample order"):
+        panel_from_sumstats({"one": "one.tsv", "two": "two.tsv"}, "target")
+
+
+def test_panel_from_sumstats_recovers_explicit_inference_controls(monkeypatch):
+    import ldpred3
+
+    result = _ldpred3_result(inference={"h2_est": 0.2,
+                                        "n_chains_kept": 23})
+    monkeypatch.setattr(ldpred3, "run_ldpred3_prs",
+                        lambda *args, **kwargs: result)
+    panel = panel_from_sumstats(
+        ["one.tsv"], "target", infer=True,
+        infer_params={"n_chains": 50, "shrink_corr": 0.6})
+    inference = panel.meta[0]["inference"]
+    assert inference["n_chains_kept"] == 23
+    assert inference["n_chains"] == 50
+    assert inference["shrink_corr"] == pytest.approx(0.6)
+    arch = architectures_from_panel(panel, n_eff=[20_000])
+    assert screen(arch, min_variants=1).keep.tolist() == [True]
+
+    # The retained count does not reveal how many chains were attempted.
+    panel = panel_from_sumstats(["one.tsv"], "target", infer=True)
+    assert "n_chains" not in panel.meta[0]["inference"]
+
+    no_summary = _ldpred3_result(inference=None)
+    monkeypatch.setattr(ldpred3, "run_ldpred3_prs",
+                        lambda *args, **kwargs: no_summary)
+    panel = panel_from_sumstats(
+        ["one.tsv"], "target", auto_chains=40,
+        infer_params={"n_chains": 50, "shrink_corr": 0.7})
+    assert panel.meta[0]["inference"] == {"n_chains": 40,
+                                           "shrink_corr": 0.7}
+
+
+def _weight_panel(tables):
+    k = len(tables)
+    return ScorePanel(
+        scores=np.zeros((2, k)), sample_fid=np.array(["F1", "F2"]),
+        sample_iid=np.array(["I1", "I2"]),
+        score_ids=np.array([f"s{i}" for i in range(k)], dtype=object),
+        standardized=np.ones(k, dtype=bool), weights=tables)
+
+
+def _weight_table(a1, a2, weight, variant_id="rs1"):
+    return {"id": np.array([variant_id], dtype=object),
+            "chrom": np.array(["1"], dtype=object), "pos": np.array([100]),
+            "a1": np.array([a1], dtype=object),
+            "a2": np.array([a2], dtype=object),
+            "weight": np.array([weight]), "af": np.array([0.2]),
+            "sd": np.array([0.5])}
+
+
+def test_combine_weights_preserves_multiallelic_variants_at_one_position():
+    panel = _weight_panel([_weight_table("A", "G", 1.0, "rs_ag"),
+                           _weight_table("A", "C", 2.0, "rs_ac")])
+    fit = SimpleNamespace(beta=np.ones(2), score_ids=panel.score_ids)
+    out = combine_weights(panel, fit)
+    assert out["weight"].size == 2
+    assert set(zip(out["a1"], out["a2"])) == {("A", "G"), ("A", "C")}
+
+
+def test_combine_weights_reports_exact_cancellation():
+    panel = _weight_panel([_weight_table("A", "G", 1.0),
+                           _weight_table("G", "A", 1.0)])
+    fit = SimpleNamespace(beta=np.ones(2), score_ids=panel.score_ids)
+    with pytest.raises(ValueError, match="cancel exactly"):
+        combine_weights(panel, fit)

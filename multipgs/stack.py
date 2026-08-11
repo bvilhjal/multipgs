@@ -10,9 +10,9 @@ Given a training cohort with
 * the target phenotype, plus the usual covariates,
 
 it fits a penalized regression of the phenotype on the scores and returns one
-combined score. Genetically correlated traits carry information the target
-trait's own GWAS is too small to see, so the combination beats the single-trait
-score, and beats it by most where the target GWAS is smallest.
+combined score. Genetically correlated traits can carry information the target
+trait's own GWAS is too small to see, so the combination can improve on the
+single-trait score when those auxiliary signals generalize.
 
 Model selection here is **Cross-Model Selection and Averaging** (CMSA, Privé,
 Aschard & Blum, `Genetics 212:65-74, 2019
@@ -29,9 +29,9 @@ part; each fold keeps the coefficients at *its own* best
 :math:`(\\alpha, \\lambda)`; the returned model is the average of those fold
 coefficient vectors. Two properties matter in practice:
 
-* No separate tuning cohort is consumed — the whole training set is used, and
-  every individual's phenotype is out-of-sample for the fold that selected the
-  model it contributed to.
+* No separate tuning cohort is consumed. Each held-out fold selects one
+  coefficient vector, and those vectors are averaged. This ordinary CMSA loop
+  tunes the returned estimator; the separate nested outer loop assesses it.
 * Averaging over folds is a variance reduction. With ``K`` correlated scores
   and a lasso penalty, *which* of a set of near-duplicate scores gets picked is
   close to arbitrary; averaging spreads the weight over them instead of
@@ -41,9 +41,10 @@ What this module does **not** do is protect you from sample overlap. If
 individuals in the training cohort also contributed to the GWAS behind one of
 the ``K`` input scores, that score is partly fitted to its own training data,
 CMSA will happily reward it, and the resulting accuracy is optimistic. The bias
-is proportional to the fraction of the assessment sample that was also in the
-discovery sample, and overlap is frequently not visible in public summary
-statistics at all (Wray et al., `Nat Rev Genet 14:507-515, 2013
+generally increases with overlap, but its magnitude also depends on discovery
+design, score construction, relatedness and effect-size estimation. Overlap is
+frequently not visible in public summary statistics at all (Wray et al.,
+`Nat Rev Genet 14:507-515, 2013
 <https://doi.org/10.1038/nrg3457>`_). Many PGS Catalog scores are UK
 Biobank-derived — check each score's development samples in its Catalog
 metadata. Overlap has to be excluded when the panel is built; no amount of
@@ -81,10 +82,11 @@ class FoldFit:
 
     ``loss`` and ``null_loss`` are on the held-out part: mean squared error for
     ``gaussian``, mean binomial deviance for ``binomial``. ``null_loss`` is the
-    loss of the covariate-only model (the solution at the largest
-    :math:`\\lambda`), so ``loss < null_loss`` is exactly the statement that the
-    scores helped in this fold. A fold that fails that test is recorded with
-    ``used=False`` and left out of the average.
+    loss of the explicit unpenalized baseline: covariates plus any scores whose
+    penalty factor is zero. ``used`` says whether this fold's coefficient vector
+    entered the returned CMSA average. It is therefore true for every fold when
+    the nested assessment passes the incremental-signal gate, and false for
+    every fold when the returned fit is the full-data baseline.
     """
 
     fold: int
@@ -191,33 +193,29 @@ class MultiPGSFit:
 
     @property
     def n_folds_used(self):
-        """Folds that beat their covariate-only model and entered the average."""
+        """Fold coefficient vectors that entered the returned CMSA average."""
         return int(sum(f.used for f in self.folds))
 
     @property
     def cv_r2(self):
-        """Cross-validated R² *of the scores*, pooled over the held-out folds.
+        """Nested-CV predictive R² gain from the penalized scores.
 
-        Incremental over the covariate-only model, so it is the same quantity
-        :func:`multipgs.incremental_r2` reports in a held-out cohort, and
-        directly comparable to it. Without covariates it reduces to the plain
-        R².
+        This is ``(SSE_baseline - SSE_inner_CMSA) / SST`` over untouched outer
+        folds.
+        The baseline contains covariates and any explicitly unpenalized scores.
+        It is a predictive loss gain, not :func:`multipgs.incremental_r2`, which
+        recalibrates the supplied score by OLS in the assessment cohort.
 
-        Every training individual is scored by the fold that held them out, at
-        a penalty chosen by the *other* folds — so neither the coefficients nor
-        the penalty saw the individual being scored. That makes this an
-        out-of-sample number without a separate held-out cohort, which is the
-        practical reason to use CMSA at all.
+        Every individual is scored by an inner CMSA fit built entirely inside
+        that individual's outer-training set. Neither its coefficients, penalty
+        choices nor penalty grid saw the outer assessment phenotype.
 
-        It is still not a substitute for an independent cohort. It is slightly
-        conservative about the returned model (which averages the folds, and is
-        usually a little better than any single one), and it cannot see the
-        failure that matters most: if this cohort overlaps the GWAS behind the
-        input scores, every number here is inflated and no amount of internal
-        cross-validation will say so.
+        It is still not a substitute for an independent cohort. Because the
+        nested estimators train on fewer rows, the estimate may be conservative
+        under a stable learning curve, but the direction is not guaranteed. It
+        also cannot detect overlap with the GWAS behind the input scores.
 
-        ``None`` for a binomial fit (use ``log["cv_loss"]``, a deviance) or
-        when there were too few folds to hold one out.
+        ``None`` for a binomial fit; use ``log["cv_loss"]`` there (a deviance).
         """
         return self.log.get("cv_r2")
 
@@ -247,9 +245,10 @@ class MultiPGSFit:
             lines.append(f"  cross-validated R2: {self.log['cv_r2']:.4f}")
         if "null_model" in self.log:
             lines.append(
-                "  Cross-validation did not beat the covariate-only model: "
-                "the returned model is null (beta == 0). Treat that as 'the "
-                "scores did not predict here', not as a small effect.")
+                "  Nested cross-validation did not establish incremental "
+                "signal: the returned fit is the unpenalized baseline (the "
+                "null incremental model). Treat "
+                "that as 'the penalized scores did not add prediction here'.")
         else:
             top = self.selected(top=5)
             if top:
@@ -316,12 +315,106 @@ def _standardize(X, idx):
     variance in the training set carries no information, and dividing by its
     zero standard deviation would poison the whole fit.
     """
-    sub = X[idx]
+    sub = X if idx is None else X[idx]
     center = sub.mean(axis=0)
     scale = sub.std(axis=0)
     dead = scale <= 1e-12
     scale = np.where(dead, 1.0, scale)
     return center, scale, dead
+
+
+def _gaussian_stats(X, y, idx=None):
+    """Stable sufficient statistics for a Gaussian fit on ``idx``.
+
+    All moments use the first row as a fixed origin. Held-out statistics formed
+    with the same origin can therefore be subtracted from their parent without
+    the catastrophic cancellation of raw ``E[X**2] - E[X]**2`` moments. Row
+    chunks bound the temporary allocation while BLAS still forms each Gram.
+    """
+    return _gaussian_stats_at_origin(X, y, idx)
+
+
+def _gaussian_stats_at_origin(X, y, idx=None, *, reference=None):
+    """Implementation allowing child statistics to share a parent origin."""
+    rows = None if idx is None else np.asarray(idx, dtype=np.int64).ravel()
+    n = int(X.shape[0] if rows is None else rows.size)
+    if n == 0:
+        raise ValueError("cannot form Gaussian statistics from zero rows")
+    first = 0 if rows is None else int(rows[0])
+    if reference is None:
+        origin_x = np.array(X[first], dtype=float, copy=True)
+        origin_y = float(y[first])
+    else:
+        origin_x = reference["origin_x"]
+        origin_y = reference["origin_y"]
+
+    D = X.shape[1]
+    sum_xc = np.zeros(D)
+    xtx_c = np.zeros((D, D))
+    sum_yc = 0.0
+    xty_c = np.zeros(D)
+    step = max(1, 2_000_000 // max(D, 1))
+    for start in range(0, n, step):
+        stop = min(start + step, n)
+        take = slice(start, stop) if rows is None else rows[start:stop]
+        Xc = np.array(X[take], dtype=float, copy=True)
+        Xc -= origin_x
+        yc = np.asarray(y[take], dtype=float) - origin_y
+        sum_xc += np.sum(Xc, axis=0)
+        xtx_c += Xc.T @ Xc
+        sum_yc += float(np.sum(yc))
+        xty_c += Xc.T @ yc
+    return {
+        "n": n,
+        "origin_x": origin_x,
+        "sum_xc": sum_xc,
+        "xtx_c": (xtx_c + xtx_c.T) * 0.5,
+        "origin_y": origin_y,
+        "sum_yc": sum_yc,
+        "xty_c": xty_c,
+    }
+
+
+def _subtract_gaussian_stats(total, held_out):
+    """Sufficient statistics for ``total \\ held_out``."""
+    n = int(total["n"] - held_out["n"])
+    if n <= 0:
+        raise ValueError("held-out rows exhaust the Gaussian training set")
+    if (not np.array_equal(total["origin_x"], held_out["origin_x"])
+            or total["origin_y"] != held_out["origin_y"]):
+        raise ValueError("Gaussian statistics must share a centering origin")
+    return {
+        "n": n,
+        "origin_x": total["origin_x"],
+        "sum_xc": total["sum_xc"] - held_out["sum_xc"],
+        "xtx_c": total["xtx_c"] - held_out["xtx_c"],
+        "origin_y": total["origin_y"],
+        "sum_yc": float(total["sum_yc"] - held_out["sum_yc"]),
+        "xty_c": total["xty_c"] - held_out["xty_c"],
+    }
+
+
+def _gaussian_system(stats):
+    """Standardization, Gram and response covariance from raw statistics."""
+    n = stats["n"]
+    mean_xc = stats["sum_xc"] / n
+    center = stats["origin_x"] + mean_xc
+    var = np.diag(stats["xtx_c"]) / n - mean_xc * mean_xc
+    # Subtraction of two large cross-products can leave tiny negative round-off.
+    scale0 = np.sqrt(np.maximum(var, 0.0))
+    dead = scale0 <= 1e-12
+    scale = np.where(dead, 1.0, scale0)
+    cov = stats["xtx_c"] / n - np.outer(mean_xc, mean_xc)
+    G = cov / scale[:, None] / scale[None, :]
+    mean_yc = stats["sum_yc"] / n
+    ybar = stats["origin_y"] + mean_yc
+    r = (stats["xty_c"] / n - mean_xc * mean_yc) / scale
+    if dead.any():
+        G[dead, :] = 0.0
+        G[:, dead] = 0.0
+        r[dead] = 0.0
+    G = (G + G.T) * 0.5
+    return center, scale, dead, G, r, float(ybar)
 
 
 def _folds(n, n_folds, rng, stratify=None):
@@ -357,10 +450,11 @@ def _binomial_loss(y, eta):
 # ---------------------------------------------------------------------------
 
 def multi_pgs_fit(scores, y, *, covar=None, family="gaussian", alpha=1.0,
-                  n_folds=10, n_lambda=100, lambda_min_ratio=None, n_abort=10,
-                  penalty_factor=None, unpenalized_scores=None, dfmax=None,
-                  score_ids=None, covar_ids=None, missing="raise", seed=None,
-                  tol=1e-7, max_iter=1000):
+                  n_folds=10, assessment_folds=5, n_lambda=100,
+                  lambda_min_ratio=None, n_abort=10, penalty_factor=None,
+                  unpenalized_scores=None, dfmax=None, score_ids=None,
+                  covar_ids=None, missing="raise", seed=None, tol=1e-7,
+                  max_iter=1000):
     """Fit a multi-PGS combination by cross-model selection and averaging.
 
     Parameters
@@ -373,20 +467,26 @@ def multi_pgs_fit(scores, y, *, covar=None, family="gaussian", alpha=1.0,
         Target phenotype. Coded 0/1 for ``family="binomial"``.
     covar : array, ``(n, P)``, optional
         Covariates (age, sex, genotyping batch, principal components). They are
-        fitted **unpenalized inside the same regression**, which is not the
-        same as regressing them out first — the scores are selected against
-        what the covariates cannot already explain.
+        fitted **unpenalized inside the same regression**. For Gaussian loss
+        this is algebraically equivalent to residualizing within each training
+        fold, while retaining coefficients and predictions on the original
+        scale; joint fitting extends the same API to binomial loss.
     family : {"gaussian", "binomial"}
         Squared-error or logistic loss.
     alpha : float or sequence of float
         Elastic-net mixing: 1.0 is the lasso, 0.0 ridge. A sequence is a grid,
-        and each fold picks its own best value from it. The lasso default
-        follows the paper.
+        and each fold picks its own best value from it. The sparse lasso is the
+        package default; the source study used its own ``cv.glmnet`` tuning.
     n_folds : int
         CMSA folds. 10 is the ``bigstatsr`` default.
+    assessment_folds : int
+        Outer folds for the nested assessment and its inner CMSA fits. This is
+        separate from ``n_folds`` so nested assessment does not make the final
+        estimator needlessly expensive; 5 is normally enough for the gate.
     n_lambda, lambda_min_ratio : int, float
-        Penalty grid, computed once on the full training set so that fold
-        results are comparable.
+        Penalty grid. The returned CMSA uses one grid computed on the full
+        training set so its fold results are comparable; every nested outer
+        assessment constructs a separate grid from its training rows only.
     n_abort : int
         Stop walking a fold's path after this many consecutive penalties fail
         to improve its held-out loss.
@@ -395,8 +495,9 @@ def multi_pgs_fit(scores, y, *, covar=None, family="gaussian", alpha=1.0,
         the model.
     unpenalized_scores : sequence, optional
         Convenience for the above: score indices or ids to leave unpenalized.
-        The usual use is the target trait's own score, so the combination can
-        only add to it.
+        The usual use is the target trait's own score. It then remains in the
+        fitted baseline if the penalized additions fail the nested gate; this
+        does not guarantee that additions improve an independent cohort.
     dfmax : int, optional
         Abandon a path once it holds more than this many non-zero scores.
     score_ids, covar_ids : sequence, optional
@@ -428,6 +529,7 @@ def multi_pgs_fit(scores, y, *, covar=None, family="gaussian", alpha=1.0,
         if vals.size < 2:
             raise ValueError("y has only one class")
 
+    S_unimputed = S
     S, n_imp = _handle_missing(S, missing, "scores")
     if covar is None:
         C = np.zeros((n, 0))
@@ -436,7 +538,10 @@ def multi_pgs_fit(scores, y, *, covar=None, family="gaussian", alpha=1.0,
         C = _as_2d(covar, "covar")
         if C.shape[0] != n:
             raise ValueError(f"covar has {C.shape[0]} rows, scores has {n}")
+        C_unimputed = C
         C, n_imp_c = _handle_missing(C, missing, "covar")
+    if covar is None:
+        C_unimputed = C
     P = C.shape[1]
 
     score_ids = (np.array([f"score_{j}" for j in range(K)], dtype=object)
@@ -445,6 +550,10 @@ def multi_pgs_fit(scores, y, *, covar=None, family="gaussian", alpha=1.0,
                  if covar_ids is None else np.asarray(covar_ids, dtype=object))
     if score_ids.shape != (K,) or covar_ids.shape != (P,):
         raise ValueError("score_ids/covar_ids must match the column counts")
+    for ids, name in ((score_ids, "score_ids"), (covar_ids, "covar_ids")):
+        normalized = [str(value) for value in ids]
+        if len(set(normalized)) != len(normalized):
+            raise ValueError(f"{name} must be unique after string conversion")
 
     # Penalty factors: scores as asked, covariates always free.
     if penalty_factor is None:
@@ -462,74 +571,117 @@ def multi_pgs_fit(scores, y, *, covar=None, family="gaussian", alpha=1.0,
         raise ValueError("every score is unpenalized; there is nothing for "
                          "the penalty to select over")
 
-    X = np.hstack([S, C])
+    # Do not copy the dominant n x K allocation when there are no covariates.
+    X = S if P == 0 else np.hstack([S, C])
+    # Nested assessment must learn imputation means without looking at outer
+    # validation rows. Keep the original non-finite matrix only when needed;
+    # the final estimator still uses means learned from all of its training data.
+    X_unimputed = None
+    if n_imp + n_imp_c:
+        X_unimputed = (S_unimputed if P == 0
+                       else np.hstack([S_unimputed, C_unimputed]))
     pf = np.concatenate([pf_s, np.zeros(P)])
 
     alphas = np.atleast_1d(np.asarray(alpha, dtype=float)).ravel()
-    if np.any(alphas < 0) or np.any(alphas > 1):
-        raise ValueError("alpha must lie in [0, 1]")
+    if (alphas.size == 0 or not np.all(np.isfinite(alphas))
+            or np.any(alphas < 0) or np.any(alphas > 1)):
+        raise ValueError("alpha must be finite, non-empty and lie in [0, 1]")
 
     n_folds = int(n_folds)
     if not 2 <= n_folds <= n:
         raise ValueError(f"n_folds must be in [2, n={n}], got {n_folds}")
+    assessment_folds = int(assessment_folds)
+    if assessment_folds < 2:
+        raise ValueError("assessment_folds must be at least 2")
+    if n < 3:
+        raise ValueError("nested assessment needs at least 3 individuals")
+    n_assess = min(assessment_folds, n)
+    min_outer_train = n - (n + n_assess - 1) // n_assess
+    assessment_inner = min(n_folds, n_assess, min_outer_train)
+    if assessment_inner < 2:
+        raise ValueError(
+            "assessment_folds leaves fewer than 2 outer-training individuals")
 
     rng = np.random.default_rng(seed)
     parts = _folds(n, n_folds, rng, stratify=y if family == "binomial" else None)
 
-    # One penalty grid for every fold, measured on the full training set at the
-    # covariate-only fit. cv.glmnet does the same: fold-specific grids would
+    # One penalty grid for every returned-CMSA fold, measured on the full data at
+    # the unpenalized baseline. cv.glmnet does the same: fold-specific grids would
     # not be comparable, and averaging coefficients across them would be
     # averaging across different problems.
-    center, scale, dead = _standardize(X, np.arange(n))
-    Xs_full = (X - center) / scale
-    lambdas = _lambda_grid_for(Xs_full, y, pf, family, alphas.min(), n_lambda,
-                               lambda_min_ratio, K)
+    gaussian_stats = _gaussian_stats(X, y) if family == "gaussian" else None
+    if gaussian_stats is not None:
+        center, scale, dead, _, _, _ = _gaussian_system(gaussian_stats)
+        lambdas = _lambda_grid_for_gaussian_stats(
+            gaussian_stats, pf, alphas.min(), n_lambda, lambda_min_ratio, K)
+    else:
+        center, scale, dead = _standardize(X, None)
+        Xs_full = (X - center) / scale
+        lambdas = _lambda_grid_for(Xs_full, y, pf, family, alphas.min(),
+                                   n_lambda, lambda_min_ratio, K)
 
     fits = []
-    results = []
     beta_sum = np.zeros(K + P)
     intercept_sum = 0.0
     for k, val_idx in enumerate(parts):
-        tr_idx = np.setdiff1d(np.arange(n), val_idx, assume_unique=False)
+        tr_idx = _complement(n, val_idx)
         if tr_idx.size == 0 or val_idx.size == 0:
             continue
+        if gaussian_stats is None:
+            tr_stats = None
+        else:
+            held_stats = _gaussian_stats_at_origin(
+                X, y, val_idx, reference=gaussian_stats)
+            tr_stats = _subtract_gaussian_stats(gaussian_stats, held_stats)
         best = _fit_one_fold(X, y, tr_idx, val_idx, pf, alphas, lambdas,
-                             family, n_abort, dfmax, tol, max_iter)
-        used = best["loss"] < best["null_loss"]
+                             family, n_abort, dfmax, tol, max_iter,
+                             gaussian_stats=tr_stats)
         fits.append(FoldFit(fold=k, alpha=best["alpha"], lam=best["lam"],
                             lam_index=best["lam_index"], loss=best["loss"],
                             null_loss=best["null_loss"],
                             n_nonzero=int(np.count_nonzero(best["beta"][:K])),
-                            used=bool(used)))
-        results.append(best)
-        if used:
-            beta_sum += best["beta"]
-            intercept_sum += best["intercept"]
+                            used=False))
+        # Ordinary CMSA averages every fold-selected vector. Filtering this sum
+        # by whether a fold happened to beat its own null is itself selection on
+        # the validation data and biases the returned model.
+        beta_sum += best["beta"]
+        intercept_sum += best["intercept"]
+
+    if not fits:
+        raise RuntimeError("no non-empty CMSA folds were fitted")
+    cmsa_beta = beta_sum / len(fits)
+    cmsa_intercept = intercept_sum / len(fits)
+
+    cv_loss, cv_null_loss, cv_gain_se, inner_folds = _nested_cv_assessment(
+        X, y, pf, alphas, family, n_assess, assessment_inner, n_lambda,
+        lambda_min_ratio, n_abort, dfmax, tol, max_iter, K, seed,
+        gaussian_stats=gaussian_stats, X_unimputed=X_unimputed)
+
+    # The outer folds are untouched by grid construction, tuning and fitting.
+    # A one-standard-error gate avoids turning a chance-positive null estimate
+    # into a dense deployed model. The scale-relative floor prevents arithmetic
+    # noise between two effectively exact baseline fits from passing the gate.
+    loss_scale = (float(np.var(y)) if family == "gaussian" else 1.0)
+    gain_threshold = max(cv_gain_se, 1e-12 * max(loss_scale, 1.0))
+    gate_passed = (np.isfinite(cv_loss) and np.isfinite(cv_null_loss)
+                   and (cv_null_loss - cv_loss) > gain_threshold)
+    if gate_passed:
+        beta_raw = cmsa_beta
+        intercept = cmsa_intercept
+        for f in fits:
+            f.used = True
+    else:
+        beta_raw, intercept = _fit_unpenalized_baseline(
+            X, y, np.arange(n), pf, family, gaussian_stats=gaussian_stats)
 
     n_used = sum(f.used for f in fits)
-    cv_loss, cv_null_loss = _honest_cv_loss(results, n)
-
-    # Two gates, and the pooled one decides. A fold selects on a few dozen
-    # individuals, so under pure noise roughly half of them beat their own
-    # null by chance, and the per-fold gate alone lets a dense model of
-    # nothing through. The pooled statistic uses every individual once, at a
-    # penalty chosen by the *other* folds, so nothing in it was tuned on the
-    # data it scores.
-    if n_used and cv_loss < cv_null_loss:
-        beta_raw = beta_sum / n_used
-        intercept = intercept_sum / n_used
-    else:
-        beta_raw = np.zeros(K + P)
-        ybar = float(np.mean(y))
-        if family == "gaussian":
-            intercept = ybar
-        else:
-            ybar = min(max(ybar, 1e-6), 1 - 1e-6)
-            intercept = float(np.log(ybar / (1 - ybar)))
 
     log = {
         "n": int(n), "n_scores": int(K), "n_covar": int(P),
         "n_folds": len(fits), "n_folds_used": int(n_used),
+        "assessment_folds": int(n_assess),
+        "assessment_inner_folds": int(inner_folds),
+        "cv_scheme": "nested_cmsa",
         "family": family, "alphas": alphas.tolist(),
         "n_lambda": int(lambdas.size),
         "lambda_max": float(lambdas[0]), "lambda_min": float(lambdas[-1]),
@@ -539,20 +691,21 @@ def multi_pgs_fit(scores, y, *, covar=None, family="gaussian", alpha=1.0,
         "cv_loss": float(cv_loss) if np.isfinite(cv_loss) else None,
         "cv_null_loss": (float(cv_null_loss) if np.isfinite(cv_null_loss)
                          else None),
+        "cv_gain_se": (float(cv_gain_se) if np.isfinite(cv_gain_se) else None),
+        "cv_gain_threshold": (float(gain_threshold)
+                              if np.isfinite(gain_threshold) else None),
     }
     if family == "gaussian" and np.isfinite(cv_loss):
-        # Incremental over the covariate-only model, not the full model's R².
-        # The scores are what is being assessed; with covariates in the fit,
-        # 1 - cv_loss/var(y) would credit them with age and sex as well, and
-        # would not be comparable to the held-out number
-        # :func:`multipgs.incremental_r2` reports for the same fit.
+        # Predictive SSE gain over the explicit unpenalized baseline. Unlike
+        # incremental_r2(), this does not recalibrate predictions on assessment
+        # outcomes; that is what keeps outer assessment outcomes untouched.
         var_y = float(np.mean((y - y.mean()) ** 2))
         log["cv_r2"] = (float((cv_null_loss - cv_loss) / var_y)
                         if var_y > 0 else 0.0)
-    if np.all(beta_raw == 0):
+    if not gate_passed:
         log["null_model"] = (
-            "the cross-validated fit did not beat its covariate-only model; "
-            "coefficients are all zero")
+            "nested cross-validation did not establish incremental signal; "
+            "returned the full-data unpenalized baseline")
 
     return MultiPGSFit(
         beta=beta_raw[:K], intercept=float(intercept),
@@ -561,47 +714,147 @@ def multi_pgs_fit(scores, y, *, covar=None, family="gaussian", alpha=1.0,
         family=family, folds=fits, log=log)
 
 
-def _honest_cv_loss(results, n):
-    """Pooled held-out loss at a penalty each fold did not choose for itself.
+def _complement(n, idx):
+    keep = np.ones(n, dtype=bool)
+    keep[np.asarray(idx, dtype=int)] = False
+    return np.flatnonzero(keep)
 
-    Evaluating a fold at the ``(alpha, lambda)`` *it* selected on *its own*
-    validation individuals is selection on the assessment set, and reports a
-    positive R² for pure noise. Taking the penalty from the other folds
-    removes that: for fold ``k`` the operating point is the median lambda index
-    and modal alpha index chosen by folds ``j != k``, none of which saw fold
-    ``k``'s individuals at any stage. Both losses are means over individuals,
-    so pooling is the size-weighted mean of the per-fold losses.
 
-    Slightly conservative as an estimate of the returned model, which averages
-    the folds and is normally a little better than any one of them. Returns
-    ``(inf, inf)`` when there are too few folds to hold one out.
+def _impute_from_training(X, train):
+    """Mean-impute every row using means learned only on ``train``."""
+    out = np.array(X, dtype=float, copy=True)
+    bad = ~np.isfinite(out)
+    if not bad.any():
+        return out
+    observed = out[train]
+    finite = np.isfinite(observed)
+    counts = np.sum(finite, axis=0)
+    sums = np.sum(np.where(finite, observed, 0.0), axis=0)
+    means = np.divide(sums, counts, out=np.zeros_like(sums), where=counts > 0)
+    # A column absent from this training split is constant for fitting purposes.
+    # Zero is arbitrary but finite; its fitted coefficient is necessarily zero.
+    rows, cols = np.nonzero(bad)
+    out[rows, cols] = means[cols]
+    return out
+
+
+def _fit_unpenalized_baseline(X, y, idx, pf, family, *, gaussian_stats=None):
+    """Fit intercept plus every ``pf == 0`` column on ``idx``.
+
+    The returned coefficients are on the raw input scale. This is deliberately
+    independent of the elastic-net grid: ridge has no finite lambda at which its
+    penalized coefficients are exactly zero.
     """
-    if len(results) < 2:
-        return np.inf, np.inf
-    a_sel = np.array([r["alpha_index"] for r in results])
-    l_sel = np.array([r["lam_index"] for r in results])
-    sizes = np.array([r["n_val"] for r in results], dtype=float)
+    if family == "gaussian":
+        stats = (_gaussian_stats(X, y, idx) if gaussian_stats is None
+                 else gaussian_stats)
+        center, scale, _, G, r, ybar = _gaussian_system(stats)
+        coef, _ = _coord.unpenalized_fit(G, r, pf)
+        beta = coef / scale
+        return beta, float(ybar - np.dot(beta, center))
 
-    total = 0.0
+    center, scale, _ = _standardize(X, idx)
+    Xs = np.ascontiguousarray((X[idx] - center) / scale)
+    b0, coef = _binomial_baseline(Xs, y[idx], pf)
+    beta = coef / scale
+    return beta, float(b0 - np.dot(beta, center))
+
+
+def _nested_cv_assessment(X, y, pf, alphas, family, n_outer, n_inner,
+                          n_lambda, lambda_min_ratio, n_abort, dfmax, tol,
+                          max_iter, K, seed, *, gaussian_stats=None,
+                          X_unimputed=None):
+    """Nested outer-fold assessment of an inner CMSA estimator.
+
+    For each outer fold, all grid construction, fold selection and coefficient
+    averaging happens inside its training rows. The untouched outer rows score
+    both that inner CMSA and an explicit unpenalized baseline. The standard
+    error is across outer-fold mean loss gains and powers the conservative gate.
+    """
+    n = y.size
+    rng = np.random.default_rng(seed)
+    outer_parts = _folds(
+        n, n_outer, rng, stratify=y if family == "binomial" else None)
+    total_loss = 0.0
     total_null = 0.0
-    for k, r in enumerate(results):
-        others = np.ones(len(results), dtype=bool)
-        others[k] = False
-        counts = np.bincount(a_sel[others])
-        a_idx = int(np.argmax(counts))
-        l_idx = int(np.median(l_sel[others]))
-        table = r["loss_table"]
-        row = table[a_idx]
-        if not np.isfinite(row[l_idx]):
-            # Early stopping never reached that penalty for this alpha; take
-            # the nearest one that was evaluated.
-            evaluated = np.flatnonzero(np.isfinite(row))
-            if evaluated.size == 0:
-                return np.inf, np.inf
-            l_idx = int(evaluated[np.argmin(np.abs(evaluated - l_idx))])
-        total += sizes[k] * row[l_idx]
-        total_null += sizes[k] * r["null_loss"]
-    return total / n, total_null / n
+    fold_gains = []
+    inner_used = None
+
+    for val in outer_parts:
+        tr = _complement(n, val)
+        if val.size == 0 or tr.size < 2:
+            return np.inf, np.inf, np.inf, 0
+        Xk = X
+        if X_unimputed is not None:
+            Xk = _impute_from_training(X_unimputed, tr)
+        # Assessment preprocessing must be a function of outer-training rows
+        # alone. Re-forming this parent statistic is deliberate: subtracting a
+        # held-out statistic is algebraically equivalent, but its finite-
+        # precision result can still depend on the outer phenotype through the
+        # common numerical origin. The direct statistic makes the independence
+        # contract exact, not merely true in real arithmetic.
+        tr_stats = (_gaussian_stats(Xk, y, tr)
+                    if gaussian_stats is not None else None)
+        if tr_stats is not None:
+            lambdas = _lambda_grid_for_gaussian_stats(
+                tr_stats, pf, alphas.min(), n_lambda, lambda_min_ratio, K)
+        else:
+            c, s, _ = _standardize(Xk, tr)
+            Xs = (Xk[tr] - c) / s
+            lambdas = _lambda_grid_for(
+                Xs, y[tr], pf, family, alphas.min(), n_lambda,
+                lambda_min_ratio, K)
+
+        baseline_beta, baseline_intercept = _fit_unpenalized_baseline(
+            Xk, y, tr, pf, family, gaussian_stats=tr_stats)
+        pred0 = baseline_intercept + Xk[val] @ baseline_beta
+        null_loss = (_gaussian_loss(y[val], pred0) if family == "gaussian"
+                     else _binomial_loss(y[val], pred0))
+
+        ni = min(int(n_inner), tr.size)
+        if ni < 2:
+            return np.inf, np.inf, np.inf, 0
+        inner_used = ni if inner_used is None else min(inner_used, ni)
+        inner_local = _folds(
+            tr.size, ni, rng,
+            stratify=y[tr] if family == "binomial" else None)
+        beta_sum = np.zeros(Xk.shape[1])
+        intercept_sum = 0.0
+        fitted = 0
+        for local_val in inner_local:
+            inner_val = tr[local_val]
+            inner_tr = tr[_complement(tr.size, local_val)]
+            if inner_val.size == 0 or inner_tr.size == 0:
+                continue
+            if tr_stats is None:
+                train_stats = None
+            else:
+                held_stats = _gaussian_stats_at_origin(
+                    Xk, y, inner_val, reference=tr_stats)
+                train_stats = _subtract_gaussian_stats(tr_stats, held_stats)
+            best = _fit_one_fold(
+                Xk, y, inner_tr, inner_val, pf, alphas, lambdas, family,
+                n_abort, dfmax, tol, max_iter, gaussian_stats=train_stats)
+            beta_sum += best["beta"]
+            intercept_sum += best["intercept"]
+            fitted += 1
+        if fitted < 2:
+            return np.inf, np.inf, np.inf, 0
+
+        beta = beta_sum / fitted
+        intercept = intercept_sum / fitted
+        pred = intercept + Xk[val] @ beta
+        loss = (_gaussian_loss(y[val], pred) if family == "gaussian"
+                else _binomial_loss(y[val], pred))
+        total_loss += val.size * loss
+        total_null += val.size * null_loss
+        fold_gains.append(null_loss - loss)
+
+    gains = np.asarray(fold_gains, dtype=float)
+    gain_se = (float(np.std(gains, ddof=1) / np.sqrt(gains.size))
+               if gains.size > 1 else np.inf)
+    return (total_loss / n, total_null / n, gain_se,
+            int(inner_used or 0))
 
 
 def _resolve_columns(sel, ids, K):
@@ -631,8 +884,8 @@ def _lambda_grid_for(Xs, y, pf, family, alpha, n_lambda, ratio, K):
         r = Xs.T @ yc / n
         _, grad = _coord.unpenalized_fit(G, r, pf)
     else:
-        # The IRLS gradient at the covariate-only fit. Weights at the null
-        # model are p(1-p) with p the fitted covariate-only probability; the
+        # The IRLS gradient at the unpenalized baseline. Weights there are
+        # p(1-p) with p the fitted baseline probability; the
         # working gradient reduces to X^T (y - p) / n.
         p = _null_probabilities(Xs, y, pf)
         grad = Xs.T @ (y - p) / n
@@ -640,16 +893,30 @@ def _lambda_grid_for(Xs, y, pf, family, alpha, n_lambda, ratio, K):
                               lambda_min_ratio=ratio, n=n, n_penalized=K)
 
 
-def _null_probabilities(Xs, y, pf, *, max_iter=50, tol=1e-9):
-    """Fitted probabilities of the intercept + unpenalized-columns model."""
+def _lambda_grid_for_gaussian_stats(stats, pf, alpha, n_lambda, ratio, K):
+    """Gaussian penalty grid without materializing standardized rows."""
+    _, _, _, G, r, _ = _gaussian_system(stats)
+    _, grad = _coord.unpenalized_fit(G, r, pf)
+    return _coord.lambda_grid(
+        grad, pf, alpha, n_lambda=n_lambda, lambda_min_ratio=ratio,
+        n=stats["n"], n_penalized=K)
+
+
+def _binomial_baseline(Xs, y, pf, *, max_iter=50, tol=1e-9):
+    """Intercept and standardized coefficients for the unpenalized model."""
     n = Xs.shape[0]
     free = np.flatnonzero(pf <= 0.0)
     D = np.hstack([np.ones((n, 1)), Xs[:, free]])
     b = np.zeros(D.shape[1])
-    b[0] = np.log(max(min(y.mean(), 1 - 1e-6), 1e-6)
-                  / (1 - max(min(y.mean(), 1 - 1e-6), 1e-6)))
+    ybar = min(max(float(y.mean()), 1e-6), 1 - 1e-6)
+    b[0] = np.log(ybar / (1 - ybar))
     for _ in range(max_iter):
-        p = 1.0 / (1.0 + np.exp(-(D @ b)))
+        eta = D @ b
+        p = np.empty_like(eta)
+        pos = eta >= 0
+        p[pos] = 1.0 / (1.0 + np.exp(-eta[pos]))
+        ex = np.exp(eta[~pos])
+        p[~pos] = ex / (1.0 + ex)
         np.clip(p, 1e-9, 1 - 1e-9, out=p)
         w = np.maximum(p * (1 - p), 1e-5)
         H = D.T @ (D * w[:, None])
@@ -661,36 +928,56 @@ def _null_probabilities(Xs, y, pf, *, max_iter=50, tol=1e-9):
         b += step
         if np.max(np.abs(step)) < tol:
             break
-    p = 1.0 / (1.0 + np.exp(-(D @ b)))
+    coef = np.zeros(Xs.shape[1])
+    coef[free] = b[1:]
+    return float(b[0]), coef
+
+
+def _null_probabilities(Xs, y, pf, *, max_iter=50, tol=1e-9):
+    """Fitted probabilities of the intercept + unpenalized-columns model."""
+    b0, beta = _binomial_baseline(
+        Xs, y, pf, max_iter=max_iter, tol=tol)
+    eta = b0 + Xs @ beta
+    p = np.empty_like(eta)
+    pos = eta >= 0
+    p[pos] = 1.0 / (1.0 + np.exp(-eta[pos]))
+    ex = np.exp(eta[~pos])
+    p[~pos] = ex / (1.0 + ex)
     return np.clip(p, 1e-9, 1 - 1e-9)
 
 
 def _fit_one_fold(X, y, tr, val, pf, alphas, lambdas, family, n_abort, dfmax,
-                  tol, max_iter):
+                  tol, max_iter, *, gaussian_stats=None):
     """Sweep the (alpha, lambda) grid on ``tr``, select on ``val``.
 
-    Returns the raw-scale coefficients and intercept at the selected point,
-    plus the loss of the covariate-only model, so the caller can decide whether
-    this fold earned its place in the average.
+    Returns the raw-scale coefficients and intercept at the selected point plus
+    the explicit unpenalized-baseline loss. The baseline is a candidate even for
+    pure ridge, whose finite-lambda path never contains an exact null model.
     """
-    center, scale, _ = _standardize(X, tr)
-    Xtr = np.ascontiguousarray((X[tr] - center) / scale)
-    Xval = (X[val] - center) / scale
-    ytr, yval = y[tr], y[val]
-    ntr = tr.size
     gaussian = family == "gaussian"
-
     if gaussian:
-        ybar = float(ytr.mean())
-        G = Xtr.T @ Xtr / ntr
-        G = (G + G.T) * 0.5
-        r = Xtr.T @ (ytr - ybar) / ntr
+        stats = (_gaussian_stats(X, y, tr) if gaussian_stats is None
+                 else gaussian_stats)
+        center, scale, _, G, r, ybar = _gaussian_system(stats)
+        base_coef, _ = _coord.unpenalized_fit(G, r, pf)
+        Xtr = ytr = None
+        base_b0 = ybar
+    else:
+        center, scale, _ = _standardize(X, tr)
+        # The solver wants columns contiguous. Preparing that layout here once
+        # avoids recopying the whole training matrix for every path block.
+        Xtr = np.asfortranarray((X[tr] - center) / scale)
+        ytr = y[tr]
+        base_b0, base_coef = _binomial_baseline(Xtr, ytr, pf)
+    Xval = (X[val] - center) / scale
+    yval = y[val]
 
-    best = None
-    null_loss = np.inf
-    # Held-out loss at every (alpha, lambda) actually evaluated; inf elsewhere.
-    # Two numbers per grid point, so this stays negligible whatever n is.
-    loss_table = np.full((alphas.size, lambdas.size), np.inf)
+    pred0 = base_b0 + Xval @ base_coef
+    null_loss = (_gaussian_loss(yval, pred0) if gaussian
+                 else _binomial_loss(yval, pred0))
+    best = {"loss": null_loss, "alpha": float(alphas[0]),
+            "alpha_index": 0, "lam": float("inf"), "lam_index": -1,
+            "coef": base_coef.copy(), "b0": float(base_b0)}
     for a_idx, a in enumerate(alphas):
         # Warm-start state carried down the grid, and across blocks of it.
         if gaussian:
@@ -724,10 +1011,7 @@ def _fit_one_fold(X, y, tr, val, pf, alphas, lambdas, family, n_abort, dfmax,
                 pred = b0 + Xval @ coef
                 lo = _gaussian_loss(yval, pred) if gaussian \
                     else _binomial_loss(yval, pred)
-                loss_table[a_idx, start + i] = lo
-                if start + i == 0:
-                    null_loss = lo
-                if best is None or lo < best["loss"] - 1e-15:
+                if lo < best["loss"] - 1e-15:
                     best = {"loss": lo, "alpha": float(a),
                             "alpha_index": a_idx, "lam": float(lams[i]),
                             "lam_index": start + i, "coef": coef.copy(),
@@ -750,5 +1034,4 @@ def _fit_one_fold(X, y, tr, val, pf, alphas, lambdas, family, n_abort, dfmax,
     return {"beta": beta_raw, "intercept": intercept, "loss": best["loss"],
             "null_loss": float(null_loss), "alpha": best["alpha"],
             "alpha_index": best["alpha_index"], "lam": best["lam"],
-            "lam_index": best["lam_index"], "loss_table": loss_table,
-            "n_val": int(val.size)}
+            "lam_index": best["lam_index"], "n_val": int(val.size)}

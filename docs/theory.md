@@ -108,17 +108,21 @@ gain exactly:
 Checks: at `r = 1, R_k = 1` it returns `1 - R_f²` (the index becomes a perfect
 predictor of `g_f`); at `r = 0` it returns 0. Three factors, each consequential:
 
-1. **`r²`** — quadratic in genetic correlation. A trait at `r_G = 0.3`
-   contributes 9% of what a genetically identical one would.
+1. **`r²`** — approximately quadratic in genetic correlation. A trait at
+   `r_G = 0.3` contributes about 9% of what a genetically identical one would
+   when the denominator changes little; the displayed exact expression should
+   be used outside that low-accuracy regime.
 2. **`R_k²`** — quadratic in the auxiliary score's own accuracy. The currency is
    the product `r²·R_k²`: a large GWAS of a weakly correlated trait and a small
    GWAS of a strongly correlated one can be worth the same.
 3. **`(1 - R_f²)²`** — the gain is largest when your own score is weakest, and
    dies quadratically as it improves.
 
-With `K` auxiliary scores the gains are strictly sub-additive: auxiliary traits
-correlated with *each other* carry the same information twice, and `C⁻¹` removes
-the double count.
+With `K` positively redundant auxiliary scores the gains are usually
+sub-additive: correlated auxiliaries carry some information twice, and `C⁻¹`
+removes the double count. This is not a theorem for every valid correlation
+matrix. Suppressor configurations, including negatively correlated auxiliary
+errors, can make the joint gain exceed the sum of the separate gains.
 
 ### Why the gain concentrates on underpowered traits
 
@@ -147,8 +151,8 @@ raises accuracy for a low-heritability trait when a correlated high-heritability
 one is available
 ([Jia & Jannink 2012](https://doi.org/10.1534/genetics.112.144246)).
 
-**If your own trait's GWAS is already well powered, expect very little.** That is
-a prediction of the theory, not a limitation of the implementation.
+**All else equal, a well-powered focal GWAS leaves less room to gain.** That is
+a prediction of this model, not a limitation of the implementation.
 
 ### Three architectures
 
@@ -201,8 +205,9 @@ soft(z, t) = sign(z)·max(|z| - t, 0)
 `pf_j = 0` removes the threshold entirely and leaves an ordinary least-squares
 update for that coordinate. `λ_max`, the smallest penalty at which every
 penalized coefficient is still zero, is `max_j |z_j| / (α·pf_j)` evaluated at
-the unpenalized-only fit — which is why `multipgs` solves the covariate-only
-model first and measures the gradient there. For ridge (`α = 0`) no finite `λ`
+the unpenalized-only fit — which is why `multipgs` solves the covariate and
+forced-score baseline first and measures the gradient there. For ridge
+(`α = 0`) no finite `λ`
 zeroes the solution, so the grid starts at `α = 1e-3`, as glmnet does.
 
 **Unpenalized covariates and Frisch–Waugh–Lovell.** In the Gaussian case,
@@ -243,7 +248,7 @@ Two consequences worth stating plainly:
   returns everything, and `dfmax` never binds. The selection language only means
   anything for `α > 0`.
 
-### Optimism, and the honest cross-validated number
+### Optimism, and the nested cross-validated number
 
 Choosing a tuning parameter and assessing performance are different tasks, and
 data used for the first cannot be reused for the second
@@ -255,27 +260,40 @@ chance while independent-test performance is exactly chance
 point that every selection step must sit *inside* the resampling loop is
 [Ambroise & McLachlan 2002](https://doi.org/10.1073/pnas.102102699).
 
-This is not hypothetical here. Evaluating each fold at the `(α, λ)` *it* chose,
-on the individuals it chose them with, reports **`cv_r2 = +0.014` for pure
-Gaussian noise**. `multipgs` therefore takes each fold's operating point from
-the *other* folds — the median `λ` index and modal `α` index over `j ≠ k` — none
-of which saw fold `k`'s individuals at any stage. Measured across seeds on pure
-noise, `cv_r2` is then at or below zero and the fit returns the null model in
-most of them; the suite pins `cv_r2 < 0.01` and "null in at least 6 of 8".
+An ordinary CMSA validation fold cannot also assess the stack: its phenotype
+selected that fold's `(α, λ)`. Nor can the operating point simply be borrowed
+from another ordinary fold, because that fold's model was trained on the first
+fold's individuals. The whole selection procedure must be nested.
 
-`cv_r2` is reported **incremental over the covariate-only model**, matching what
-`incremental_r2` reports in a held-out cohort — with one asymmetry:
-`incremental_r2` is truncated at zero while `cv_r2` is not, so a useless score
-gives `cv_r2 < 0` and `incremental_r2 = 0`. With `unpenalized_scores`, the
-baseline includes those scores, so `cv_r2` becomes the gain *over your own
-trait's score* — usually the more interesting quantity, and a different one.
+`multipgs` therefore holds out `assessment_folds` outer parts. Within each outer
+training set it builds a new penalty grid, runs an inner CMSA, averages its
+fold-selected coefficient vectors, and fits the unpenalized baseline. Only then
+are both predictors scored on the untouched outer part. Fold-local imputation is
+inside this loop as well. The Gaussian report is
 
-Two residual biases: the fold models are trained on `(1-1/n_folds)·n`
-individuals and are therefore slightly more shrunken than a full-`n` fit
+```
+cv_r2 = (SSE_baseline - SSE_inner_CMSA) / SST_y .
+```
+
+It is a **predictive loss gain**, not the same estimator as `incremental_r2`:
+the latter fits a calibration coefficient for the score against assessment
+outcomes, whereas nested prediction must not. The baseline contains covariates
+and every `unpenalized_score`, so forcing the target-trait score changes the
+question to "what did the penalized auxiliary scores add?"
+
+The final estimator is an ordinary all-fold CMSA average. It is deployed only
+when the mean nested loss gain exceeds one outer-fold standard error; otherwise
+the full-data unpenalized baseline is returned. Accordingly, `null_model` means
+no established *penalized increment*. It does not mean that forced score or
+covariate coefficients were erased.
+
+The outer estimators use fewer than `n` individuals and may therefore be more
+shrunken than the returned estimator
 ([Hastie, Tibshirani & Friedman 2009](https://doi.org/10.1007/978-0-387-84858-7),
-§7.10), and the returned model averages the folds and is usually a little better
-than any one of them. Both point the same way: `cv_r2` is mildly conservative
-about the model it ships.
+§7.10). The returned model also averages final folds rather than inner folds.
+Under a stable learning curve those differences may make `cv_r2` conservative
+about the model shipped, but the direction is not guaranteed and it remains an
+internal estimate.
 
 ## 3. Derived weights: no phenotype required
 
@@ -311,7 +329,7 @@ and `1/(1+x_k)`.
 **Accuracy saturates; the optimal weight does not.** So weighting by accuracy
 under-weights a well-powered GWAS *more* than weighting by sample size does. For
 `x = (12, 4.8, 1.6)` the distortion spans a factor 2.2 for `sqrt_n_eff` and 5.0
-for `expected_r2`, and the measured ordering follows
+for `expected_r2`, and the simulation's measured ordering follows
 ([algorithm.md](algorithm.md#choosing-a-meta-pgs-rule) has the table).
 The cruder statistic has the better-shaped one.
 
@@ -320,22 +338,22 @@ The cruder statistic has the better-shaped one.
 Estimating `C` from `n` individuals spends `K(K-1)/2` parameters, with
 `Var(Ĉ_kl) ≈ (1-C_kl²)²/n`, and `C⁻¹` amplifies that error exactly as it
 amplifies error in `ρ`. It is *not* free, even though it never touches the
-phenotype — which is why `ridge` exists and why the `K²/n` ratio matters. Its
-payoff is real: past mild overlap between discovery cohorts it is the only rule
-that still beats the best single score.
+phenotype — which is why `ridge` exists and why the `K²/n` ratio matters. In the
+documented correlated-error simulation, it beats the best single score at every
+positive shared-error setting. That simulation does not identify performance at
+a literal sample-overlap fraction or guarantee the same ordering elsewhere.
 
-Feeding it `sqrt(n_eff)` is the one combination to avoid. A mis-specified `ρ`
-that a direct weighted sum merely tolerates becomes ruinous inside a matrix
-inverse — measurably worse than doing nothing at all.
+In that benchmark, feeding it `sqrt(n_eff)` performs poorly: `C⁻¹` amplifies
+the misspecification of `ρ`. Treat this as a model-specific warning, not a
+universal ranking of the rules.
 
 ### The same-trait assumption
 
-`r_G(k,l) ≈ 1` is *assumed*, not known. Two GWAS of nominally the same trait
-routinely sit at `r_G` of 0.8–0.95 — self-reported versus clinically ascertained
-depression, register diagnosis versus questionnaire — so the assumption is safer
-than for a mixed panel but not exact. Applied to genuinely different traits it
-is simply wrong, and `multi_pgs_fit`, which learns relevance instead of assuming
-it, is the right tool.
+`r_G(k,l) ≈ 1` is *assumed*, not known. Nominally identical phenotype GWAS can
+have `r_G < 1` when definitions or ascertainment differ, so estimate or
+sensitivity-test `r_G` rather than assuming exact identity. Applied to genuinely
+different traits the assumption is wrong, and `multi_pgs_fit`, which learns
+relevance instead, is the right tool.
 
 ## 4. What the numbers mean
 
@@ -420,9 +438,10 @@ practice for the same reason).
 ### Sample overlap
 
 If the cohort you evaluate in contributed to the GWAS behind an input score,
-that score is partly fitted to the individuals it is being scored on. The bias
-is proportional to the fraction of the assessment sample also present in
-discovery, and overlap is frequently invisible in public summary statistics
+that score is partly fitted to the individuals it is being scored on. Inflation
+generally increases with the overlap fraction, but its magnitude also depends
+on discovery design, score construction, relatedness and effect-size
+estimation. Overlap is frequently invisible in public summary statistics
 ([Wray et al. 2013](https://doi.org/10.1038/nrg3457)). No cross-validation
 *inside* the target cohort can detect it, because every fold shares the
 contamination — that argument is this package's, not a cited result. Overlap has

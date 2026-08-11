@@ -34,6 +34,7 @@ be handed straight back to ldpred3 to score a new cohort.
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -46,6 +47,77 @@ __all__ = ["ScorePanel", "panel_from_catalog", "panel_from_sumstats",
 _BLOCK_ELEMS = 8_000_000
 
 
+class _SharedVariantTable(Mapping):
+    """Pickleable read-only mapping of shared Catalog variant metadata."""
+
+    __slots__ = ("_arrays",)
+
+    def __init__(self, arrays):
+        self._arrays = dict(arrays)
+        for values in self._arrays.values():
+            values.setflags(write=False)
+
+    def __getitem__(self, key):
+        return self._arrays[key]
+
+    def __iter__(self):
+        return iter(self._arrays)
+
+    def __len__(self):
+        return len(self._arrays)
+
+    def __reduce__(self):
+        # Re-enter __init__ so pickle/deepcopy restore the read-only flags.
+        return type(self), (self._arrays,)
+
+
+class _CompactWeightTable(Mapping):
+    """Dict-like score weights backed by one shared variant table.
+
+    Catalog scores usually overlap heavily.  Repeating seven metadata arrays
+    for every score can therefore cost more memory than the score weights
+    themselves.  This mapping stores only ``index`` and ``weight`` per score;
+    the usual ``id/chrom/pos/a1/a2/af/sd`` values are selected lazily from the
+    panel-wide variant union.  Its public keys match the legacy dictionaries,
+    so inspection and ``dict(table)`` continue to work.
+    """
+
+    _KEYS = ("id", "chrom", "pos", "a1", "a2", "weight", "af", "sd")
+    __slots__ = ("_variant_table", "_index", "_weight")
+
+    def __init__(self, variant_table, index, weight):
+        self._variant_table = variant_table
+        self._index = np.asarray(index)
+        self._weight = np.asarray(weight, dtype=float)
+        if self._index.ndim != 1 or self._weight.ndim != 1:
+            raise ValueError("compact weight index and weight must be 1-D")
+        if self._index.size != self._weight.size:
+            raise ValueError("compact weight index and weight lengths differ")
+
+    @property
+    def variant_table(self):
+        """The shared union metadata (read-only NumPy arrays)."""
+        return self._variant_table
+
+    @property
+    def index(self):
+        """Positions of this score's variants in :attr:`variant_table`."""
+        return self._index
+
+    def __getitem__(self, key):
+        if key == "weight":
+            return self._weight
+        if key in self._variant_table:
+            return self._variant_table[key][self._index]
+        raise KeyError(key)
+
+    def __iter__(self):
+        return iter(self._KEYS)
+
+    def __len__(self):
+        return len(self._KEYS)
+
+
 # ---------------------------------------------------------------------------
 # Container
 # ---------------------------------------------------------------------------
@@ -54,10 +126,13 @@ _BLOCK_ELEMS = 8_000_000
 class ScorePanel:
     """Scores for ``n`` individuals across ``K`` polygenic scores.
 
-    ``weights`` holds one dict per score with keys ``id chrom pos a1 a2 weight``
-    and optionally ``sd``/``af``, where ``a1`` is the allele the weight counts.
-    ``standardized[k]`` says whether score ``k``'s weights apply to standardized
-    genotypes (LDpred3) or raw allele counts (PGS Catalog).
+    ``weights`` holds one mapping per score with keys
+    ``id chrom pos a1 a2 weight`` and optionally ``sd``/``af``, where ``a1`` is
+    the allele the weight counts. Catalog panels use the same mapping interface
+    but keep variant metadata once in a shared union and store only an index
+    plus weights per score. ``standardized[k]`` says whether score ``k``'s
+    weights apply to standardized genotypes (LDpred3) or raw allele counts
+    (PGS Catalog).
     """
 
     scores: np.ndarray
@@ -89,6 +164,9 @@ class ScorePanel:
         from .stack import _resolve_columns
         idx = _resolve_columns(columns, np.asarray(self.score_ids, dtype=object),
                                self.n_scores)
+        # Integer scalars otherwise collapse the score axis (``scores[:, 1]``),
+        # producing something that is no longer a panel.
+        idx = np.atleast_1d(idx).astype(int, copy=False)
         return ScorePanel(
             scores=self.scores[:, idx],
             sample_fid=self.sample_fid, sample_iid=self.sample_iid,
@@ -108,6 +186,8 @@ class ScorePanel:
         """
         mine = _keys(self.sample_fid, self.sample_iid)
         theirs = _keys(other.sample_fid, other.sample_iid)
+        _require_unique_keys(mine, "this panel")
+        _require_unique_keys(theirs, "the other panel")
         lookup = {k: i for i, k in enumerate(theirs)}
         keep_mine, keep_theirs = [], []
         for i, k in enumerate(mine):
@@ -121,7 +201,7 @@ class ScorePanel:
         return self._rows(keep_mine), other._rows(keep_theirs)
 
     def _rows(self, idx):
-        idx = np.asarray(idx, dtype=int)
+        idx = np.atleast_1d(np.asarray(idx, dtype=int))
         return ScorePanel(
             scores=self.scores[idx], sample_fid=np.asarray(self.sample_fid)[idx],
             sample_iid=np.asarray(self.sample_iid)[idx],
@@ -129,7 +209,8 @@ class ScorePanel:
             weights=self.weights, meta=self.meta, log=self.log)
 
     def summary(self):
-        n_dead = int(np.sum(np.std(self.scores, axis=0) <= 0))
+        n_dead = (int(np.sum(np.std(self.scores, axis=0) <= 0))
+                  if len(self) else 0)
         lines = [f"panel: {len(self)} individuals x {self.n_scores} scores"]
         matched = [m.get("n_matched") for m in self.meta
                    if isinstance(m, dict) and m.get("n_matched") is not None]
@@ -153,8 +234,27 @@ class ScorePanel:
 
 
 def _keys(fid, iid):
-    return [f"{f}:{i}" for f, i in zip(np.asarray(fid).astype(str),
-                                       np.asarray(iid).astype(str))]
+    fid = np.asarray(fid).astype(str).ravel()
+    iid = np.asarray(iid).astype(str).ravel()
+    if fid.shape != iid.shape:
+        raise ValueError("sample_fid and sample_iid must have the same length")
+    # Tuples avoid delimiter collisions such as ("a:b", "c") versus
+    # ("a", "b:c").
+    return list(zip(fid, iid))
+
+
+def _require_unique_keys(keys, name):
+    seen = set()
+    duplicate = None
+    for key in keys:
+        if key in seen:
+            duplicate = key
+            break
+        seen.add(key)
+    if duplicate is not None:
+        raise ValueError(
+            f"{name} contains duplicate FID:IID {duplicate[0]}:{duplicate[1]}; "
+            "alignment would be ambiguous")
 
 
 # ---------------------------------------------------------------------------
@@ -221,7 +321,7 @@ def panel_from_catalog(paths, plink, *, sample_path=None, drop_ambiguous=True,
         n_samples, n_total = len(fid), len(variants.id)
         dosage = None
 
-    score_ids, metas, weight_tables, per_score = [], [], [], []
+    score_ids, metas, per_score = [], [], []
     n_failed = n_skipped = 0
     for i, path in enumerate(files):
         try:
@@ -249,14 +349,6 @@ def panel_from_catalog(paths, plink, *, sample_path=None, drop_ambiguous=True,
         meta.update(log)
         meta["path"] = str(path)
         metas.append(meta)
-        weight_tables.append({
-            "id": np.asarray(variants.id)[var_index],
-            "chrom": np.asarray(variants.chrom)[var_index],
-            "pos": np.asarray(variants.pos)[var_index],
-            "a1": np.asarray(variants.a1)[var_index],
-            "a2": np.asarray(variants.a2)[var_index],
-            "weight": w,
-        })
         per_score.append((var_index, w))
 
     if not per_score:
@@ -268,14 +360,26 @@ def panel_from_catalog(paths, plink, *, sample_path=None, drop_ambiguous=True,
         per_score, n_samples, n_total, plink, dosage, standardize=standardize,
         block=block, read_bed=read_bed, strip_ext=strip_ext, is_bgen=is_bgen)
 
-    # Carry the target cohort's allele frequency and dosage SD per matched
-    # variant. combine_weights needs the SD to put allele-count weights onto
-    # the standardized scale that ldpred3's scorer applies, and without it a
-    # catalog panel could be fitted but never deployed.
-    for table, (var_index, _) in zip(weight_tables, per_score):
-        at = np.searchsorted(union, var_index)
-        table["af"] = af[at]
-        table["sd"] = sd[at]
+    # Store target metadata once for the union, not once per score.  At PGS
+    # Catalog scale those repeated object/numeric arrays otherwise dominate
+    # memory. combine_weights needs AF/SD to put allele-count weights onto the
+    # standardized scale used by ldpred3's scorer.
+    variant_arrays = {
+        "id": np.asarray(variants.id)[union],
+        "chrom": np.asarray(variants.chrom)[union],
+        "pos": np.asarray(variants.pos)[union],
+        "a1": np.asarray(variants.a1)[union],
+        "a2": np.asarray(variants.a2)[union],
+        "af": af,
+        "sd": sd,
+    }
+    variant_table = _SharedVariantTable(variant_arrays)
+    index_dtype = _smallest_index_dtype(union.size)
+    weight_tables = []
+    for var_index, w in per_score:
+        at = np.searchsorted(union, var_index).astype(index_dtype, copy=False)
+        at.setflags(write=False)
+        weight_tables.append(_CompactWeightTable(variant_table, at, w))
 
     K = len(per_score)
     return ScorePanel(
@@ -287,6 +391,15 @@ def panel_from_catalog(paths, plink, *, sample_path=None, drop_ambiguous=True,
              "n_failed": n_failed, "n_skipped": n_skipped,
              "target": str(plink), "standardize": bool(standardize),
              "drop_ambiguous": bool(drop_ambiguous)})
+
+
+def _smallest_index_dtype(size):
+    """Smallest unsigned dtype able to index an array of ``size`` entries."""
+    largest = max(int(size) - 1, 0)
+    for dtype in (np.uint8, np.uint16, np.uint32, np.uint64):
+        if largest <= np.iinfo(dtype).max:
+            return dtype
+    raise ValueError("variant union is too large to index")
 
 
 def _expand_paths(paths):
@@ -461,15 +574,18 @@ def panel_from_sumstats(sumstats, plink, *, score_ids=None, ld_cache=None,
         kwargs.pop("ld_out", None)
         if fid is None:
             fid, iid = res.sample_fid, res.sample_iid
-        elif not np.array_equal(np.asarray(res.sample_iid), np.asarray(iid)):
+        elif (not np.array_equal(np.asarray(res.sample_fid), np.asarray(fid))
+              or not np.array_equal(np.asarray(res.sample_iid),
+                                    np.asarray(iid))):
             raise RuntimeError(f"{sid} was scored on a different sample order "
                                f"than the earlier traits")
+        inference = _inference_metadata(res, kwargs)
         columns.append(np.asarray(res.scores, dtype=float))
         ids.append(sid)
         metas.append({"path": str(path), "n_matched": int(res.var_index.size),
                       "harmonize_log": dict(res.harmonize_log),
                       "qc_log": dict(res.qc_log),
-                      "inference": dict(res.inference)})
+                      "inference": inference})
         weight_tables.append({
             "id": np.asarray(res.variant_id), "chrom": np.asarray(res.chrom),
             "pos": np.asarray(res.pos), "a1": np.asarray(res.effect_allele),
@@ -490,6 +606,38 @@ def panel_from_sumstats(sumstats, plink, *, score_ids=None, ld_cache=None,
         log={"source": "ldpred3", "n_scores": K, "n_failed": n_failed,
              "target": str(plink), "ld_cache": str(ld_cache) if ld_cache
              else None})
+
+
+def _inference_metadata(result, run_kwargs):
+    """Preserve inference output plus run controls absent from older results.
+
+    Current LDpred3 ``PRSResult.inference`` records ``n_chains_kept`` but older
+    releases omit the total number run. The total is recoverable when the
+    caller explicitly supplied ``auto_chains`` or ``infer_params.n_chains``;
+    the number retained alone is not enough, so no value is invented otherwise.
+    """
+    raw = getattr(result, "inference", None)
+    out = {} if raw is None else dict(raw)
+
+    # Prefer metadata a newer result object may expose directly.
+    for key in ("n_chains", "shrinkage", "shrink_corr"):
+        value = getattr(result, key, None)
+        if key not in out and value is not None:
+            out[key] = value
+
+    params = dict(run_kwargs.get("infer_params") or {})
+    if "n_chains" not in out:
+        auto_chains = run_kwargs.get("auto_chains")
+        if auto_chains is not None and int(auto_chains) > 1:
+            # LDpred3 overwrites infer_params.n_chains with auto_chains on this
+            # path, so it is the authoritative total.
+            out["n_chains"] = int(auto_chains)
+        elif params.get("n_chains") is not None:
+            out["n_chains"] = int(params["n_chains"])
+    if "shrinkage" not in out and "shrink_corr" not in out:
+        if params.get("shrink_corr") is not None:
+            out["shrink_corr"] = float(params["shrink_corr"])
+    return out
 
 
 def _stem(path):
@@ -564,10 +712,11 @@ def combine_weights(panel, fit, *, path=None):
         b = beta[k]
         if b == 0.0:
             continue
+        metadata, index = _weight_table_storage(table)
         w = np.asarray(table["weight"], dtype=float)
-        sd = table.get("sd")
+        sd = metadata.get("sd")
         sd = None if sd is None else np.asarray(sd, dtype=float)
-        af = table.get("af")
+        af = metadata.get("af")
         af = None if af is None else np.asarray(af, dtype=float)
         if not panel.standardized[k]:
             if sd is None:
@@ -576,22 +725,26 @@ def combine_weights(panel, fit, *, path=None):
                     f"per-variant SD, so it cannot be put on the standardized "
                     f"scale. Rebuild the panel with panel_from_catalog, which "
                     f"records the target cohort's SD.")
-            w = w * sd
-        ids = np.asarray(table["id"], dtype=object)
-        chrom = np.asarray(table["chrom"], dtype=object)
-        pos = np.asarray(table["pos"])
-        a1 = np.asarray(table["a1"], dtype=object)
-        a2 = np.asarray(table["a2"], dtype=object)
+            w = w * (sd if index is None else sd[index])
+        ids = np.asarray(metadata["id"], dtype=object)
+        chrom = np.asarray(metadata["chrom"], dtype=object)
+        pos = np.asarray(metadata["pos"])
+        a1 = np.asarray(metadata["a1"], dtype=object)
+        a2 = np.asarray(metadata["a2"], dtype=object)
         for j in range(w.size):
             if w[j] == 0.0:
                 continue
-            key = (str(chrom[j]), int(pos[j]))
-            e1, e2 = str(a1[j]).upper(), str(a2[j]).upper()
-            a_j = np.nan if af is None else float(af[j])
-            s_j = np.nan if sd is None else float(sd[j])
+            q = j if index is None else int(index[j])
+            e1, e2 = str(a1[q]).upper(), str(a2[q]).upper()
+            # The unordered allele pair distinguishes multiallelic variants at
+            # one coordinate while still coalescing A/G with its G/A swap.
+            pair = tuple(sorted((e1, e2)))
+            key = (str(chrom[q]), int(pos[q]), pair[0], pair[1])
+            a_j = np.nan if af is None else float(af[q])
+            s_j = np.nan if sd is None else float(sd[q])
             entry = acc.get(key)
             if entry is None:
-                acc[key] = [str(ids[j]), e1, e2, b * w[j], a_j, s_j]
+                acc[key] = [str(ids[q]), e1, e2, b * w[j], a_j, s_j]
                 continue
             if e1 == entry[1] and e2 == entry[2]:
                 entry[3] += b * w[j]
@@ -600,11 +753,6 @@ def combine_weights(panel, fit, *, path=None):
                 # with it, before adding.
                 entry[3] -= b * w[j]
                 a_j = np.nan if not np.isfinite(a_j) else 1.0 - a_j
-            else:
-                # A third allele pair at the same coordinate is a different
-                # variant. Dropping it beats adding a weight for an allele the
-                # target may not carry.
-                continue
             if not np.isfinite(entry[4]) and np.isfinite(a_j):
                 entry[4] = a_j
             if not np.isfinite(entry[5]) and np.isfinite(s_j):
@@ -613,7 +761,7 @@ def combine_weights(panel, fit, *, path=None):
     if not acc:
         raise ValueError("every selected score contributed no non-zero weight; "
                          "the fit is null, so there is nothing to deploy")
-    keys = sorted(acc, key=lambda kv: (str(kv[0]), kv[1]))
+    keys = sorted(acc, key=lambda kv: (str(kv[0]), kv[1], kv[2], kv[3]))
     out = {
         "id": np.array([acc[k][0] for k in keys], dtype=object),
         "chrom": np.array([k[0] for k in keys], dtype=object),
@@ -625,6 +773,9 @@ def combine_weights(panel, fit, *, path=None):
         "sd": np.array([acc[k][5] for k in keys], dtype=float),
     }
     keep = out["weight"] != 0.0
+    if not np.any(keep):
+        raise ValueError("all combined variant weights cancel exactly; there "
+                         "is no non-zero weight set to deploy")
     out = {k: v[keep] for k, v in out.items()}
     if path is not None:
         from ldpred3.weights import write_weights
@@ -636,6 +787,18 @@ def combine_weights(panel, fit, *, path=None):
                       af=out["af"] if complete else None,
                       sd=out["sd"] if complete else None)
     return out
+
+
+def _weight_table_storage(table):
+    """Return ``(metadata, index)`` for compact or legacy weight mappings."""
+    if isinstance(table, _CompactWeightTable):
+        return table.variant_table, table.index
+    # Accept the explicit equivalent as well, so callers need not construct
+    # the private mapping class to supply compact tables themselves.
+    if (isinstance(table, Mapping) and "variant_table" in table
+            and "index" in table):
+        return table["variant_table"], np.asarray(table["index"])
+    return table, None
 
 
 # ---------------------------------------------------------------------------
@@ -651,10 +814,11 @@ def write_panel(panel, path):
     """
     ids = [str(s) for s in np.asarray(panel.score_ids, dtype=object)]
     with open(path, "w", encoding="utf-8") as fh:
-        fh.write("FID\tIID\t" + "\t".join(ids) + "\n")
+        fh.write("\t".join(["FID", "IID", *ids]) + "\n")
         for i in range(len(panel)):
-            row = "\t".join(f"{v:.6g}" for v in panel.scores[i])
-            fh.write(f"{panel.sample_fid[i]}\t{panel.sample_iid[i]}\t{row}\n")
+            row = [str(panel.sample_fid[i]), str(panel.sample_iid[i])]
+            row.extend(f"{v:.6g}" for v in panel.scores[i])
+            fh.write("\t".join(row) + "\n")
     return path
 
 
@@ -663,18 +827,22 @@ def read_panel(path):
     fid, iid, rows = [], [], []
     with open(path, "r", encoding="utf-8") as fh:
         header = fh.readline().rstrip("\n").split("\t")
-        if len(header) < 3 or header[0] != "FID" or header[1] != "IID":
+        if len(header) < 2 or header[0] != "FID" or header[1] != "IID":
             raise ValueError(f"{path}: expected a 'FID\\tIID\\t...' header")
         for line in fh:
             line = line.rstrip("\n")
             if not line:
                 continue
             parts = line.split("\t")
+            if len(parts) != len(header):
+                raise ValueError(f"{path}: expected {len(header)} columns, got "
+                                 f"{len(parts)}")
             fid.append(parts[0])
             iid.append(parts[1])
             rows.append([float(v) for v in parts[2:]])
-    scores = np.array(rows, dtype=float)
-    K = scores.shape[1] if scores.size else len(header) - 2
+    K = len(header) - 2
+    scores = (np.asarray(rows, dtype=float).reshape(len(rows), K)
+              if rows else np.empty((0, K), dtype=float))
     return ScorePanel(
         scores=scores, sample_fid=np.array(fid, dtype=object),
         sample_iid=np.array(iid, dtype=object),

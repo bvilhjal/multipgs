@@ -63,7 +63,7 @@ The estimator behind `multi_pgs_fit`, and the model-selection theory it depends 
 - **Arthur E. Hoerl, Robert W. Kennard** (1970). Ridge Regression: Biased Estimation for Nonorthogonal Problems. *Technometrics 12(1):55–67*. [doi:10.1080/00401706.1970.10488634](https://doi.org/10.1080/00401706.1970.10488634)
   The alpha=0 end of multipgs's elastic-net dial, and the reason lambda_max is infinite there (no finite penalty zeroes a ridge solution).
 - **M. Stone** (1974). Cross-Validatory Choice and Assessment of Statistical Predictions. *Journal of the Royal Statistical Society: Series B (Methodological) 36(2):111–133 (read with discussion; the discussion runs to p. 147)*. [doi:10.1111/j.2517-6161.1974.tb00994.x](https://doi.org/10.1111/j.2517-6161.1974.tb00994.x)
-  The origin of the choice-versus-assessment distinction that the whole CMSA honesty discussion rests on.
+  The origin of the choice-versus-assessment distinction used in the CMSA and nested-assessment discussion.
 - **Bradley Efron** (1986). How Biased is the Apparent Error Rate of a Prediction Rule?. *Journal of the American Statistical Association 81(394):461–470*. [doi:10.1080/01621459.1986.10478291](https://doi.org/10.1080/01621459.1986.10478291)
   The covariance-penalty formulation of optimism: the quantitative statement of why apparent error understates true error by an amount proportional to how much the fit chases its own response.
 - **David L. Donoho, Iain M. Johnstone** (1994). Ideal spatial adaptation by wavelet shrinkage. *Biometrika 81(3):425–455*. [doi:10.1093/biomet/81.3.425](https://doi.org/10.1093/biomet/81.3.425)
@@ -83,7 +83,7 @@ The estimator behind `multi_pgs_fit`, and the model-selection theory it depends 
 - **Hui Zou** (2006). The Adaptive Lasso and Its Oracle Properties. *Journal of the American Statistical Association 101(476):1418–1429*. [doi:10.1198/016214506000000735](https://doi.org/10.1198/016214506000000735)
   The theoretical justification multipgs invokes for per-column penalty factors (`penalty_factor`, `penalty_from_accuracy`), and the reason those factors must be interpreted as a prior rather than as an oracle guarantee here.
 - **Sudhir Varma, Richard Simon** (2006). Bias in error estimation when using cross-validation for model selection. *BMC Bioinformatics 7:91*. [doi:10.1186/1471-2105-7-91](https://doi.org/10.1186/1471-2105-7-91)
-  The canonical demonstration that tuning and assessing on the same cross-validation is optimistic, and that nested CV fixes it — the exact failure `_honest_cv_loss` is built to avoid.
+  The canonical demonstration that tuning and assessing on the same cross-validation is optimistic, and that nested CV fixes it — the exact failure `_nested_cv_assessment` is built to avoid.
 - **Hui Zou, Trevor Hastie, Robert Tibshirani** (2007). On the “degrees of freedom” of the lasso. *The Annals of Statistics 35(5)*. [doi:10.1214/009053607000000127](https://doi.org/10.1214/009053607000000127)
   Supplies the exact degrees-of-freedom count that makes the optimism argument quantitative — and makes clear it holds at fixed lambda, not at a lambda chosen from the data.
 - **Jerome Friedman, Trevor Hastie, Holger Höfling, Robert Tibshirani** (2007). Pathwise coordinate optimization. *The Annals of Applied Statistics 1(2):302–332*. [doi:10.1214/07-AOAS131](https://doi.org/10.1214/07-AOAS131)
@@ -216,4 +216,4 @@ Operational practice, and the two things that most often invalidate a reported n
 - **Samuel A. Lambert et al.** (2024). Enhancing the Polygenic Score Catalog with tools for score calculation and ancestry normalization. *Nature Genetics 56(10):1989-1994*. [doi:10.1038/s41588-024-01937-x](https://doi.org/10.1038/s41588-024-01937-x)
   Defines the reference implementation (pgsc_calc) of the scoring step multipgs performs itself, including the ancestry-normalisation step multipgs does not do — worth naming explicitly in the docs so users know what is out of scope.
 - **Hansen O et al.** (2026). Mapping genetic architecture of thousands of complex traits using GWAS summary statistics. *Research Square (preprint, not peer reviewed)*. [doi:10.21203/rs.3.rs-9415305/v1](https://doi.org/10.21203/rs.3.rs-9415305/v1)
-  The source of multipgs.architecture.screen's inclusion gates and of the sqrt(n_eff) meta-PGS rule; also the source of taking M = n_variants * p from the fitted polygenicity rather than a fixed M_e.
+  The source of multipgs.architecture.screen's inclusion gates and of taking M = n_variants * p from fitted polygenicity rather than a fixed M_e. The sqrt(n_eff) meta-PGS rule is present in the accompanying PGS-pipeline source, not documented in this preprint.

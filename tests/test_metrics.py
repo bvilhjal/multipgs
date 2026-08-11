@@ -89,6 +89,10 @@ def test_liability_r2_validates_its_inputs():
         liability_r2(0.1, 0.0, 0.5)
     with pytest.raises(ValueError, match="prop_cases"):
         liability_r2(0.1, 0.1, 1.5)
+    with pytest.raises(ValueError, match="finite"):
+        liability_r2(np.nan, 0.1, 0.5)
+    with pytest.raises(ValueError, match="finite"):
+        liability_r2([0.1, np.inf], 0.1, 0.5)
 
 
 def test_evaluate_reports_the_right_metrics_per_family():
@@ -127,3 +131,28 @@ def test_evaluate_validates_shapes_and_family():
         evaluate(rng.normal(size=10), rng.normal(size=10), family="poisson")
     with pytest.raises(ValueError, match="at least 3"):
         evaluate(np.zeros(2), np.zeros(2))
+
+
+def test_public_metrics_reject_non_finite_observations_and_covariates():
+    y = np.array([0.0, 1.0, 0.0, 1.0])
+    pred = np.arange(4.0)
+    bad_pred = pred.copy()
+    bad_pred[1] = np.nan
+    for metric in (r2, incremental_r2, auc, nagelkerke_r2):
+        with pytest.raises(ValueError, match="pred.*non-finite"):
+            metric(y, bad_pred)
+
+    bad_y = y.copy()
+    bad_y[0] = np.inf
+    with pytest.raises(ValueError, match="y.*non-finite"):
+        r2(bad_y, pred)
+
+    covar = np.ones((4, 2))
+    covar[0, 0] = np.nan
+    for metric in (incremental_r2, nagelkerke_r2):
+        with pytest.raises(ValueError, match="covar.*non-finite"):
+            metric(y, pred, covar)
+    with pytest.raises(ValueError, match="covar.*non-finite"):
+        evaluate(y, pred, covar=covar, n_boot=0)
+    with pytest.raises(ValueError, match="pred.*non-finite"):
+        evaluate(y, bad_pred, n_boot=0)

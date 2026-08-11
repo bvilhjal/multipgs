@@ -1,9 +1,9 @@
 # multipgs
 
-**multipgs** combines many polygenic scores into one. A single-trait PGS uses
-one GWAS; most traits have a small GWAS and a great many genetically correlated
-neighbours with larger ones. Multi-PGS uses those too, and it helps most exactly
-where single-trait scores are weakest.
+**multipgs** combines many polygenic scores into one. Many traits have smaller
+discovery GWAS than genetically correlated phenotypes. Multi-PGS can borrow
+from informative auxiliary scores, with the largest potential gains when the
+focal score is underpowered and the fitted combination generalizes.
 
 The package provides the two combiners, the machinery to build the score matrix
 they consume, and the step that folds a fitted combination back into a single
@@ -18,22 +18,26 @@ harmonisation, and the LDpred model behind score construction.
 
 ## Two combiners
 
+**Table 1. The two combination problems.**
+
 | | `multi_pgs_fit` | `meta_pgs` |
 |---|---|---|
 | **Needs** | a training cohort with phenotypes | nothing but the scores and their GWAS sizes |
 | **Input scores** | any traits, mostly irrelevant is fine | the **same** trait, different discovery GWAS |
 | **Weights** | learned by penalized regression | derived from effective sample size or fitted accuracy |
-| **Method** | Cross-Model Selection and Averaging | inverse-variance, optionally decorrelated |
+| **Method** | Cross-Model Selection and Averaging | accuracy-derived weights, optionally decorrelated |
 
 `multi_pgs_fit` is the estimator of Albiñana et al.,
 [*Multi-PGS enhances polygenic prediction by combining 937 polygenic
 scores*](https://doi.org/10.1038/s41467-023-40330-w) (Nat Commun 14, 4702,
 2023). Its penalty is selected by CMSA, which is this package's choice — the
-paper used `cv.glmnet` with fivefold cross-validation. `meta_pgs` is the training-free rule used in the pipeline of
-Hansen et al., [*Mapping Genetic Architecture of Thousands of Complex Traits
-Using GWAS Summary Statistics*](https://doi.org/10.21203/rs.3.rs-9415305/v1)
-(Research Square, 2026), whose screening criteria are also implemented here in
-`multipgs.architecture`.
+paper used `cv.glmnet` with fivefold cross-validation. The `sqrt_n_eff`
+training-free rule is in [`code/meta_prs.R` of the accompanying
+PGS-pipeline](https://github.com/olex2148/PGS-pipeline), while Hansen et al.,
+[*Mapping Genetic Architecture of Thousands of Complex Traits Using GWAS
+Summary Statistics*](https://doi.org/10.21203/rs.3.rs-9415305/v1) (Research
+Square, 2026), supplies the model-level architecture-screening criteria. The paper itself
+does not document the meta-PGS rule.
 
 ## Install
 
@@ -41,7 +45,7 @@ Python 3.9–3.14. Numba is strongly recommended. ldpred3 is not on PyPI, so its
 Git install needs authenticated GitHub read access:
 
 ```bash
-python -m pip install "ldpred3[fast] @ git+https://github.com/bvilhjal/ldpred3.git"
+python -m pip install "ldpred3[fast] @ git+https://github.com/bvilhjal/ldpred3.git@dcde5737f720642105c0e1c79878219304fa3012"
 python -m pip install "multipgs[fast] @ git+https://github.com/bvilhjal/multipgs.git"
 ```
 
@@ -87,7 +91,7 @@ combination:
 
 ```python
 test = panel_from_catalog("pgs_catalog_scores/", "test_cohort")
-print(evaluate(y_test, fit.multi_pgs(test.scores), covar=covar_test))
+print(evaluate(y_test, fit.multi_pgs(test), covar=covar_test))
 ```
 
 And collapse it to one weight file, which is what you deploy:
@@ -109,12 +113,12 @@ from multipgs import meta_pgs, daetwyler_r2
 
 accuracy = daetwyler_r2(h2, p, n_eff, n_variants)     # from LDpred3 fits
 combined = meta_pgs(panel, expected_r2=accuracy, method="decorrelated")
-prs = combined.multi_pgs(panel.scores)
+prs = combined.multi_pgs(panel)
 ```
 
 `method="sqrt_n_eff"` needs only the discovery sample sizes.
 `method="decorrelated"` additionally discounts scores for information they share
-— which matters whenever one discovery GWAS contains another — but wants
+— for example when discovery studies reuse cohorts — but wants
 `expected_r2` rather than `n_eff`; the reason, with measurements, is in
 [`docs/algorithm.md`](docs/algorithm.md#choosing-a-meta-pgs-rule).
 
@@ -132,7 +136,7 @@ Every command matches individuals on `FID:IID` rather than assuming row order.
 
 1. **Exclude sample overlap by construction.** If your cohort contributed to the
    GWAS behind an input score, that score is partly fitted to your data, the
-   combination will reward it, and every accuracy here is inflated. Most PGS
+   combination will reward it, and every accuracy here is inflated. Many PGS
    Catalog scores are UK Biobank-derived — check each score's development
    samples in its Catalog metadata. No cross-validation inside the target
    cohort can detect this, because every fold shares the contamination.
@@ -142,7 +146,9 @@ Every command matches individuals on `FID:IID` rather than assuming row order.
 3. Remove related individuals before fitting — folds are random, and relatives
    split across them inflate `cv_r2`.
 4. Report accuracy in individuals who trained neither the input scores nor the
-   combination. `fit.cv_r2` is honest about the fit but blind to point 1.
+   combination. `fit.cv_r2` nests grid construction, tuning, imputation and
+   fitting inside outer folds, but it is still an internal estimate and is
+   blind to point 1.
 5. With covariates, report `incremental_r2` — an R² that includes age and sex is
    not a polygenic-score accuracy.
 6. For case/control traits, convert to the liability scale with a stated
@@ -158,6 +164,8 @@ Every command matches individuals on `FID:IID` rather than assuming row order.
   estimates, and what the resulting numbers mean, derived
 - [Algorithm notes](docs/algorithm.md) — the solver, the costs, and the
   measurements behind the defaults
+- [Benchmark harness](benchmarks/README.md) — commands, per-seed results, and
+  machine-readable provenance
 - [References](docs/references.md) — 91 annotated references, each checked
   against the published record
 - [Python API map](docs/api.md)
@@ -166,8 +174,9 @@ Every command matches individuals on `FID:IID` rather than assuming row order.
 ## Citation
 
 Cite the method your analysis actually used: Albiñana et al. 2023 for the
-learned combination, Hansen et al. 2026 for the screening criteria and the
-training-free rule, Privé, Aschard & Blum 2019 for CMSA, and
+learned combination, Hansen et al. 2026 for the screening criteria,
+`PGS-pipeline/code/meta_prs.R` for the `sqrt_n_eff` rule, Privé, Aschard & Blum
+2019 for CMSA, and
 [ldpred3](https://github.com/bvilhjal/ldpred3) for score construction. There is
 no multipgs paper; do not invent one.
 

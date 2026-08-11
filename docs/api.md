@@ -21,6 +21,8 @@ from multipgs import panel_from_catalog, multi_pgs_fit, evaluate, combine_weight
 `MultiPGSFit.multi_pgs(scores)` is the combined score — what you evaluate.
 `.predict(scores, covar)` is the full linear predictor including covariates, and
 is a different thing; see [guide.md §5](guide.md#5-evaluating-and-the-ways-this-goes-wrong).
+`.cv_r2` is the nested outer-fold predictive gain over the explicit
+unpenalized baseline; it is not the OLS-recalibrated `incremental_r2`.
 
 Pass a `ScorePanel` to `.multi_pgs()` rather than a bare matrix and the score
 ids are checked against the fit. A bare matrix is matched by **position**, and a
@@ -63,9 +65,9 @@ Odds-ratio weights are log-transformed on read; non-additive rows
 | Name | Purpose |
 |---|---|
 | `daetwyler_r2` | expected r² of a score for its own trait, from `h²`, `p`, `n_eff` |
-| `Architecture` | per-score `h²`, polygenicity, inferred r², convergence, `n_eff` |
+| `Architecture` | per-score `h²`, polygenicity, inferred r², total/kept chains, `n_eff`, and optional fitted shrinkage |
 | `architectures_from_panel` | read those back out of an LDpred3-built panel |
-| `screen`, `ScreenResult` | the Hansen et al. inclusion gates, with per-score reasons |
+| `screen`, `ScreenResult` | represented model-level Hansen et al. gates, with per-score reasons |
 | `penalty_from_accuracy` | expected accuracy → elastic-net penalty factors |
 
 ## Evaluation
@@ -92,7 +94,7 @@ understates the shrinkage for a large R².
 | Name | Purpose |
 |---|---|
 | `simulate_panel` | correlated scores, a few of which drive the phenotype |
-| `simulate_same_trait_panel` | several scores for *one* trait, with optional cohort overlap |
+| `simulate_same_trait_panel` | several scores for *one* trait, with optional shared error correlation |
 | `simulate_target` | a small PLINK fileset plus matching scoring files |
 | `SimPanel` | the simulated problem, with the answer in `beta_true` |
 

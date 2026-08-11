@@ -35,55 +35,24 @@ Two refinements are available here:
   :math:`\\sqrt{R^2_k}` from each score's *fitted* architecture
   (:func:`multipgs.daetwyler_r2`), which accounts for heritability and
   polygenicity rather than assuming sample size stands in for them. Note this
-  does **not** make it the better of the two ``C = I`` rules — see below.
-* ``method="decorrelated"`` drops the independence assumption. The
-  :math:`\\sqrt{N}` rule is the inverse-variance weighting of *independent*
-  estimates, and discovery GWAS are frequently not independent — a consortium
-  meta-analysis usually contains the cohort you are also using separately.
-  With :math:`C` the correlation matrix of the scores in the target cohort
-  (estimable with no phenotype, straight off the panel) and :math:`\\rho` the
-  vector of expected accuracies, the optimal weights are
+  does **not** by itself make it the better of the two ``C = I`` rules.
+* ``method="decorrelated"`` drops the independence assumption. The two simple
+  rules approximate the score-correlation matrix by :math:`C=I`, while
+  discovery GWAS are frequently not independent. With :math:`C` estimated
+  from the scores in the target cohort and :math:`\\rho` the vector of expected
+  accuracies, the model-based weights are
   :math:`w \\propto C^{-1}\\rho`, which discounts a score for the information
   it shares with the others.
 
-**Use ``"decorrelated"``, and give it ``expected_r2`` rather than ``n_eff``.**
-Three same-trait scores (:math:`n_\\mathrm{eff}` 150k/60k/20k,
-:math:`h^2 = 0.4`, 5,000 causal variants, so :math:`Nh^2/M` = 12, 4.8, 1.6),
-r² against a simulated phenotype as the discovery cohorts are made to overlap
-(``simulate_same_trait_panel``, n = 40,000):
-
-===============  =============  ==============  =============  =============  =============
-overlap          best single    ``sqrt_n_eff``  ``expected_r2``  decorr(n_eff)  decorr(r²)
-===============  =============  ==============  =============  =============  =============
-none             0.364          0.373           0.366          0.190          **0.375**
-moderate (0.3)   0.364          0.361           0.352          0.179          **0.368**
-strong (0.6)     0.364          0.350           0.339          0.173          **0.367**
-severe (0.8)     0.364          0.343           0.330          0.170          **0.374**
-===============  =============  ==============  =============  =============  =============
-
-Three readings, and the second is counter-intuitive:
-
-1. **Decorrelation wins everywhere**, and past mild overlap it is the *only*
-   rule still beating the best single score. Both ``C = I`` rules fall below
-   it once the discovery cohorts share individuals, because they keep adding
-   information they have already counted.
-2. **``sqrt_n_eff`` beats ``expected_r2``**, which is not what "use the better
-   estimate of accuracy" would suggest. The optimal weight is
-   :math:`R_k/(1-R_k^2) = R_k(1+x_k) \\propto \\sqrt{x_k}\\sqrt{1+x_k}`, while
-   :math:`\\sqrt{n_\\mathrm{eff}} \\propto \\sqrt{x_k}` and
-   :math:`\\sqrt{R^2_k} \\propto \\sqrt{x_k/(1+x_k)}`. Accuracy *saturates* as
-   power grows and the optimal weight does not, so weighting by accuracy
-   under-weights the large GWAS — by a factor 5 across this panel, against
-   2.2 for :math:`\\sqrt{N}`. Sample size is the cruder statistic and the
-   better-shaped one.
-3. **``decorrelated`` with ``n_eff`` is much worse than doing nothing.**
-   :math:`C^{-1}` amplifies any error in :math:`\\rho`, and
-   :math:`\\sqrt{n_\\mathrm{eff}}` is a mis-specified :math:`\\rho` — fine as a
-   direct weight, ruinous inside a matrix inverse. The combination is permitted
-   because :math:`h^2` and polygenicity are not always available, but prefer
-   ``sqrt_n_eff`` over ``decorrelated`` if ``expected_r2`` is out of reach.
-
-``docs/theory.md`` derives all three.
+The reproducible comparison is ``benchmarks/meta_rules.py``. It reports every
+replicate, 30-seed means and standard deviations, and runtime provenance under
+``benchmarks/results/``. Its ``shared`` parameter is an **error-term
+correlation**, a stylized consequence of shared discovery information; it is
+not a literal fraction of overlapping samples. The committed simulation shows
+that decorrelation with ``expected_r2`` is robust as this correlation rises,
+whereas putting the :math:`\\sqrt{N}` approximation inside :math:`C^{-1}` is
+poor. Those results are a regression reference for this model, not evidence
+about real cohorts. ``docs/theory.md`` derives all three rules.
 
 **This module assumes the scores target one trait.** Weighting scores of
 *different* traits by their own sample sizes is wrong: what a score contributes
@@ -124,7 +93,7 @@ class MetaPGS:
     method: str
     log: dict = field(default_factory=dict)
 
-    def multi_pgs(self, scores):
+    def multi_pgs(self, scores, *, score_ids=None):
         """The combined score for new individuals: ``scores @ beta``.
 
         Scale and location are arbitrary — the weights are only defined up to a
@@ -132,11 +101,28 @@ class MetaPGS:
         no intercept. R², AUC and ranking are unaffected; if you need a
         calibrated predictor, regress this on the phenotype in a training set,
         or use :func:`multipgs.multi_pgs_fit`.
+
+        Pass a :class:`~multipgs.panel.ScorePanel` or ``score_ids=`` when the
+        scores were built separately. The identifiers are then checked so a
+        reordered panel cannot silently receive the wrong weights.
         """
+        if hasattr(scores, "scores") and hasattr(scores, "score_ids"):
+            if score_ids is None:
+                score_ids = scores.score_ids
+            scores = scores.scores
+        if score_ids is not None:
+            got = [str(s) for s in np.asarray(score_ids, dtype=object).ravel()]
+            want = [str(s) for s in np.asarray(self.score_ids,
+                                               dtype=object).ravel()]
+            if got != want:
+                raise ValueError(
+                    "these scores are not the ones this meta-PGS was built "
+                    "from, or are in a different order. Realign with "
+                    "panel.select(list(meta.score_ids)).")
         s = np.asarray(scores, dtype=float)
         if s.ndim == 1:
             s = s[None, :]
-        if s.shape[1] != self.beta.size:
+        if s.ndim != 2 or s.shape[1] != self.beta.size:
             raise ValueError(f"scores must have {self.beta.size} columns, got "
                              f"{s.shape}")
         return s @ self.beta
@@ -197,8 +183,12 @@ def meta_pgs(scores, *, n_eff=None, expected_r2=None, method="sqrt_n_eff",
     if method not in _METHODS:
         raise ValueError(f"method must be one of {_METHODS}, got {method!r}")
     if hasattr(scores, "scores"):          # a ScorePanel
+        panel_ids = np.asarray(scores.score_ids, dtype=object)
         if score_ids is None:
-            score_ids = np.asarray(scores.score_ids, dtype=object)
+            score_ids = panel_ids
+        elif ([str(s) for s in np.asarray(score_ids, dtype=object).ravel()]
+              != [str(s) for s in panel_ids.ravel()]):
+            raise ValueError("score_ids do not match the ScorePanel columns")
         scores = scores.scores
     S = np.asarray(scores, dtype=float)
     if S.ndim != 2:
@@ -206,19 +196,40 @@ def meta_pgs(scores, *, n_eff=None, expected_r2=None, method="sqrt_n_eff",
     if not np.all(np.isfinite(S)):
         raise ValueError("scores contain non-finite values")
     n, K = S.shape
+    if K == 0:
+        raise ValueError("scores must contain at least one score column")
     if score_ids is None:
         score_ids = np.array([f"score_{j}" for j in range(K)], dtype=object)
     score_ids = np.asarray(score_ids, dtype=object)
-    if score_ids.size != K:
+    if score_ids.shape != (K,):
         raise ValueError(f"score_ids has {score_ids.size} entries for {K} "
                          f"scores")
+    string_ids = [str(s) for s in score_ids]
+    if len(set(string_ids)) != K:
+        raise ValueError("score_ids must be unique")
 
-    center = S.mean(axis=0) if center is None else np.asarray(center,
-                                                              dtype=float)
+    center = (S.mean(axis=0) if center is None
+              else np.asarray(center, dtype=float))
+    if center.shape != (K,):
+        raise ValueError(f"center must have shape ({K},), got {center.shape}")
+    if not np.all(np.isfinite(center)):
+        raise ValueError("center must contain only finite values")
     if scale is None:
         scale = S.std(axis=0)
     else:
         scale = np.asarray(scale, dtype=float)
+    if scale.shape != (K,):
+        raise ValueError(f"scale must have shape ({K},), got {scale.shape}")
+    if not np.all(np.isfinite(scale)):
+        raise ValueError("scale must contain only finite values")
+    if np.any(scale < 0):
+        raise ValueError("scale must be non-negative")
+    try:
+        ridge_value = float(ridge)
+    except (TypeError, ValueError):
+        raise ValueError("ridge must be finite and non-negative") from None
+    if not np.isfinite(ridge_value) or ridge_value < 0:
+        raise ValueError("ridge must be finite and non-negative")
     dead = scale <= 1e-12
     scale = np.where(dead, 1.0, scale)
     if dead.any():
@@ -233,16 +244,21 @@ def meta_pgs(scores, *, n_eff=None, expected_r2=None, method="sqrt_n_eff",
            "dead_scores": int(dead.sum())}
 
     if method == "decorrelated":
-        Z = (S - center) / scale
+        # Do the centering and scaling in place on one copy; ``(S-center)/scale``
+        # otherwise holds two n-by-K temporaries at peak.
+        Z = S.copy()
+        Z -= center
+        Z /= scale
         Z[:, dead] = 0.0
-        C = np.corrcoef(Z, rowvar=False)
+        C = (np.ones((1, 1), dtype=float) if K == 1
+             else np.corrcoef(Z, rowvar=False))
         C = np.where(np.isfinite(C), C, 0.0)
         C = (C + C.T) * 0.5
         np.fill_diagonal(C, 1.0)
         C[dead, :] = 0.0
         C[:, dead] = 0.0
         C[dead, dead] = 1.0
-        A = C + float(ridge) * np.eye(K)
+        A = C + ridge_value * np.eye(K)
         log["condition_number"] = float(np.linalg.cond(A))
         try:
             w = np.linalg.solve(A, rho)

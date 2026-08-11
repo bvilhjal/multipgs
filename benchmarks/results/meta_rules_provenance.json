@@ -1,0 +1,32 @@
+{
+  "generated_utc": "2026-08-11T03:55:14.130721+00:00",
+  "elapsed_seconds": 1.5139273340028012,
+  "command": [
+    "/Users/au507860/anaconda3/envs/ldpred3-accelerate/bin/python",
+    "/Users/au507860/REPOS/multipgs/benchmarks/meta_rules.py"
+  ],
+  "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
+  "python": "3.14.6",
+  "multipgs": "0.2.0",
+  "numpy": "2.4.6",
+  "ldpred3": "0.4.6",
+  "numba": "0.66.0",
+  "parameters": {
+    "n": 40000,
+    "seeds": 30,
+    "shared": [
+      0.0,
+      0.3,
+      0.6,
+      0.8
+    ],
+    "n_eff": [
+      150000.0,
+      60000.0,
+      20000.0
+    ],
+    "h2": 0.4,
+    "m_causal": 5000,
+    "n_variants": 1000000
+  }
+}

@@ -47,7 +47,7 @@ fast = [
     "numba>=0.59; python_version < '3.14'",
     "numba>=0.66; python_version >= '3.14'",
 ]
-test = ["pytest>=7"]
+test = ["pytest>=7", "scikit-learn>=1.0"]
 lint = ["ruff>=0.5"]
 
 [tool.setuptools]

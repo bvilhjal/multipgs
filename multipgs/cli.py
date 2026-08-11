@@ -21,12 +21,13 @@ import sys
 import numpy as np
 
 
-def _read_table(path, *, value_columns=None, name="file"):
+def _read_table(path, *, value_columns=None, name="file",
+                require_single_id=False):
     """Read a whitespace/TSV table keyed by ``FID IID`` or ``IID``.
 
     Returns ``(keys, values, columns)``. A header is detected by its first
-    field being FID or IID (case-insensitive); without one, two leading
-    non-numeric columns are read as FID/IID and one as IID.
+    field being FID, IID, ID, SCORE or SCORE_ID (case-insensitive); without
+    one, two leading non-numeric columns are read as FID/IID and one as IID.
     """
     rows = []
     header = None
@@ -36,32 +37,45 @@ def _read_table(path, *, value_columns=None, name="file"):
             if not line or line.startswith("##"):
                 continue
             parts = line.split("\t") if "\t" in line else line.split()
-            if header is None and parts[0].lstrip("#").upper() in ("FID", "IID",
-                                                                  "ID"):
+            if header is None and parts[0].lstrip("#").upper() in (
+                    "FID", "IID", "ID", "SCORE", "SCORE_ID"):
                 header = [p.lstrip("#") for p in parts]
                 continue
             rows.append(parts)
     if not rows:
         raise SystemExit(f"{name}: {path} has no data rows")
 
-    width = len(rows[0])
+    width = len(header) if header is not None else len(rows[0])
     if header is not None:
         has_fid = header[0].upper() == "FID"
     else:
         has_fid = width > 2 and not _is_number(rows[0][1])
+    if require_single_id and has_fid:
+        raise SystemExit(f"{name}: {path} must use one SCORE/ID column, not "
+                         "FID IID")
     key_cols = 2 if has_fid else 1
     if width <= key_cols:
         raise SystemExit(f"{name}: {path} has no value columns")
 
     keys, values = [], []
     for parts in rows:
-        if len(parts) < width:
-            parts = parts + [""] * (width - len(parts))
-        keys.append(f"{parts[0]}:{parts[1]}" if has_fid
-                    else f"{parts[0]}:{parts[0]}")
+        if len(parts) != width:
+            raise SystemExit(f"{name}: {path} has a row with {len(parts)} "
+                             f"fields; expected {width}")
+        keys.append((parts[0], parts[1]) if has_fid
+                    else (parts[0], parts[0]))
         values.append(parts[key_cols:width])
     columns = (header[key_cols:width] if header
                else [f"col{i}" for i in range(width - key_cols)])
+
+    duplicate_columns = _duplicates(columns)
+    if duplicate_columns:
+        raise SystemExit(f"{name}: {path} has duplicate value column(s): "
+                         f"{', '.join(duplicate_columns)}")
+    duplicate_keys = _duplicates(keys)
+    if duplicate_keys:
+        raise SystemExit(f"{name}: {path} has duplicate identifier(s): "
+                         f"{', '.join(duplicate_keys[:3])}")
 
     if value_columns is not None:
         want = list(value_columns)
@@ -80,7 +94,26 @@ def _read_table(path, *, value_columns=None, name="file"):
                 out[i, j] = float(v)
             except ValueError:
                 out[i, j] = np.nan
-    return np.array(keys, dtype=object), out, columns
+    return _object_vector(keys), out, columns
+
+
+def _duplicates(values):
+    """Unique duplicate string values, preserving first duplicate order."""
+    seen, reported, out = set(), set(), []
+    for value in values:
+        value = str(value)
+        if value in seen and value not in reported:
+            out.append(value)
+            reported.add(value)
+        seen.add(value)
+    return out
+
+
+def _object_vector(values):
+    """A one-dimensional object array, including when values are tuples."""
+    out = np.empty(len(values), dtype=object)
+    out[:] = values
+    return out
 
 
 def _is_number(text):
@@ -105,7 +138,7 @@ def _align(*tables):
     for k, values in ((t[0], t[1]) for t in tables):
         lookup = {key: i for i, key in enumerate(k)}
         picked.append(values[[lookup[key] for key in order]])
-    return np.array(order, dtype=object), picked
+    return _object_vector(order), picked
 
 
 def _drop_missing(keys, arrays):
@@ -114,6 +147,40 @@ def _drop_missing(keys, arrays):
         if a.size:
             ok &= np.all(np.isfinite(a), axis=1)
     return keys[ok], [a[ok] for a in arrays], int(np.sum(~ok))
+
+
+def _read_score_vector(path, score_ids, *, name):
+    """Read one value per score and return it in ``score_ids`` order.
+
+    The first column must be a single score identifier (``SCORE``, ``ID`` or
+    ``IID``); unlike individual-level tables, a two-column ``FID IID`` key has
+    no meaning here. Exact key matching prevents a reordered metadata file from
+    silently assigning one score's sample size or penalty to another score.
+    """
+    keys, values, _ = _read_table(path, name=name, require_single_id=True)
+    if values.shape[1] != 1:
+        raise SystemExit(f"{name}: {path} has {values.shape[1]} value columns; "
+                         "expected exactly one")
+
+    ids = []
+    for left, right in keys:
+        assert left == right
+        ids.append(str(left))
+
+    want = [str(s) for s in np.asarray(score_ids, dtype=object)]
+    duplicate_want = _duplicates(want)
+    if duplicate_want:
+        raise SystemExit(f"--scores has duplicate score column(s): "
+                         f"{', '.join(duplicate_want)}")
+    lookup = {sid: i for i, sid in enumerate(ids)}
+    wanted = set(want)
+    missing = [sid for sid in want if sid not in lookup]
+    extra = [sid for sid in ids if sid not in wanted]
+    if missing or extra:
+        detail = (f"; missing {missing[:3]}" if missing else "") + \
+            (f"; unknown {extra[:3]}" if extra else "")
+        raise SystemExit(f"{name}: score ids do not match --scores{detail}")
+    return values[[lookup[sid] for sid in want], 0]
 
 
 # ---------------------------------------------------------------------------
@@ -171,12 +238,13 @@ def _cmd_fit(args):
 
     penalty = None
     if args.penalty_factor:
-        _, pf, _ = _read_table(args.penalty_factor, name="--penalty-factor")
-        penalty = pf.ravel()
+        penalty = _read_score_vector(args.penalty_factor, scores[2],
+                                     name="--penalty-factor")
 
     fit = multi_pgs_fit(
         S, y, covar=C, family=args.family, alpha=args.alpha,
-        n_folds=args.folds, n_lambda=args.n_lambda, seed=args.seed,
+        n_folds=args.folds, assessment_folds=args.assessment_folds,
+        n_lambda=args.n_lambda, seed=args.seed,
         penalty_factor=penalty, score_ids=scores[2],
         covar_ids=tables[2][2] if args.covar else None)
     print(fit.summary())
@@ -191,8 +259,7 @@ def _cmd_fit(args):
         combined = fit.multi_pgs(S)
         with open(args.out_score, "w", encoding="utf-8") as fh:
             fh.write("FID\tIID\tMULTI_PGS\n")
-            for key, value in zip(keys, combined):
-                fid, _, iid = key.partition(":")
+            for (fid, iid), value in zip(keys, combined):
                 fh.write(f"{fid}\t{iid}\t{value:.8g}\n")
         print(f"wrote in-sample combined score to {args.out_score}")
         print("  (in-sample: these individuals trained the combination, so "
@@ -207,22 +274,25 @@ def _cmd_meta(args):
 
     scores = _read_table(args.scores, name="--scores")
     keys, S, ids = scores[0], scores[1], scores[2]
-    _, n_eff, _ = _read_table(args.n_eff, name="--n-eff") if args.n_eff \
-        else (None, None, None)
-    if n_eff is None:
-        raise SystemExit("meta needs --n-eff")
-    n_eff = n_eff.ravel()
-    if n_eff.size != S.shape[1]:
-        raise SystemExit(f"--n-eff has {n_eff.size} rows for {S.shape[1]} "
-                         f"scores; it needs one row per score, keyed by score "
-                         f"id")
-    res = meta_pgs(S, n_eff=n_eff, method=args.method, score_ids=ids)
+    n_eff = (_read_score_vector(args.n_eff, ids, name="--n-eff")
+             if args.n_eff else None)
+    expected_r2 = (_read_score_vector(args.expected_r2, ids,
+                                      name="--expected-r2")
+                   if args.expected_r2 else None)
+    if args.method == "sqrt_n_eff" and n_eff is None:
+        raise SystemExit("meta --method sqrt_n_eff needs --n-eff")
+    if args.method == "expected_r2" and expected_r2 is None:
+        raise SystemExit("meta --method expected_r2 needs --expected-r2")
+    if args.method == "decorrelated" and n_eff is None and expected_r2 is None:
+        raise SystemExit("meta --method decorrelated needs --expected-r2 "
+                         "(preferred) or --n-eff")
+    res = meta_pgs(S, n_eff=n_eff, expected_r2=expected_r2,
+                   method=args.method, score_ids=ids)
     print(res.summary())
     combined = res.multi_pgs(S)
     with open(args.out, "w", encoding="utf-8") as fh:
         fh.write("FID\tIID\tMETA_PGS\n")
-        for key, value in zip(keys, combined):
-            fid, _, iid = key.partition(":")
+        for (fid, iid), value in zip(keys, combined):
             fh.write(f"{fid}\t{iid}\t{value:.8g}\n")
     print(f"wrote {args.out}")
     return 0
@@ -310,6 +380,9 @@ def build_parser():
     fit.add_argument("--alpha", type=float, default=1.0,
                      help="elastic-net mixing (1 = lasso)")
     fit.add_argument("--folds", type=int, default=10, help="CMSA folds")
+    fit.add_argument("--assessment-folds", type=int, default=5,
+                     help="outer folds for nested assessment and the signal "
+                          "gate")
     fit.add_argument("--n-lambda", type=int, default=100)
     fit.add_argument("--penalty-factor", help="per-score penalty factors")
     fit.add_argument("--seed", type=int)
@@ -319,8 +392,12 @@ def build_parser():
     meta = sub.add_parser("meta", help="combine same-trait scores, no "
                                        "phenotype needed")
     meta.add_argument("--scores", required=True, help="score matrix TSV")
-    meta.add_argument("--n-eff", required=True,
-                      help="one effective sample size per score")
+    meta.add_argument("--n-eff",
+                      help="one effective sample size per score, keyed by "
+                           "score id (sqrt_n_eff; decorrelated fallback)")
+    meta.add_argument("--expected-r2",
+                      help="one expected r2 per score, keyed by score id "
+                           "(expected_r2; preferred for decorrelated)")
     meta.add_argument("--out", required=True)
     meta.add_argument("--method", default="sqrt_n_eff",
                       choices=("sqrt_n_eff", "expected_r2", "decorrelated"))

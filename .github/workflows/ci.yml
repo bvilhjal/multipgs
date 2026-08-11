@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: bvilhjal/ldpred3
+          ref: dcde5737f720642105c0e1c79878219304fa3012
+          path: ldpred3
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install "./ldpred3[fast]"
+      - run: python -m pip install ".[fast,test,lint]"
+      - run: python -m ruff check .
+      - run: python -m pytest -q
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install --upgrade build twine
+      - run: python -m build
+      - run: python -m twine check dist/*
+      - name: Check source-distribution content
+        shell: python
+        run: |
+          import glob
+          import tarfile
+
+          archive, = glob.glob("dist/*.tar.gz")
+          with tarfile.open(archive) as source:
+              names = source.getnames()
+          for path in ("CHANGELOG.md", "docs/guide.md", "examples/minimal.py",
+                       "benchmarks/README.md", "benchmarks/meta_rules.py",
+                       "benchmarks/results/meta_rules.csv",
+                       "benchmarks/stack_scaling.py",
+                       "benchmarks/results/stack_scaling.csv"):
+              assert any(name.endswith("/" + path) for name in names), path

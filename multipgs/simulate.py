@@ -62,7 +62,14 @@ def simulate_panel(*, n=2000, n_scores=50, n_causal=5, h2=0.4, n_factors=4,
     beta_true[:n_causal] = rng.normal(size=n_causal)
     Z = (S - S.mean(axis=0)) / S.std(axis=0)
     g = Z @ beta_true
-    g = g / g.std()
+    g_scale = float(g.std())
+    if not np.isfinite(g_scale) or g_scale <= 1e-12:
+        raise ValueError("simulation produced a constant genetic value; "
+                         "increase n")
+    # Keep the reported coefficients and genetic value on the same unit-
+    # variance scale: Z @ beta_true is exactly genetic_value.
+    beta_true /= g_scale
+    g /= g_scale
 
     covar = rng.normal(size=(n, int(n_covar))) if n_covar else np.zeros((n, 0))
     covar_effect = covar @ (rng.normal(size=covar.shape[1]) * 0.3) \

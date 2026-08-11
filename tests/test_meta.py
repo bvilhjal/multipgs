@@ -104,7 +104,22 @@ def test_accepts_a_score_panel_directly(tmp_path):
     panel = panel_from_catalog(target["scoring_files"], target["prefix"])
     res = meta_pgs(panel, n_eff=[100_000, 50_000, 20_000])
     assert list(res.score_ids) == list(panel.score_ids)
-    assert res.multi_pgs(panel.scores).shape == (120,)
+    assert np.allclose(res.multi_pgs(panel), res.multi_pgs(panel.scores))
+    with pytest.raises(ValueError, match="different order"):
+        res.multi_pgs(panel.select([2, 1, 0]))
+    with pytest.raises(ValueError, match="not the ones"):
+        res.multi_pgs(panel.scores, score_ids=["a", "b", "c"])
+    with pytest.raises(ValueError, match="do not match"):
+        meta_pgs(panel, n_eff=[100_000, 50_000, 20_000],
+                 score_ids=panel.score_ids[::-1])
+
+
+def test_decorrelated_accepts_one_score():
+    scores = np.arange(10.0)[:, None]
+    res = meta_pgs(scores, expected_r2=[0.1], method="decorrelated")
+    assert res.weight == pytest.approx([1.0])
+    assert np.all(np.isfinite(res.multi_pgs(scores)))
+    assert res.log["condition_number"] == pytest.approx(1.0)
 
 
 def test_input_validation():
@@ -121,6 +136,24 @@ def test_input_validation():
         meta_pgs(sim.scores, n_eff=[1.0, -2.0, 3.0])
     with pytest.raises(ValueError, match="non-finite"):
         meta_pgs(np.full((10, 3), np.nan), n_eff=[1.0, 2.0, 3.0])
+    with pytest.raises(ValueError, match="unique"):
+        meta_pgs(sim.scores, n_eff=sim.n_eff, score_ids=["a", "a", "b"])
+    with pytest.raises(ValueError, match="center must have shape"):
+        meta_pgs(sim.scores, n_eff=sim.n_eff, center=[0.0, 0.0])
+    with pytest.raises(ValueError, match="center.*finite"):
+        meta_pgs(sim.scores, n_eff=sim.n_eff,
+                 center=[0.0, np.nan, 0.0])
+    with pytest.raises(ValueError, match="scale must have shape"):
+        meta_pgs(sim.scores, n_eff=sim.n_eff, scale=[1.0, 1.0])
+    with pytest.raises(ValueError, match="scale.*finite"):
+        meta_pgs(sim.scores, n_eff=sim.n_eff,
+                 scale=[1.0, np.inf, 1.0])
+    with pytest.raises(ValueError, match="scale must be non-negative"):
+        meta_pgs(sim.scores, n_eff=sim.n_eff, scale=[1.0, -1.0, 1.0])
+    for bad_ridge in (-1.0, np.nan, np.inf):
+        with pytest.raises(ValueError,
+                           match="ridge must be finite and non-negative"):
+            meta_pgs(sim.scores, n_eff=sim.n_eff, ridge=bad_ridge)
 
 
 def test_multi_pgs_checks_the_column_count():
@@ -128,3 +161,5 @@ def test_multi_pgs_checks_the_column_count():
     res = meta_pgs(sim.scores, n_eff=sim.n_eff)
     with pytest.raises(ValueError, match="3 columns"):
         res.multi_pgs(sim.scores[:, :2])
+    with pytest.raises(ValueError, match="3 columns"):
+        res.multi_pgs(np.zeros((2, 3, 1)))

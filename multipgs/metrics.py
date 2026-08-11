@@ -10,7 +10,7 @@ Three distinctions this module refuses to blur:
 * **R² of the score, not of the model.** :func:`r2` is the squared correlation
   between score and phenotype. A regression that also contains age, sex and
   principal components will report a much larger R²; that number describes the
-  covariates. When covariates are present the honest quantity is
+  covariates. When covariates are present the score-attributable quantity is
   :func:`incremental_r2` — how much the score adds on top of them.
 * **Observed vs liability scale.** For a case/control phenotype, R² on the 0/1
   scale depends on how many cases were sampled, so it is not comparable across
@@ -44,7 +44,24 @@ def _clean(y, pred):
                          f"{y.shape} and {pred.shape}")
     if y.size < 3:
         raise ValueError("need at least 3 individuals")
+    if not np.all(np.isfinite(y)):
+        raise ValueError("y contains non-finite values")
+    if not np.all(np.isfinite(pred)):
+        raise ValueError("pred contains non-finite values")
     return y, pred
+
+
+def _clean_covar(covar, n):
+    if covar is None:
+        return None
+    covar = np.asarray(covar, dtype=float)
+    if covar.ndim not in (1, 2):
+        raise ValueError("covar must be a vector or 2-dimensional matrix")
+    if covar.shape[0] != n:
+        raise ValueError("covar has the wrong number of rows")
+    if not np.all(np.isfinite(covar)):
+        raise ValueError("covar contains non-finite values")
+    return covar
 
 
 def r2(y, pred):
@@ -89,6 +106,7 @@ def incremental_r2(y, pred, covar=None):
     """
     y, pred = _clean(y, pred)
     n = y.size
+    covar = _clean_covar(covar, n)
     base = _ols_r2(y, _design(n, covar))
     full = _ols_r2(y, _design(n, covar, pred))
     return float(max(full - base, 0.0))
@@ -106,17 +124,12 @@ def auc(y, pred):
         raise ValueError("auc needs both cases and controls")
     order = np.argsort(pred, kind="mergesort")
     ranks = np.empty(pred.size, dtype=float)
-    ranks[order] = np.arange(1, pred.size + 1, dtype=float)
     # Average ranks within ties, so a score with no resolution gives 0.5.
-    s = np.sort(pred)
-    i = 0
-    while i < s.size:
-        j = i
-        while j + 1 < s.size and s[j + 1] == s[i]:
-            j += 1
-        if j > i:
-            ranks[order[i:j + 1]] = (i + j + 2) / 2.0
-        i = j + 1
+    s = pred[order]
+    starts = np.r_[0, np.flatnonzero(s[1:] != s[:-1]) + 1]
+    stops = np.r_[starts[1:], s.size]
+    average = (starts + stops + 1.0) / 2.0
+    ranks[order] = np.repeat(average, stops - starts)
     return float((np.sum(ranks[y == 1]) - n1 * (n1 + 1) / 2.0) / (n1 * n0))
 
 
@@ -147,6 +160,7 @@ def nagelkerke_r2(y, pred, covar=None):
     usual reported quantity for a case/control PGS.
     """
     y, pred = _clean(y, pred)
+    covar = _clean_covar(covar, y.size)
     if not np.all(np.isin(np.unique(y), (0.0, 1.0))):
         raise ValueError("nagelkerke_r2 needs y coded 0/1")
     n = y.size
@@ -188,6 +202,8 @@ def liability_r2(r2_observed, prevalence, prop_cases):
     c = (K * (1.0 - K)) ** 2 / (z * z * P * (1.0 - P))
     theta = i * ((P - K) / (1.0 - K)) * (i * ((P - K) / (1.0 - K)) - t)
     r2o = np.asarray(r2_observed, dtype=float)
+    if not np.all(np.isfinite(r2o)):
+        raise ValueError("r2_observed must contain only finite values")
     out = c * r2o / (1.0 + c * theta * r2o)
     return float(out) if out.ndim == 0 else out
 
@@ -260,9 +276,7 @@ def evaluate(y, pred, *, covar=None, family="gaussian", prevalence=None,
     y, pred = _clean(y, pred)
     if family not in ("gaussian", "binomial"):
         raise ValueError("family must be 'gaussian' or 'binomial'")
-    covar_arr = None if covar is None else np.asarray(covar, dtype=float)
-    if covar_arr is not None and covar_arr.shape[0] != y.size:
-        raise ValueError("covar has the wrong number of rows")
+    covar_arr = _clean_covar(covar, y.size)
 
     def compute(idx):
         yy, pp = y[idx], pred[idx]

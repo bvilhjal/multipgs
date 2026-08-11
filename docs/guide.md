@@ -12,8 +12,8 @@
   individuals will fit something; the cross-validated number will be wide.
 - **Covariates**, if the cohort needs them — age, sex, genotyping batch,
   principal components.
-- **Held-out individuals**, ideally. `fit.cv_r2` substitutes when you have none,
-  with the caveats in §5.
+- **Held-out individuals**, ideally. `fit.cv_r2` is a nested internal estimate
+  when you have none, with the caveats in §5.
 
 **To combine without a phenotype** (`meta_pgs`): scores for the **same** trait
 from different discovery GWAS, and each GWAS's effective sample size. Nothing
@@ -42,13 +42,15 @@ how weak your own score is**. At a genetic correlation of 0.5 with one auxiliary
 trait, the relative gain runs from about +115% when your own GWAS is badly
 underpowered to +0.7% when it is well powered
 ([theory.md §1](theory.md#why-the-gain-concentrates-on-underpowered-traits) has
-the table and its derivation). If your own trait has a 500,000-sample GWAS
-behind it, expect very little; if it has 20,000, expect a lot.
+the table and its derivation). Holding heritability, polygenicity, ancestry
+transfer and auxiliary genetic correlation fixed, a larger focal GWAS usually
+leaves less room to gain. Use `x = n_eff·h²/M`, not sample size alone, to judge
+the regime.
 
-Separately, the combination costs roughly `(K/n)·(1 - R²)` in optimism from
-estimating `K` weights in `n` people. Hundreds of individuals will fit
-something, but with `K` in the hundreds it will fit mostly noise; the null gate
-described in §4 exists for that case.
+For an unregularized fit, optimism is of order `(df/n)·(1 - R²)`. Elastic-net
+`df` is effective model complexity, not necessarily `K`; nevertheless, large
+`K` relative to `n` raises overfitting risk. Regularization and the nested gate
+mitigate that risk but do not abolish it.
 
 ## 2. Building the panel
 
@@ -87,7 +89,8 @@ from multipgs import panel_from_sumstats
 
 panel = panel_from_sumstats(
     {"height": "height.tsv.gz", "bmi": "bmi.tsv.gz"},
-    "cohort", ld_cache="ld/cohort", method="auto")
+    "cohort", ld_cache="ld/cohort", method="auto",
+    infer=True, auto_chains=50)
 ```
 
 Each trait is fitted with `ldpred3.run_ldpred3_prs`. **Pass `ld_cache`**: the LD
@@ -95,6 +98,9 @@ reference is built by the first trait and reused by the rest, which is the
 difference between one LD build and `K` of them. Doing so sets
 `subset_to_sumstats=False` so the blocks span the same variants for every trait.
 
+`infer=True, auto_chains=50` requests the multi-chain architecture summary used
+by §3 and records the exact attempted-chain count. It adds inference work; omit
+both arguments if you only need scores and do not plan to screen architectures.
 This is also how you produce the target trait's own score, which belongs in the
 panel like any other.
 
@@ -115,8 +121,8 @@ both = ScorePanel(
     weights=cat.weights + own.weights, meta=cat.meta + own.meta, log={})
 ```
 
-Both panels must be built on the same target so the rows correspond; if they are
-not, use `cat.align(own)` first.
+Both panels must be built on the same target so the rows correspond. Alignment
+returns two panels, so write `cat, own = cat.align(own)` before concatenating.
 
 ## 3. Screening the panel
 
@@ -136,6 +142,17 @@ Scores with no fitted architecture behind them — every PGS Catalog file — ar
 kept and flagged rather than failed, because failing them would empty a catalog
 panel. Set `keep_unscreenable=False` if you want only fitted scores.
 
+For a fitted architecture, the defaults require `h²` in `[0.01, 1]`, at least
+20 retained chains from at least 50 attempted, at least 60,000 post-QC variants,
+and `n_eff > 10,000`. Missing data for an enabled gate fails that score. Current
+LDpred3 results retain the kept-chain count but not always the attempted count;
+Inference itself must be requested with `infer=True`. `panel_from_sumstats`
+preserves an exact total when you also pass `auto_chains=` or
+`infer_params={"n_chains": ...}`, and never guesses it from the kept count.
+Hansen et al.'s fitted shrinkage-coefficient gate is available as
+`min_shrinkage=0.4`, but is off by default because LDpred3's `shrink_corr` is a
+different input, not that fitted quantity.
+
 Screening is not the same as penalising. If you would rather keep a weak score
 and shrink it harder:
 
@@ -143,7 +160,8 @@ and shrink it harder:
 from multipgs import daetwyler_r2, penalty_from_accuracy
 
 pf = penalty_from_accuracy(daetwyler_r2(h2, p, n_eff, n_variants))
-fit = multi_pgs_fit(panel.scores, y, penalty_factor=pf, ...)
+fit = multi_pgs_fit(panel.scores, y, penalty_factor=pf,
+                    score_ids=panel.score_ids, seed=1)
 ```
 
 Read `penalty_from_accuracy`'s note first: it weights by each score's accuracy
@@ -161,19 +179,23 @@ print(fit.summary())
 
 The options worth knowing:
 
+**Table 1. Fitting options that change the statistical contract.**
+
 | Option | When to change it |
 |---|---|
-| `family` | `"binomial"` for case/control. Slower; the Gaussian path is Gram-based and independent of `n`, the binomial one is not. |
-| `alpha` | `1.0` (lasso) follows the paper. A grid like `[1.0, 0.5, 0.1]` lets each fold choose; with many near-duplicate scores, a lower `alpha` spreads weight rather than picking one arbitrarily. |
-| `n_folds` | 10 is the `bigstatsr` default. Fewer folds means noisier per-fold selection. |
-| `unpenalized_scores` | The target trait's own score, if you want the combination to only ever add to it. It also changes what `cv_r2` means — see below. |
+| `family` | `"binomial"` for case/control. Slower; after Gaussian sufficient statistics are formed, each path is independent of `n`, whereas binomial IRLS is not. |
+| `alpha` | `1.0` is lasso and follows the authors' released [`e_net.R`](https://github.com/ClaraAlbi/paper_multiPGS/blob/main/code/e_net.R). The published Methods says `alpha=0`; that conflicts with the code. A grid like `[1.0, 0.5, 0.1]` lets each fold choose. |
+| `n_folds` | 10 is the `bigstatsr` default. More folds train closer to the full sample but select on smaller, noisier validation folds; 5–10 is the ordinary range. |
+| `assessment_folds` | Outer folds for nested performance assessment and the incremental-signal gate. The default 5 is separate from the final CMSA's `n_folds`; increasing it costs additional inner fits. |
+| `unpenalized_scores` | Scores that belong in the baseline, usually the target trait's own score. Their coefficients remain fitted—not fixed at one—and they are retained if the penalized additions fail the gate. |
 | `penalty_factor` | Per-score shrinkage; see §3. |
-| `missing` | `"raise"` by default. `"mean"` fills each score's gaps with its column mean. |
+| `missing` | `"raise"` by default. `"mean"` learns imputation means inside each outer-training set for assessment, then from all rows for the final estimator. |
 | `seed` | Set it. Fold assignment is random, and without a seed the fit is not reproducible. |
 
-Covariates are fitted **unpenalized inside the same regression**, which is not
-the same as regressing them out first: the scores are selected against what the
-covariates cannot already explain.
+Covariates are fitted **unpenalized inside the same regression**, so scores are
+selected against what the covariates cannot already explain. For Gaussian loss
+this equals residualising both the phenotype and every score on the covariates;
+for binomial loss it does not.
 
 ### Reading the result
 
@@ -181,24 +203,24 @@ covariates cannot already explain.
 fit.multi_pgs(scores)        # the combined score -- what you evaluate
 fit.predict(scores, covar)   # full linear predictor, incl. covariates
 fit.selected(top=10)         # (score_id, beta_std, beta), largest first
-fit.cv_r2                    # cross-validated, incremental over covariates
-fit.n_folds_used             # folds that beat their own covariate-only model
+fit.cv_r2                    # nested predictive gain over the baseline
+fit.n_folds_used             # all CMSA folds on a pass; zero on fallback
 ```
 
 Rank scores by `beta_std`, not `beta`: raw coefficients depend on whatever scale
 each input score happened to arrive on.
 
-With `unpenalized_scores`, the baseline that `cv_r2` is incremental *over*
-includes those scores, because they are in the model at every penalty. So
-`cv_r2` becomes the gain over your own trait's score rather than over the
-covariates alone — usually the more interesting number, and a different one. On
-one panel and seed the same fit reports 0.360 flat and 0.169 with the target
-trait's own score unpenalized; both are correct, and they answer different
-questions.
+`cv_r2 = (SSE_baseline - SSE_inner_CMSA) / SST` over untouched outer folds. It
+is a predictive loss gain, not `incremental_r2`: the latter recalibrates the
+supplied score by OLS in the assessment cohort. With `unpenalized_scores`, the baseline
+includes those scores, so `cv_r2` becomes the gain over the fitted target-trait
+score plus covariates rather than over covariates alone.
 
-If `fit.beta` is all zero, cross-validation did not beat the covariate-only
-model. That is a result — "these scores did not predict here" — not a bug, and
-`fit.summary()` says so.
+The penalized stack is returned only when the mean outer-fold gain exceeds one
+standard error. Otherwise `fit.log["null_model"]` is present and the returned
+fit is the full-data unpenalized baseline. "Null" describes the *increment*:
+forced scores and covariate coefficients remain fitted, and `fit.beta` need not
+be all zero. `fit.summary()` spells this out.
 
 ## 5. Evaluating, and the ways this goes wrong
 
@@ -236,8 +258,8 @@ partly fitted to your own data, the combination will reward it for that, and
 every number goes up. Many PGS Catalog scores are UK Biobank-derived, so a UK
 Biobank target is the worst case — check each score's development samples in its
 Catalog metadata. This must be excluded when the panel is built;
-nothing downstream can detect it. `fit.cv_r2` is honest about the fitting
-procedure and completely blind to this.
+nothing downstream can detect it. `fit.cv_r2` nests the fitting and tuning
+procedure, but it is completely blind to discovery/target overlap.
 
 **Evaluate the score, not the model.** `r2` of a prediction that already
 contains age and sex describes age and sex. With covariates, `incremental_r2`
@@ -247,16 +269,16 @@ is the quantity to report, and it is what `evaluate` adds automatically.
 on how many cases were sampled and is not comparable to anyone else's number.
 Pass `prevalence=`.
 
-**Ancestry is not modelled anywhere in this package.** Most PGS Catalog scores
+**Ancestry is not modelled anywhere in this package.** Many PGS Catalog scores
 are European-derived, and accuracy falls substantially in a target ancestry
 unmatched to discovery. Note the asymmetry: `multi_pgs_fit`'s coefficients and
 `meta_pgs`'s `C` are estimated in *your* cohort and so are appropriate to it,
 but `daetwyler_r2`, `screen`, `penalty_from_accuracy` and
 `meta_pgs(expected_r2=…)` are ancestry-blind — `h²`, `p` and `n_eff` describe
 the discovery cohort. Ancestry principal components in the covariate set are
-mandatory, not optional, and `screen`'s convergence gate will fire on
-mixed-ancestry discovery samples for a reason users often misread as a data
-problem. See [theory.md §4](theory.md#ancestry).
+standard practice. A failed convergence gate may indicate discovery/LD-reference
+mismatch, but it does not by itself identify ancestry as the cause. See
+[theory.md §4](theory.md#ancestry).
 
 **Report the interval — and know where it is bounded by construction.**
 `evaluate` bootstraps by default. With a few thousand individuals the interval
@@ -299,7 +321,7 @@ meta-analysis. Then no training cohort is needed:
 from multipgs import meta_pgs
 
 combined = meta_pgs(panel, n_eff=[150_000, 60_000, 20_000])
-prs = combined.multi_pgs(panel.scores)
+prs = combined.multi_pgs(panel)
 ```
 
 Do **not** use it on a heterogeneous panel of different traits. Weighting scores

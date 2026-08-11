@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.2.0
+
+Correctness, integrity, and packaging hardening after the first release.
+
+### Stacking
+
+- `cv_r2` is now a genuinely nested outer-fold predictive gain over the fitted
+  unpenalized baseline. Grid construction, imputation, inner CMSA, and fitting
+  do not see the corresponding assessment rows.
+- Final CMSA averages every fold-selected vector. If the nested signal gate
+  fails, the full-data baseline is returned, preserving covariates and forced
+  scores; `null_model` now means a null *penalized increment*.
+- Ridge has an explicit unpenalized candidate, missing-value means are learned
+  within each outer-training set, and duplicate normalized identifiers fail.
+- Gaussian fold fitting reuses stable, chunked sufficient statistics while
+  retaining only one held-out Gram at a time.
+
+### Panels, metadata, and command line
+
+- Sum-statistic panels validate both FID and IID, preserve explicit inference
+  controls, and never infer attempted chains from the retained count.
+- Catalog panels store one read-only union metadata table with compact per-score
+  indices. The fully overlapping regression uses 25% of the former NumPy-buffer
+  bytes, while panels remain pickleable and deepcopyable.
+- Score metadata and penalty vectors align by score ID throughout the Python and
+  command-line APIs; duplicate rows, columns, samples, and normalized IDs fail.
+- `meta --method expected_r2` is reachable, and `MetaPGS` validates score order
+  just like a learned fit.
+
+### Architecture, documentation, and distribution
+
+- `screen` implements the represented model-level gates: heritability, retained
+  and attempted chains, post-QC variants, strict effective sample size, and an
+  optional fitted shrinkage coefficient distinct from `shrink_corr`.
+- Penalty-factor projection now satisfies both its individual bounds and unit
+  geometric mean, and rejects unclipped numerical underflow to zero.
+- Scientific claims were reconciled with the implementation and reproducible
+  30-seed meta-rule and stack-scaling benchmarks were added with provenance.
+- Source distributions now include the documentation, examples, changelog,
+  benchmarks, and tests. CI covers Python 3.9, 3.13, and 3.14.
+
 ## 0.1.0
 
 First release of `multipgs`. The repository was previously named `pypcma` and

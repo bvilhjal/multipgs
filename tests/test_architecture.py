@@ -24,13 +24,17 @@ def test_daetwyler_is_monotone_and_bounded_by_h2():
 
 def test_daetwyler_returns_nan_for_impossible_inputs():
     assert np.isnan(daetwyler_r2(0.0, 1e-3, 1e5, 1e6))
+    assert np.isnan(daetwyler_r2(1.1, 1e-3, 1e5, 1e6))
     assert np.isnan(daetwyler_r2(0.4, 0.0, 1e5, 1e6))
+    assert np.isnan(daetwyler_r2(0.4, 1.1, 1e5, 1e6))
     assert np.isnan(daetwyler_r2(0.4, 1e-3, np.nan, 1e6))
+    assert np.isnan(daetwyler_r2(0.4, 1e-3, 1e5, -1))
 
 
 def _arch(**kw):
     base = dict(score_id="s", h2=0.3, p=1e-3, r2_infer=0.1, n_chains_kept=50,
-                n_chains=50, n_variants=1_000_000, n_eff=100_000)
+                n_chains=50, n_variants=1_000_000, n_eff=100_000,
+                shrinkage=0.5)
     base.update(kw)
     return Architecture(**base)
 
@@ -41,6 +45,8 @@ def test_screen_passes_a_good_score_and_names_each_failure():
         "low_h2": (_arch(score_id="low_h2", h2=0.001), "heritability below"),
         "high_h2": (_arch(score_id="high_h2", h2=1.5), "heritability above"),
         "chains": (_arch(score_id="chains", n_chains_kept=5), "chains"),
+        "total": (_arch(score_id="total", n_chains_kept=20, n_chains=49),
+                  "total chains"),
         "variants": (_arch(score_id="variants", n_variants=1000), "variants"),
         "small_n": (_arch(score_id="small_n", n_eff=500), "effective sample"),
     }
@@ -51,12 +57,49 @@ def test_screen_passes_a_good_score_and_names_each_failure():
             assert sid not in res.reasons
         else:
             assert expect in res.reasons[sid]
-    assert "kept 1 of 6" in res.summary()
+    assert "kept 1 of 7" in res.summary()
+
+
+@pytest.mark.parametrize(
+    ("changes", "reason"),
+    [({"n_chains_kept": 0}, "converged chain count not available"),
+     ({"n_chains": 0}, "total chain count not available"),
+     ({"n_variants": 0}, "post-QC variant count not available"),
+     ({"n_eff": np.nan}, "effective sample size not available")])
+def test_fitted_scores_fail_when_enabled_gate_metadata_is_missing(changes,
+                                                                  reason):
+    fitted = _arch(score_id="fitted", **changes)
+    result = screen([fitted])
+    assert result.keep.tolist() == [False]
+    assert result.reasons["fitted"] == reason
+
+
+def test_screen_gates_can_be_disabled_explicitly():
+    fitted = _arch(n_chains_kept=0, n_chains=0, n_variants=0, n_eff=np.nan)
+    result = screen([fitted], min_chains_kept=None, min_chains_total=None,
+                    min_variants=None, min_n_eff=None)
+    assert result.keep.tolist() == [True]
+
+
+def test_effective_sample_threshold_is_strict():
+    assert not screen([_arch(n_eff=10_000)]).keep[0]
+    assert screen([_arch(n_eff=np.nextafter(10_000.0, np.inf))]).keep[0]
+
+
+def test_shrinkage_gate_is_explicit_and_missing_values_fail():
+    archs = [_arch(score_id="pass", shrinkage=0.4),
+             _arch(score_id="low", shrinkage=0.39),
+             _arch(score_id="missing", shrinkage=np.nan)]
+    result = screen(archs, min_shrinkage=0.4)
+    assert result.keep.tolist() == [True, False, False]
+    assert "below 0.4" in result.reasons["low"]
+    assert "not available" in result.reasons["missing"]
 
 
 def test_unscreenable_scores_are_kept_by_default_and_flagged():
     archs = [_arch(score_id="fitted"),
-             Architecture(score_id="catalog")]          # all-nan
+             Architecture(score_id="catalog", n_variants=1_000_000,
+                          n_eff=200_000)]                 # no fitted model
     res = screen(archs)
     assert res.keep.tolist() == [True, True]
     assert res.unscreenable.tolist() == [False, True]
@@ -73,10 +116,11 @@ def test_expected_r2_gate_is_opt_in():
 
 
 def test_penalty_factors_have_geometric_mean_one_and_respect_the_clip():
-    pf = penalty_from_accuracy([0.2, 0.05, 0.01, 0.001])
+    pf = penalty_from_accuracy([1.0, 1e-30, 1e-30], floor=1e-30)
     assert np.exp(np.mean(np.log(pf))) == pytest.approx(1.0)
-    assert np.all(np.diff(pf) > 0)            # less accurate, more penalty
-    assert pf.max() / pf.min() <= 4.0 ** 2 + 1e-9
+    assert pf[0] < pf[1] == pytest.approx(pf[2])
+    assert pf.min() >= 1 / 4 - 1e-12
+    assert pf.max() <= 4 + 1e-12
 
 
 def test_penalty_treats_missing_accuracy_as_the_worst_case():
@@ -94,6 +138,21 @@ def test_penalty_rejects_a_clip_below_one():
         penalty_from_accuracy([0.1, 0.2], clip=0.5)
 
 
+@pytest.mark.parametrize(
+    ("values", "kwargs", "message"),
+    [([], {}, "at least one"),
+     ([0.1, 1.1], {}, "must be <= 1"),
+     ([0.1], {"power": -1}, "power must be"),
+     ([0.1], {"power": np.inf}, "power must be"),
+     ([1e-300, 1], {"power": 1e308}, "power is too large"),
+     ([0.1], {"floor": 0}, "floor must be"),
+     ([0.1], {"floor": 2}, "floor must be"),
+     ([0.1], {"clip": np.inf}, "clip must be")])
+def test_penalty_input_contract(values, kwargs, message):
+    with pytest.raises(ValueError, match=message):
+        penalty_from_accuracy(values, **kwargs)
+
+
 def test_architectures_read_back_from_a_panel():
     from multipgs.panel import ScorePanel
 
@@ -104,13 +163,16 @@ def test_architectures_read_back_from_a_panel():
         standardized=np.ones(2, dtype=bool), weights=[],
         meta=[{"n_matched": 900_000,
                "inference": {"h2_est": 0.25, "p_est": 2e-3, "r2_est": 0.08,
-                             "n_chains_kept": 40}},
-              {"n_matched": 5000}])
+                             "n_chains_kept": 40, "n_chains": 50,
+                             "shrinkage": 0.45, "shrink_corr": 0.9}},
+              {"n_matched": 5000, "shrink_corr": 0.8}])
     archs = architectures_from_panel(panel, n_eff={"a": 200_000})
     assert archs[0].h2 == 0.25 and archs[0].n_chains_kept == 40
+    assert archs[0].n_chains == 50 and archs[0].shrinkage == 0.45
     assert archs[0].n_eff == 200_000
     assert archs[0].expected_r2() > 0
     assert np.isnan(archs[1].h2) and np.isnan(archs[1].n_eff)
+    assert np.isnan(archs[1].shrinkage)       # shrink_corr is not this metric
     res = screen(archs)
     assert res.keep.tolist() == [True, True]   # second is unscreenable
 
@@ -125,3 +187,42 @@ def test_architectures_from_panel_checks_n_eff_length():
                        meta=[{}, {}])
     with pytest.raises(ValueError, match="1 entries for 2 scores"):
         architectures_from_panel(panel, n_eff=[100.0])
+
+
+def test_architectures_align_duck_typed_keyed_n_eff_by_score_id():
+    from multipgs.panel import ScorePanel
+
+    class KeyedValues:
+        def items(self):
+            return [("b", 20_000), ("a", 100_000)]
+
+        def __array__(self):  # positional fallback would reverse the answer
+            return np.array([20_000, 100_000])
+
+    panel = ScorePanel(
+        scores=np.zeros((3, 2)), sample_fid=np.arange(3),
+        sample_iid=np.arange(3), score_ids=np.array(["a", "b"], dtype=object),
+        standardized=np.ones(2, dtype=bool))
+    archs = architectures_from_panel(panel, n_eff=KeyedValues())
+    assert [arch.n_eff for arch in archs] == [100_000, 20_000]
+
+
+def test_unclipped_penalties_cannot_underflow_to_unpenalized_zero():
+    values = [1.0] + [1e-300] * 99
+    with pytest.raises(ValueError, match="underflow or overflow"):
+        penalty_from_accuracy(values, power=3, floor=1e-300, clip=None)
+
+
+def test_screen_rejects_ambiguous_or_invalid_contracts():
+    with pytest.raises(ValueError, match="duplicate score_id"):
+        screen([_arch(score_id="same"), _arch(score_id="same")])
+    with pytest.raises(ValueError, match="cannot exceed"):
+        screen([_arch(n_chains_kept=51, n_chains=50)])
+    with pytest.raises(ValueError, match="h2_range"):
+        screen([_arch()], h2_range=(0.5, 0.2))
+    with pytest.raises(ValueError, match="min_variants"):
+        screen([_arch()], min_variants=0.5)
+    with pytest.raises(ValueError, match="min_shrinkage"):
+        screen([_arch()], min_shrinkage=1.1)
+    with pytest.raises(ValueError, match="shrinkage must be"):
+        screen([_arch(shrinkage=1.1)])
