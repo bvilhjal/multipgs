@@ -898,6 +898,33 @@ def main(argv=None):
               f"p {auto.p_est:.3g} [{auto.p_ci[0]:.3g}, {auto.p_ci[1]:.3g}], "
               f"{auto.n_chains_kept}/{auto.n_chains} chains kept "
               f"({time.perf_counter() - t_auto:.0f}s)")
+        # The closed form checks the sampler, not the other way round.
+        # daetwyler_r2 at auto's OWN inferred h2 and p is what a predictor
+        # achieves knowing which variants are causal and facing no LD noise, so
+        # it is an upper reference: a sampled r2_est materially above it is not
+        # a better score, it is a fit to distrust -- unconverged chains, an LD
+        # reference that does not match the GWAS, or QC that dropped the wrong
+        # variants. Well below it is ordinary, since real LD and finite
+        # reference cost accuracy the bound never pays.
+        #
+        # This is the only check available on this panel. r2_est is the
+        # accuracy of an LDpred3 fit to one GWAS, so it exists for the target
+        # and not per score: the Catalog distributes weights, not summary
+        # statistics, and daetwyler_r2 is used precisely because n_eff is all a
+        # Catalog score supplies. Where a panel is built by
+        # multipgs.panel_from_sumstats instead, every component has its own
+        # auto fit and expected_r2 should come from r2_est directly.
+        closed_form = float(daetwyler_r2(
+            float(auto.h2_est), float(auto.p_est), float(args.gwas_n_eff),
+            meta["n_variants_total"]))
+        print(f"predictive r2: LDpred3-auto {auto.r2_est:.4f} "
+              f"[{auto.r2_ci[0]:.4f}, {auto.r2_ci[1]:.4f}] against the "
+              f"daetwyler_r2 bound {closed_form:.4f} at auto's own h2 and p")
+        if auto.r2_est > closed_form * 1.05:
+            print("  WARNING: the sampled predictive r2 exceeds the bound that "
+                  "assumes causal variants known and no LD noise. Treat this "
+                  "fit as suspect: check chain convergence, whether the LD "
+                  "reference matches the GWAS, and n_chains_kept.")
         # LDpred3-auto is the more accurate of the two where there is signal,
         # and the first to fail where there is not. The threshold is on the
         # estimate itself rather than on chain agreement because a sampler

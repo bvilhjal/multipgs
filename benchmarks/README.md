@@ -334,6 +334,22 @@ where each score carries its own.
 The two estimators disagree by more than auto's credible interval covers, so
 neither should be quoted as the trait's heritability; both are recorded.
 
+`daetwyler_r2` at auto's *own* inferred h2 and p is reported next to auto's
+predictive r2, and the check runs in that direction: the closed form describes
+a predictor that knows which variants are causal and faces no LD, so it is an
+upper reference for the sampler. A sampled r2 above it is a fit to distrust,
+not a better score. On the CAD panel auto returned 0.0213 [0.0198, 0.0227]
+against a bound of 0.0413 — about half, which is what paying real LD and a
+finite reference costs, so the fit is self-consistent.
+
+That anchor is also worth reading against the rules. Auto says a score built
+from this 163k-effective GWAS is worth about R2 0.02 out of sample, while the
+best single Catalog score scores 0.086 against the same GWAS and the oracle
+single 0.457. The estimands differ — those scores were built from other GWAS —
+but no CAD score from data of this scale plausibly reaches 0.46 on the observed
+scale. Cohort metadata says these numbers are contaminated; the architecture
+says so too, from an independent direction.
+
 ## Summary-statistic cost at real dimensions
 
 `stack_scaling.py` above times the individual-level fit and warns that its

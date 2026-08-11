@@ -1,6 +1,6 @@
 {
-  "generated_utc": "2026-08-11T21:16:44.413934+00:00",
-  "elapsed_seconds": 539.3018462499895,
+  "generated_utc": "2026-08-11T21:29:49.893523+00:00",
+  "elapsed_seconds": 560.5151828340022,
   "command": [
     "/Users/au507860/anaconda3/envs/ldpred3/bin/python",
     "/Users/au507860/REPOS/multipgs/benchmarks/real_meta_rules.py",
@@ -17,7 +17,7 @@
     "--gwas-n-eff",
     "163123",
     "--gwas-cohorts",
-    "CARDIoGRAMplusC4D,ADVANCE,ARIC,MIGen,WTCCC,PennCATH,LURIC,GerMIFS",
+    "CARDIoGRAMplusC4D,ADVANCE,ARIC,MIGen,WTCCC,PennCATH",
     "--regime",
     "C",
     "--h2",
@@ -58,8 +58,6 @@
       "ADVANCE",
       "ARIC",
       "CARDIoGRAMplusC4D",
-      "GerMIFS",
-      "LURIC",
       "MIGen",
       "PennCATH",
       "WTCCC"
@@ -140,7 +138,7 @@
     "gwas_format": "cardiogram",
     "gwas_columns": null,
     "gwas_n_eff": 163123.0,
-    "gwas_cohorts": "CARDIoGRAMplusC4D,ADVANCE,ARIC,MIGen,WTCCC,PennCATH,LURIC,GerMIFS",
+    "gwas_cohorts": "CARDIoGRAMplusC4D,ADVANCE,ARIC,MIGen,WTCCC,PennCATH",
     "regime": "C",
     "h2": 0.4,
     "m_causal": 20000.0,
