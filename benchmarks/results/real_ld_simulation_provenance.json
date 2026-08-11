@@ -1,0 +1,73 @@
+{
+  "generated_utc": "2026-08-11T20:12:15.271334+00:00",
+  "elapsed_seconds": 1141.2211453330237,
+  "command": [
+    "/Users/au507860/anaconda3/envs/ldpred3/bin/python",
+    "/Users/au507860/REPOS/multipgs/benchmarks/real_ld_simulation.py",
+    "--ld",
+    "/Users/au507860/REPOS/ldpred3/benchmarks/.work/ldref-hm3/ldpred3_ldref_hm3.npz",
+    "--chrom",
+    "21",
+    "22",
+    "--seeds",
+    "15",
+    "--n-scores",
+    "120",
+    "--reference-n",
+    "inf",
+    "5000",
+    "1000",
+    "200",
+    "50",
+    "--n-lambda",
+    "50"
+  ],
+  "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
+  "python": "3.14.6",
+  "multipgs": "0.3.0",
+  "numpy": "2.4.6",
+  "ldpred3": "0.3.1",
+  "numba": "0.66.0",
+  "ld_reference": {
+    "path": "/Users/au507860/REPOS/ldpred3/benchmarks/.work/ldref-hm3/ldpred3_ldref_hm3.npz",
+    "sha256": "06b5bc3a8887d231ef27c741a0c433ccef03b426a6ddbbc3d5de0ba9adb8b309",
+    "n_blocks": 49,
+    "n_variants": 30562
+  },
+  "parameters": {
+    "ld": "/Users/au507860/REPOS/ldpred3/benchmarks/.work/ldref-hm3/ldpred3_ldref_hm3.npz",
+    "chrom": [
+      "21",
+      "22"
+    ],
+    "seeds": 15,
+    "n_scores": 120,
+    "h2": 0.3,
+    "polygenicity": 0.01,
+    "n_eff_target": 50000.0,
+    "n_eff_aux": [
+      50000.0,
+      400000.0
+    ],
+    "rg": [
+      0.1,
+      0.7
+    ],
+    "reference_n": [
+      "inf",
+      "5000",
+      "1000",
+      "200",
+      "50"
+    ],
+    "ld_shrinkage": [
+      0.0,
+      0.001,
+      0.01,
+      0.1
+    ],
+    "n_lambda": 50,
+    "output_dir": "/Users/au507860/REPOS/multipgs/benchmarks/results"
+  },
+  "note": "Real LD, simulated summary statistics, closed-form truth. The assessment GWAS is drawn independently of the fitting and tuning GWAS, which is what makes the regime A label checkable here and is precisely what real successive GWAS releases do not provide. No real-data accuracy is claimed."
+}

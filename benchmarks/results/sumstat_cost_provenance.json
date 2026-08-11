@@ -1,0 +1,78 @@
+{
+  "generated_utc": "2026-08-11T20:06:00.814453+00:00",
+  "elapsed_seconds": 56.18638525001006,
+  "command": [
+    "/Users/au507860/anaconda3/bin/python",
+    "/Users/au507860/REPOS/multipgs/benchmarks/sumstat_cost.py",
+    "--ld",
+    "/Users/au507860/REPOS/ldpred3/benchmarks/.work/ldref-hm3/ldpred3_ldref_hm3.npz",
+    "--max-blocks",
+    "40",
+    "--n-lambda",
+    "20",
+    "--cases",
+    "20x500",
+    "60x20000",
+    "400x50"
+  ],
+  "platform": "macOS-26.5.2-arm64-arm-64bit",
+  "python": "3.10.20",
+  "multipgs": "0.3.0",
+  "numpy": "1.26.4",
+  "ldpred3": "0.4.6",
+  "numba": "0.66.0",
+  "cpu_count": 10,
+  "blas_threads": 1,
+  "ld_reference": {
+    "path": "/Users/au507860/REPOS/ldpred3/benchmarks/.work/ldref-hm3/ldpred3_ldref_hm3.npz",
+    "sha256": "06b5bc3a8887d231ef27c741a0c433ccef03b426a6ddbbc3d5de0ba9adb8b309",
+    "truncated_to_blocks": 40
+  },
+  "panel_source": "synthetic",
+  "panel_log": {
+    "20x500": {
+      "panel": "synthetic",
+      "per_score_requested": 500,
+      "per_score_realized": 500,
+      "clamped_to_reference": 0
+    },
+    "60x20000": {
+      "panel": "synthetic",
+      "per_score_requested": 20000,
+      "per_score_realized": 20000,
+      "clamped_to_reference": 0
+    },
+    "400x50": {
+      "panel": "synthetic",
+      "per_score_requested": 50,
+      "per_score_realized": 50,
+      "clamped_to_reference": 0
+    }
+  },
+  "parameters": {
+    "ld": "/Users/au507860/REPOS/ldpred3/benchmarks/.work/ldref-hm3/ldpred3_ldref_hm3.npz",
+    "cases": [
+      "20x500",
+      "60x20000",
+      "400x50"
+    ],
+    "scores": null,
+    "max_blocks": 40,
+    "tune": "pumas",
+    "n_eff": 300000.0,
+    "n_repeats": 4,
+    "n_lambda": 20,
+    "var_y": 1.0,
+    "signal_scores": 5,
+    "target_marginal_r": 0.3,
+    "dense_max_gb": 3.0,
+    "blas_threads": 1,
+    "seed": 0,
+    "skip_memory_model": false,
+    "output_dir": "/Users/au507860/REPOS/multipgs/benchmarks/results",
+    "worker_pipeline": null,
+    "worker_memory": null,
+    "n_variants": null
+  },
+  "note": "Cost only: no accuracy is estimated here and none should be read into any column. tune='pumas' is regime B and tune='none' is regime C, recorded as timed_tune_regime rather than as a bare 'regime' column because that label selects which code path was timed, not the provenance of an accuracy number; no pseudo_r2, selection_mse or evaluate_sumstat result is produced, because under both timed settings the only available moments are the ones that fitted and selected the model. path_residual_seconds is total multi_pgs_sumstats time minus the four separately measured stages the fitter repeats (parse, gram, cross_moment, validate; panel is built outside the fitter and is not subtracted), so it is a residual and also contains the boundedness basis and, under PUMAS, the pseudo-split PSD factor \u2014 two further O(K^3) terms besides the path solve. The standalone stage measurements run first and pay the cold cache, so on a small or truncated reference the residual can be slightly negative; that means the case is too small for the residual to be informative and is flagged as residual_informative=0, which also invalidates every stage fraction in the summary for that row. A synthetic panel has the real reference's block structure and the panel's shape but not real score collinearity, so its path cost is a lower bound and synthetic and catalog rows are not comparable. z is synthetic in every configuration. Peak RSS is absolute worker-process RSS including the Python, NumPy and Numba runtime and the loaded reference; per-stage rss_gb_after_* are cumulative high-water marks, so only rows from the same command and environment may be compared. A run with --max-blocks is not a real-dimension measurement."
+}

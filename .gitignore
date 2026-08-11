@@ -48,3 +48,9 @@ benchmarks/*.log
 # Benchmark scratch work dirs (repo root and benchmarks/ both used)
 /.work/
 benchmarks/.work/
+
+# Real-data benchmark inputs: PGS Catalog scoring files and LD references are
+# large, externally versioned artifacts. Benchmarks take them via --flags and
+# record their sha256 in provenance; they are never part of the repository.
+benchmarks/.scores*/
+benchmarks/.ldref*/

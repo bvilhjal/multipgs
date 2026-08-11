@@ -40,6 +40,26 @@ sufficient statistics, not by the path.
 - `multi_pgs_sumstats` parses its sparse LD-basis weights once instead of
   twice. This saves the second parse, not peak memory: measured peak allocation
   along the Gram path is unchanged.
+- Four real-data benchmarks. `real_ld_simulation.py` draws summary statistics
+  from the real reference (`z ~ N(D beta, D/n)`), which buys three independent
+  GWAS of one trait — so a regime A label is checkable, which nested consortium
+  releases never allow — and a closed-form truth, `R2 = (w'D beta)^2 / (w'D w)`.
+  Its reference-mismatch arm fits from a simulated finite panel drawn from the
+  true `D`, reproducing rank deficiency rather than mere added noise.
+  `overlap_inflation.py` sets sample overlap to a known
+  `rho_s = rho_p N_shared / sqrt(N1 N2)`, which is also the estimand of the
+  cross-trait LDSC intercept, and reports both the inflation it causes and
+  whether bipred's `ldsc_rg` detects it. `real_meta_rules.py` replaces
+  `meta_rules.py`'s stylized sharing knob with the observed off-diagonal of a
+  real score covariance. `sumstat_cost.py` gives the stage-by-stage cost of the
+  summary-statistic pipeline at real dimensions.
+- Both simulation benchmarks scale `h2` to the selected chromosomes' share of
+  the reference by default (`--h2-genome-wide`). Holding `h2` fixed while
+  subsetting does not simulate a smaller slice of the same trait: it packs a
+  genome's heritability into a few per cent of the variants and inflates every
+  per-variant effect, which moves the LDSC residual scatter and hence the
+  intercept's precision for the wrong reason. `--h2-in-subset` restores the
+  literal reading.
 - `benchmarks/real_ld_gram.py` reports score-space moments and their cost on a
   real genome-wide LD reference: block census, Gram spectrum and rank, dead
   scores, wall time and peak memory, and an optional check that the low-rank

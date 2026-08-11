@@ -1,0 +1,73 @@
+{
+  "generated_utc": "2026-08-11T20:14:05.372156+00:00",
+  "elapsed_seconds": 250.12030233297264,
+  "command": [
+    "/Users/au507860/anaconda3/envs/ldpred3/bin/python",
+    "/Users/au507860/REPOS/multipgs/benchmarks/overlap_inflation.py",
+    "--ld",
+    "/Users/au507860/REPOS/ldpred3/benchmarks/.work/ldref-hm3/ldpred3_ldref_hm3.npz",
+    "--chrom",
+    "18",
+    "19",
+    "20",
+    "21",
+    "22",
+    "--seeds",
+    "8",
+    "--n-scores",
+    "10",
+    "--n-eff-discovery",
+    "20000",
+    "--n-eff-assess",
+    "20000",
+    "--overlap",
+    "0.0",
+    "0.1",
+    "0.25",
+    "--n-lambda",
+    "20"
+  ],
+  "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
+  "python": "3.14.6",
+  "multipgs": "0.3.0",
+  "numpy": "2.4.6",
+  "ldpred3": "0.3.1",
+  "bipred": "0.1.0.dev0",
+  "ld_reference": {
+    "path": "/Users/au507860/REPOS/ldpred3/benchmarks/.work/ldref-hm3/ldpred3_ldref_hm3.npz",
+    "sha256": "06b5bc3a8887d231ef27c741a0c433ccef03b426a6ddbbc3d5de0ba9adb8b309",
+    "n_blocks": 133,
+    "n_variants": 109590
+  },
+  "parameters": {
+    "ld": "/Users/au507860/REPOS/ldpred3/benchmarks/.work/ldref-hm3/ldpred3_ldref_hm3.npz",
+    "chrom": [
+      "18",
+      "19",
+      "20",
+      "21",
+      "22"
+    ],
+    "seeds": 8,
+    "n_scores": 10,
+    "h2": 0.3,
+    "h2_genome_wide": true,
+    "polygenicity": 0.01,
+    "n_eff_discovery": 20000.0,
+    "n_eff_assess": 20000.0,
+    "rg": [
+      0.1,
+      0.7
+    ],
+    "overlap": [
+      0.0,
+      0.1,
+      0.25
+    ],
+    "n_lambda": 20,
+    "ldsc": true,
+    "ldsc_blocks": 200,
+    "output_dir": "/Users/au507860/REPOS/multipgs/benchmarks/results"
+  },
+  "note": "Overlap is simulated as correlated sampling error at a known rho_s = rho_p N_shared / sqrt(N1 N2), which is also the estimand of the cross-trait LDSC intercept. True accuracy is closed form and unaffected by overlap; the reported accuracy is not, and their difference is the inflation. No real analysis's overlap is estimated here."
+}
