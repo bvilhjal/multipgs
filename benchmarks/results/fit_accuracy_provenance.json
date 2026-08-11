@@ -1,0 +1,36 @@
+{
+  "generated_utc": "2026-08-11T17:14:19.483460+00:00",
+  "elapsed_seconds": 5.300910916994326,
+  "command": [
+    "/Users/au507860/anaconda3/bin/python3",
+    "/Users/au507860/REPOS/multipgs/benchmarks/fit_accuracy.py"
+  ],
+  "platform": "macOS-26.5.2-arm64-arm-64bit",
+  "python": "3.10.20",
+  "multipgs": "0.3.0",
+  "numpy": "1.26.4",
+  "ldpred3": "0.4.6",
+  "numba": "0.66.0",
+  "parameters": {
+    "seeds": 30,
+    "n": [
+      2000,
+      10000
+    ],
+    "scores": [
+      50,
+      200
+    ],
+    "h2": [
+      0.2,
+      0.5
+    ],
+    "n_causal": 8,
+    "folds": 5,
+    "assessment_folds": 3,
+    "n_lambda": 40,
+    "jobs": 8,
+    "output_dir": "/Users/au507860/REPOS/multipgs/benchmarks/results"
+  },
+  "note": "All R\u00b2 values are for the score alone \u2014 covariates are fitted but excluded from the evaluated prediction, per the package's accuracy definition \u2014 so the genetic-value oracle sits below h2 whenever covariates carry phenotypic variance. cv_r2 is the nested-CV estimate on the training split only; uplift is multi_r2 minus best_single_r2 per replicate. null_model_mean is the rate at which the nested gate withheld the penalized model."
+}

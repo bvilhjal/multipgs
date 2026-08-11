@@ -248,13 +248,15 @@ be all zero. `fit.summary()` spells this out.
 
 ### Fitting from summary statistics
 
-Let `W_ld` and `W_gwas` contain the same raw component scores converted with
-the empirical genotype SD of their respective LD and GWAS sources. The
-Gaussian regression uses `G = W_ld.T @ D @ W_ld` and
-`c = W_gwas.T @ z`, so no participant-level phenotype is required. With
-`alpha=1`, the lasso selects whole component scores. It is the score-space
-analogue of lassosum, not SNP-level lassosum, because the final SNP effects
-remain constrained to the span of those scores.
+`multi_pgs_sumstats` fits the same Gaussian regression without a phenotyped
+cohort, from the score-space moments `G = W_ld.T @ D @ W_ld` and
+`c = W_gwas.T @ z`. With `alpha=1`, the lasso selects whole component scores —
+the score-space analogue of lassosum, not SNP-level lassosum: the fitted SNP
+effects stay in the span of the supplied score weights.
+
+The component scores have one raw allele-count definition, but each data
+source standardizes genotypes by its own empirical dosage SD. Align every
+source separately, and check that the score identities match:
 
 ```python
 from multipgs import (align_to_reference, multi_pgs_sumstats,
@@ -283,55 +285,51 @@ result = fit.evaluate(c_test, G_test, regime="A")
 print(result)
 ```
 
-`z_train`, `z_tune`, and `z_test` must be mutually independent target-trait
-GWAS. The second one is a **tuning** set; reporting the maximum selected on it
-as evaluation would be ordinary selection optimism wearing a lab coat.
-`z_test` is the untouched assessment. Each `z` must be on the standardized
-allele-correlation scale returned by
-`ldpred3.standardize_betas(beta, se, n_eff)`, not the raw per-allele beta.
-The path point minimizes summary MSE. Squared correlation is descriptive;
-maximizing it would reward an oppositely directed predictor just as
-enthusiastically, which is not a charming property. Under PUMAS, the fit's MSE
-and R² fields average pseudo-split refits used for selection, not the returned
-full-data vector. Score that vector with
-`pseudo_r2(fit.beta, fit.gram, fit.r)`, or assess it with `fit.evaluate(...)`.
+The contract:
 
-If only one target GWAS exists, use
-`tune="pumas", n_eff=..., weights_independent_of_z=True`. This draws
-pseudo-training and pseudo-tuning moments from a joint-Gaussian/CLT plug-in
-model. It is an approximation and supplies pseudotuning only: it is neither an
-independent assessment nor the recursive four-way PUMAS-ensemble procedure.
-The flag is an acknowledgement, not an automated check: every component score
-must have been constructed independently of that target GWAS. Holding a
-target-derived score fixed would leak the pseudo-tuning sample back into the
-fit.
+- **Use mutually independent target-trait GWAS.** `z_train` fits the path,
+  `z_tune` selects the penalty, and the selected minimum on `z_tune` is tuning
+  performance, not evaluation. `z_test` — a third, untouched GWAS — is the
+  assessment. Each `z` is on the standardized allele-correlation scale from
+  `ldpred3.standardize_betas(beta, se, n_eff)`, not the raw per-allele beta.
+- **Selection minimizes summary MSE.** Squared correlation is descriptive
+  only; it would reward an oppositely directed predictor. Under PUMAS, the
+  fit's MSE and R² fields average the pseudo-split refits used for selection,
+  not the returned full-data `fit.beta`: score that fixed vector with
+  `pseudo_r2(fit.beta, fit.gram, fit.r)`, or assess it with `fit.evaluate(...)`.
+- **With one GWAS**, `tune="pumas", n_eff=..., weights_independent_of_z=True`
+  draws pseudo-training and pseudo-tuning moments from a joint-Gaussian/CLT
+  plug-in model. It supplies pseudotuning only — neither an independent
+  assessment nor the recursive four-stage PUMAS-ensemble procedure — and the
+  flag is an acknowledgement, not a check: every component score must have
+  been built independently of that GWAS.
+- **Alignment is per source.** `af=..., hwe_genotype_sd=True` requests the
+  `sqrt(2 f (1-f))` approximation instead of an empirical `sd=`; it ignores
+  imputation uncertainty and departures from equilibrium. If one cohort
+  supplies both `z` and `D`, pass its aligned matrix in both roles explicitly.
+  Do not silently reuse a matrix across populations because its shape matches.
+- **The LD reference** must match the GWAS ancestry and raw score definitions.
+  Its finite sample size bounds the resolvable rank, and compact LD encodings
+  can introduce numerical indefiniteness. The solver rejects a materially
+  indefinite `G` and any unbounded objective; population Schur conditions on
+  noisy external `c` are logged as diagnostics, not enforced. Positive
+  `ld_shrinkage` can make penalized singular directions well posed; it cannot
+  repair mismatched alleles, ancestry, or effect units. `tune="none"` is
+  available only when requested explicitly and is in-sample fitting, not
+  validation.
+- **Unresolvable signal is discarded and logged.** When the selection Gram is
+  singular, the component of `c` it cannot identify is projected out. `fit.r`
+  is the moment actually fitted, `fit.c_raw` the observed training moment, and
+  the discarded norm and fraction are logged.
+  [algorithm.md](algorithm.md#summary-statistic-learned-combination) has the
+  mechanics; [theory.md §2](theory.md#the-same-gaussian-objective-from-summary-statistics)
+  the derivation.
 
-Catalog weights multiply allele counts. Their exact standardized-genotype
-conversion uses the empirical dosage SD from the particular GWAS or LD source,
-passed as `sd=`. If one cohort supplies both `z` and `D`, reuse its aligned
-matrix explicitly; otherwise the two matrices generally differ.
-`af=..., hwe_genotype_sd=True` explicitly requests
-`sqrt(2 f (1-f))`; that HWE approximation ignores imputation uncertainty and
-departures from equilibrium.
-
-The LD reference must match the GWAS ancestry and raw score definitions. Its
-finite sample size bounds the rank that can be resolved, and compact LD
-encodings can introduce numerical indefiniteness. The solver rejects a
-materially indefinite `G` and any unbounded fitting objective. Population
-Schur conditions involving noisy external `c` are logged as diagnostics, not
-enforced as sample identities. Positive `ld_shrinkage` can make penalized
-singular directions well posed; it cannot repair mismatched alleles, ancestry,
-or effect units. `tune="none"` is available only when requested explicitly and
-is in-sample fitting, not validation.
-
-When that same LD Gram supplies both fitting and selection (`tune="none"` or
-`"pumas"`), its exact nullspace contains no estimable score variance. The code
-therefore projects the unresolved component of `c` out of `range(G)` and logs
-its norm and fraction. Independent tuning instead projects both the training
-and tuning cross-moments onto the tuning Gram's range. It can retain a direction
-absent from the fitting LD reference only when the tuning reference resolves
-it. `fit.r` is the moment actually fitted; `fit.c_raw` preserves the observed
-training moment.
+With moments computed from the same individuals, this route and the
+individual-level fit agree to a coefficient correlation of 0.9996, and the
+choice of tuning regime moved held-out R² by less than 0.001 in that simulated
+regime — measured in
+[`benchmarks/sumstat_vs_individual.py`](../benchmarks/sumstat_vs_individual.py).
 
 ## 5. Evaluating, and the ways this goes wrong
 
@@ -365,12 +363,12 @@ rebuilding a panel and calling `multi_pgs` on it.
 
 **Sample overlap is the failure that matters.** If individuals in your training
 or test cohort contributed to the GWAS behind an input score, that score is
-partly fitted to your own data, the combination will reward it for that, and
-every number goes up. Many PGS Catalog scores are UK Biobank-derived, so a UK
-Biobank target is the worst case — check each score's development samples in its
-Catalog metadata. This must be excluded when the panel is built;
-nothing downstream can detect it. `fit.cv_r2` nests the fitting and tuning
-procedure, but it is completely blind to discovery/target overlap.
+partly fitted to your own data, the combination will reward it, and every
+number goes up. Many PGS Catalog scores are UK Biobank-derived, so a UK
+Biobank target is the worst case — check each score's development samples in
+its Catalog metadata. Exclude overlap when the panel is built; nothing
+downstream can detect it, including `fit.cv_r2`
+([why](theory.md#sample-overlap)).
 
 **Evaluate the score, not the model.** `r2` of a prediction that already
 contains age and sex describes age and sex. With covariates, `incremental_r2`
@@ -378,26 +376,24 @@ is the quantity to report, and it is what `evaluate` adds automatically.
 
 **Convert case/control R² to the liability scale.** On the 0/1 scale it depends
 on how many cases were sampled and is not comparable to anyone else's number.
-Pass `prevalence=`.
+Pass `prevalence=`; [theory.md §4](theory.md#liability-scale) gives the model.
 
 **Ancestry is not modelled anywhere in this package.** Many PGS Catalog scores
 are European-derived, and accuracy falls substantially in a target ancestry
-unmatched to discovery. Note the asymmetry: `multi_pgs_fit`'s coefficients and
-`meta_pgs`'s `C` are estimated in *your* cohort and so are appropriate to it,
-but `daetwyler_r2`, `screen`, `penalty_from_accuracy` and
-`meta_pgs(expected_r2=…)` are ancestry-blind — `h²`, `p` and `n_eff` describe
-the discovery cohort. Ancestry principal components in the covariate set are
-standard practice. A failed convergence gate may indicate discovery/LD-reference
-mismatch, but it does not by itself identify ancestry as the cause. See
-[theory.md §4](theory.md#ancestry).
+unmatched to discovery. `multi_pgs_fit`'s coefficients and `meta_pgs`'s `C` are
+estimated in *your* cohort and so are appropriate to it, but `daetwyler_r2`,
+`screen`, `penalty_from_accuracy` and `meta_pgs(expected_r2=…)` are
+ancestry-blind — `h²`, `p` and `n_eff` describe the discovery cohort. Put
+ancestry principal components in the covariates; [theory.md
+§4](theory.md#ancestry) has the evidence.
 
 **Report the interval — and know where it is bounded by construction.**
-`evaluate` bootstraps by default. With a few thousand individuals the interval
+`evaluate` bootstraps by default; with a few thousand individuals the interval
 on R² is usually wide enough to swallow the difference between the methods you
-are comparing. One trap: `incremental_r2` and `nagelkerke_r2` are truncated at
-zero, so for a useless score the bootstrap piles up at exactly 0 and the lower
-bound is 0 *by construction*. `[0.000, 0.004]` is what no effect looks like, not
-a small effect bounded away from zero.
+are comparing. And `incremental_r2` and `nagelkerke_r2` are truncated at zero:
+for a useless score the bootstrap piles up at exactly 0, so `[0.000, 0.004]` is
+what *no* effect looks like, not a small effect bounded away from zero
+([theory.md §4](theory.md#reading-an-interval)).
 
 ## 6. Deploying
 

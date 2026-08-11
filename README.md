@@ -11,10 +11,8 @@ single per-variant weight file you can deploy. It is built on
 [ldpred3](https://github.com/bvilhjal/ldpred3) for genotype I/O, allele
 harmonisation, and the LDpred model behind score construction.
 
-> This repository was called `pypcma` until 2026-08-10, when it held a Python 2
-> implementation of principal-component meta-analysis. That code is gone (see
-> the [changelog](CHANGELOG.md); git history retains it at `5bba37b`), and
-> GitHub redirects the old URL.
+(Formerly `pypcma`, a Python 2 PC meta-analysis; that code was removed on
+2026-08-10 — see the [changelog](CHANGELOG.md), git history at `5bba37b`.)
 
 ## Three fitting routes
 
@@ -38,12 +36,6 @@ Summary Statistics*](https://doi.org/10.21203/rs.3.rs-9415305/v1) (Research
 Square, 2026), supplies the model-level architecture-screening criteria. The paper itself
 does not document the meta-PGS rule.
 
-`multi_pgs_sumstats` fits the Gaussian stack from score-space moment estimates
-`G = W_ld.T @ D @ W_ld` and `c = W_gwas.T @ z`. With `alpha=1`, its lasso
-selects whole component scores. This is the score-space analogue of lassosum,
-not SNP-level lassosum: it never estimates effects outside the span of the
-supplied score weights.
-
 ## Install
 
 Python 3.9–3.14. Numba is strongly recommended. ldpred3 is not on PyPI, so its
@@ -63,8 +55,7 @@ python -m pip install -e ".[fast,test]"
 
 If the second command reports that it cannot satisfy `ldpred3>=0.4.5`, the
 editable ldpred3 install has stale recorded metadata — a checkout that moved
-past the version pip last saw. Re-running the first command refreshes it. pip
-resolves against that metadata, not against the code it will actually import.
+past the version pip last saw. Re-running the first command refreshes it.
 
 ## Runnable example
 
@@ -111,68 +102,20 @@ scores = score_from_weights("multi.weights", "another_cohort", scaling="frozen")
 
 ## Summary-statistic learned combination
 
-The component scores must use one raw allele-count definition, but each data
-source has its own standardized-genotype weights. Align them with the empirical
-dosage SD of the GWAS or LD source they accompany:
+`multi_pgs_sumstats` fits the same Gaussian stack without a phenotyped
+cohort, from score-space moment estimates `G = W_ld.T @ D @ W_ld` and
+`c = W_gwas.T @ z`. With `alpha=1`, its lasso selects whole component scores —
+the score-space analogue of lassosum, not SNP-level lassosum. The contract:
 
-```python
-from multipgs import (align_to_reference, multi_pgs_sumstats,
-                      score_moments)
+- The training, tuning, and assessment target GWAS must be mutually
+  independent: one fits the path, an optional second selects the penalty, and
+  a third untouched GWAS or cohort is needed for an accuracy claim. With a
+  single GWAS, `tune="pumas"` provides pseudotuning, not external assessment.
+- Each data source's component weights are aligned with that source's
+  empirical dosage SD.
 
-W_ld, score_ids, _ = align_to_reference(scoring_files, ld_variants,
-                                         sd=ld_dosage_sd)
-W_train, train_ids, _ = align_to_reference(scoring_files, train_variants,
-                                            sd=train_dosage_sd)
-W_tune, tune_ids, _ = align_to_reference(scoring_files, tune_variants,
-                                          sd=tune_dosage_sd)
-W_test, test_ids, _ = align_to_reference(scoring_files, test_variants,
-                                          sd=test_dosage_sd)
-assert score_ids == train_ids == tune_ids == test_ids
-
-fit = multi_pgs_sumstats(
-    W_ld, z_train, ld_ref, weights_gwas=W_train, score_ids=score_ids,
-    z_valid=z_tune, ld_valid=ld_ref, weights_gwas_valid=W_tune,
-    weights_ld_valid=W_ld, tune="independent")
-
-# z_tune selected lambda and any LD shrinkage; it did not assess the winner.
-c_test, G_test, _ = score_moments(
-    W_ld, z_test, ld_ref, weights_gwas=W_test)
-print(fit.evaluate(c_test, G_test, regime="A"))
-```
-
-Path selection minimizes summary MSE. Squared correlation is not used to
-choose a model because it would reward a prediction with the wrong sign. Under
-PUMAS, `fit.selection_mse` and `fit.pseudo_r2` summarize the pseudo-split
-refits used to choose the path point; they do not score the returned full-data
-`fit.beta`. Use `pseudo_r2(fit.beta, fit.gram, fit.r)` for that fixed vector,
-or `fit.evaluate(...)` for an untouched assessment.
-
-Each `z` is a standardized marginal-effect vector, for example from
-`ldpred3.standardize_betas`, not a raw per-allele beta. `z_train`, `z_tune`, and
-`z_test` must come from mutually independent target-trait GWAS. With one GWAS,
-`tune="pumas", n_eff=n, weights_independent_of_z=True` provides
-joint-Gaussian/CLT plug-in **pseudotuning**, not external assessment. The last
-argument is an acknowledgement that every column of `W` was constructed
-without that GWAS, not a test the software can perform. A third untouched GWAS
-or cohort is still needed for an accuracy claim.
-
-`W_train`, `W_tune`, and `W_test` use their GWAS-specific dosage SD; `W_ld`
-uses the LD reference's SD. If one cohort supplies both `z` and `D`, pass its
-same aligned matrix in both roles explicitly. Do not silently reuse a matrix
-across populations merely because its shape matches.
-
-The solver rejects materially indefinite LD moments and any path whose
-quadratic objective is unbounded. Sampling-noisy GWAS moments are retained as
-diagnostics; a population covariance identity is not imposed on estimates from
-different samples.
-
-Every selection regime discards cross-moment signal that its selection LD Gram
-cannot identify, and logs its size. For `tune="none"` and `"pumas"`, that is the
-fitting Gram. Independent tuning projects both training and tuning
-cross-moments onto the tuning Gram's range; it can retain a direction absent
-from the fitting reference only when the tuning reference resolves it. In a
-`SumstatFit`, `r` is the moment actually fitted and `c_raw` retains the observed
-training moment.
+The full workflow, including the alignment code, is in
+[the guide](docs/guide.md#fitting-from-summary-statistics).
 
 ## Training-free combination
 
@@ -187,10 +130,12 @@ prs = combined.multi_pgs(panel)
 ```
 
 `method="sqrt_n_eff"` needs only the discovery sample sizes.
-`method="decorrelated"` additionally discounts scores for information they share
-— for example when discovery studies reuse cohorts — but wants
-`expected_r2` rather than `n_eff`; the reason, with measurements, is in
-[`docs/algorithm.md`](docs/algorithm.md#choosing-a-meta-pgs-rule).
+`method="decorrelated"` additionally discounts scores for information they
+share — for example when discovery studies reuse cohorts — but wants
+`expected_r2` rather than `n_eff`. The derivation is in
+[theory.md §3](docs/theory.md#3-derived-weights-no-phenotype-required) and the
+measurements in
+[docs/algorithm.md](docs/algorithm.md#choosing-a-meta-pgs-rule).
 
 ## Command line
 
@@ -207,27 +152,29 @@ no summary-statistic fitting command.
 
 ## Before trusting a number
 
-1. **Exclude sample overlap by construction.** If your cohort contributed to the
-   GWAS behind an input score, that score is partly fitted to your data, the
-   combination will reward it, and every accuracy here is inflated. Many PGS
-   Catalog scores are UK Biobank-derived — check each score's development
-   samples in its Catalog metadata. No cross-validation inside the target
-   cohort can detect this, because every fold shares the contamination.
+1. **Exclude sample overlap by construction.** If your cohort contributed to
+   the GWAS behind an input score, every accuracy here is inflated, and no
+   cross-validation inside the target cohort can detect it. Many PGS Catalog
+   scores are UK Biobank-derived — check each score's development samples.
+   ([why](docs/theory.md#sample-overlap))
 2. Put scoring files, LD reference, and target genotypes on the same genome
    build, and check the matched-variant and weight-mass counts in
    `panel.summary()`.
-3. Remove related individuals before fitting — folds are random, and relatives
-   split across them inflate `cv_r2`.
+3. Remove related individuals before fitting — random folds split relatives
+   across training and validation, inflating `cv_r2`.
 4. Report accuracy in individuals who trained neither the input scores nor the
-   combination. `fit.cv_r2` nests grid construction, tuning, imputation and
-   fitting inside outer folds, but it is still an internal estimate and is
-   blind to point 1.
-5. With covariates, report `incremental_r2` — an R² that includes age and sex is
-   not a polygenic-score accuracy.
+   combination. `fit.cv_r2` nests all selection inside outer folds, but it is
+   an internal estimate and is blind to point 1.
+5. With covariates, report `incremental_r2` — an R² that includes age and sex
+   is not a polygenic-score accuracy.
 6. For case/control traits, convert to the liability scale with a stated
    prevalence, or the number is not comparable to anyone else's.
+   ([how](docs/theory.md#liability-scale))
 7. Match ancestry between discovery and target as closely as you can, and put
    principal components in the covariates. Nothing here models ancestry.
+   ([theory](docs/theory.md#ancestry))
+
+The [guide](docs/guide.md) expands each point.
 
 ## Documentation
 

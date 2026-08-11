@@ -45,56 +45,12 @@ separately built panel can have the same columns in a different order.
 | `subsample_score_moments` | joint-Gaussian/CLT plug-in pseudo-split used for PUMAS-style tuning |
 | `REGIMES` | descriptions of external assessment, pseudotuning, and in-sample reuse |
 
-The shortest complete independent-GWAS workflow is:
-
-```python
-from multipgs import (align_to_reference, multi_pgs_sumstats,
-                      score_moments)
-
-W_ld, ids, _ = align_to_reference(scoring_files, ld_variants, sd=ld_sd)
-W_train, train_ids, _ = align_to_reference(
-    scoring_files, train_variants, sd=train_sd)
-W_tune, tune_ids, _ = align_to_reference(
-    scoring_files, tune_variants, sd=tune_sd)
-W_test, test_ids, _ = align_to_reference(
-    scoring_files, test_variants, sd=test_sd)
-assert ids == train_ids == tune_ids == test_ids
-fit = multi_pgs_sumstats(
-    W_ld, z_train, ld_ref, weights_gwas=W_train, score_ids=ids,
-    z_valid=z_tune, ld_valid=ld_ref, weights_gwas_valid=W_tune,
-    weights_ld_valid=W_ld, tune="independent")
-c_test, G_test, _ = score_moments(
-    W_ld, z_test, ld_ref, weights_gwas=W_test)
-assessment = fit.evaluate(c_test, G_test, regime="A")
-```
-
-`z_tune` selects hyperparameters; only `z_test`, from a third untouched GWAS,
-assesses the winner. Selection minimizes summary MSE; squared correlation is
-not maximized because it would ignore a wrong sign. For independent tuning,
-the fit's selection fields score the chosen vector on the tuning moments. For
-PUMAS, they instead average pseudo-split refits and do not score the returned
-full-data `fit.beta`; call `pseudo_r2(fit.beta, fit.gram, fit.r)` for that fixed
-vector. Each effect vector and its `W_gwas` must be aligned to that GWAS's
-variants; `W_ld` is aligned separately to the LD source. With one target GWAS,
-`tune="pumas", n_eff=n, weights_independent_of_z=True` is approximate
-pseudotuning, not assessment. The acknowledgement is valid only when `W` was
-built independently of that GWAS. `alpha=1` penalizes component-score
-coefficients; this is inspired by lassosum but does not fit SNP-level lassosum
-effects.
-
-Pass each source's empirical dosage `sd` when aligning its weights. Using
-`af=..., hwe_genotype_sd=True` instead requests the HWE approximation
-`sqrt(2*af*(1-af))`. The solver refuses materially indefinite LD or an
-unbounded objective. Noisy external-GWAS compatibility checks are diagnostics:
-positive LD shrinkage can stabilize penalized singular directions, but it
-cannot repair ancestry, allele, ordering, or effect-scale mismatches.
-For `tune="none"` and `"pumas"`, `fit.r` is `c` projected onto the fitting LD
-Gram's estimable range. Independent tuning projects both the training and
-tuning cross-moments onto the tuning Gram's range, so the returned fit contains
-only directions that its tuning LD can assess. A direction absent from the
-fitting reference may remain only when the tuning reference resolves it.
-`fit.c_raw` retains observed training `c`; discarded norms and fractions are
-logged.
+The complete workflow — the alignment code, the independent train/tune/test
+GWAS contract, PUMAS pseudotuning, and the projection of `c` onto the LD
+Gram's range (`fit.r` is fitted, `fit.c_raw` observed) — is in
+[guide.md §4](guide.md#fitting-from-summary-statistics), with the derivation
+in [theory.md §2](theory.md#2-learned-weights-penalized-regression-over-a-panel)
+and the implementation in [algorithm.md](algorithm.md#summary-statistic-learned-combination).
 
 ## Building the panel
 

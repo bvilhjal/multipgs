@@ -1,0 +1,29 @@
+{
+  "generated_utc": "2026-08-11T17:14:27.849252+00:00",
+  "elapsed_seconds": 7.8155964159814175,
+  "command": [
+    "/Users/au507860/anaconda3/bin/python3",
+    "/Users/au507860/REPOS/multipgs/benchmarks/null_gate.py"
+  ],
+  "platform": "macOS-26.5.2-arm64-arm-64bit",
+  "python": "3.10.20",
+  "multipgs": "0.3.0",
+  "numpy": "1.26.4",
+  "ldpred3": "0.4.6",
+  "numba": "0.66.0",
+  "parameters": {
+    "seeds": 30,
+    "n": [
+      1000,
+      5000
+    ],
+    "scores": 50,
+    "n_causal": 8,
+    "h2": 0.4,
+    "folds": 5,
+    "assessment_folds": 3,
+    "n_lambda": 40,
+    "output_dir": "/Users/au507860/REPOS/multipgs/benchmarks/results"
+  },
+  "note": "In the null arm no score carries signal, so the null_model return rate is the gate's false-pass control (one minus that rate is the false-pass rate). The signal-arm cv_r2 minus held-out R\u00b2 is the bias of the internal nested-CV estimate \u2014 documented as possibly conservative \u2014 not a generalization guarantee."
+}

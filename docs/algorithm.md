@@ -25,11 +25,9 @@ accuracy figure that includes age and sex is not a polygenic-score accuracy.
 ### Cross-Model Selection and Averaging
 
 Selection here follows CMSA (Privé, Aschard & Blum 2019), the procedure behind
-`bigstatsr::big_spLinReg`. This is multipgs's choice, not the paper's: Albiñana
-et al. fitted with `cv.glmnet` and assessed by fivefold cross-validation in
-iPSYCH. What comes from the paper is the estimator — penalized regression of the
-phenotype on a score panel, covariates at penalty factor 0 — not the routine
-that picks its penalty. The steps are:
+`bigstatsr::big_spLinReg` — multipgs's choice, not the paper's (Albiñana et al.
+used `cv.glmnet`; [theory.md](theory.md#cmsa-and-why-it-is-not-the-papers-procedure)
+gives the rationale and its consequences). The steps are:
 
 1. Split the training set into `n_folds` parts (stratified by case status for a
    binary phenotype, so a rare-disease fold cannot come out with no cases).
@@ -43,20 +41,13 @@ that picks its penalty. The steps are:
 4. Each fold keeps the coefficients at *its own* best `(alpha, lambda)`.
 5. Average the fold coefficient vectors.
 
-Two properties earn their keep. No separate tuning cohort is consumed. And the
-averaging is a variance reduction: with `K` correlated scores and a lasso
-penalty, *which* of a set of near-duplicate scores gets picked is close to
-arbitrary, and averaging spreads weight over them instead of betting on one
-draw.
-
 ### The nested gate
 
-A CMSA fold chooses `(alpha, lambda)` on its held-out rows. Reusing that loss to
-decide whether the whole stack carries signal would therefore tune and assess on
-the same observations. Borrowing choices from another ordinary CMSA fold is not
-enough either: that fold's model was trained on the putative assessment rows.
-
-The gate consequently uses a separate nested assessment:
+An ordinary CMSA fold cannot also assess the stack: its phenotype selected that
+fold's `(alpha, lambda)`, and borrowing another fold's operating point trains on
+the putative assessment rows
+([theory.md §2](theory.md#optimism-and-the-nested-cross-validated-number)). The
+gate consequently uses a separate nested assessment:
 
 1. Split the cohort into `assessment_folds` outer parts.
 2. For outer part `k`, use only the other rows to construct the penalty grid,
@@ -68,26 +59,32 @@ The gate consequently uses a separate nested assessment:
 
 For Gaussian loss the reported gain is:
 
-**Equation 1. Nested predictive R² gain.**
+**Nested predictive R² gain.**
 
 ```
 cv_r2 = (SSE_baseline - SSE_inner_CMSA) / SST_y
 ```
 
-This is a predictive loss gain. It is deliberately not `incremental_r2`, which
-refits a calibration coefficient against the assessment phenotype by OLS. The
-baseline contains the covariates and every score with penalty factor zero.
+a predictive loss gain over the explicit unpenalized baseline (the covariates
+plus every score with penalty factor zero), deliberately not the
+OLS-recalibrated `incremental_r2`;
+[theory.md §2](theory.md#optimism-and-the-nested-cross-validated-number)
+discusses the distinction.
 
 The penalized stack passes only when its mean outer-fold loss gain exceeds one
 standard error across outer folds. On a pass, the returned estimator is ordinary
 CMSA: every final fold-selected vector enters the average. On a failure,
-`multipgs` refits the full-data unpenalized baseline. Thus `null_model` means
-"null penalized increment"; forced scores and covariates remain fitted rather
-than being zeroed.
+`multipgs` refits the full-data unpenalized baseline and records `null_model`
+([guide.md §4](guide.md#4-fitting) reads the result).
 
 None of this sees sample overlap between the target cohort and the discovery
-GWAS. That inflates every number here and is only excludable when the panel is
+GWAS; that inflates every number here and is only excludable when the panel is
 built.
+
+The gate's operating characteristics are measured in
+[`benchmarks/null_gate.py`](../benchmarks/null_gate.py): over 30 seeds it
+returns the null model on pure noise in 77–87% of seeds, and under signal
+`cv_r2` is within a few thousandths of untouched held-out R².
 
 ### The solver
 
@@ -141,7 +138,7 @@ dataset-specific standardized-genotype matrices `W_ld` and `W_gwas`, obtained
 with the empirical dosage SD of the LD and GWAS sources respectively. With `D`
 external LD and `z` standardized target-GWAS effects:
 
-**Equation 2. Summary-level sufficient statistics.**
+**Summary-level sufficient statistics.**
 
 ```
 G_raw = W_ld.T @ D @ W_ld    c_raw = W_gwas.T @ z
@@ -164,13 +161,13 @@ score columns active in each block. Peak working memory is
 `O(block_size · K_active + K²)`, not `O(mK)`. PUMAS-style repeats factor the
 `K × K` covariance once and reuse it for every noise draw.
 
-When `D` and `z` come from the same individuals, Equation 2 is an exact sample
-identity. With external LD it is a plug-in estimator: noisy `c` need not satisfy
-the population Schur bound against the finite-reference `G`. Such discrepancies
-are logged as diagnostics. Materially indefinite `G` still fails, and each
-fitted quadratic must be bounded. Positive `ld_shrinkage` repairs penalized
-singular directions; it cannot repair an unpenalized null direction with
-nonzero linear signal, mismatched alleles, or a wrong effect scale.
+With `D` and `z` from the same individuals these moments are exact; with
+external LD they are plug-in estimates, and noisy `c` need not satisfy the
+population Schur bound against the finite-reference `G`. Such discrepancies are
+logged as diagnostics — [theory.md
+§2](theory.md#the-same-gaussian-objective-from-summary-statistics) explains why
+they arise. Materially indefinite `G` still fails, each fitted quadratic must be
+bounded, and positive `ld_shrinkage` repairs only penalized singular directions.
 
 Selection cannot learn from a direction to which its LD Gram assigns exactly
 zero score variance. For `tune="none"` and PUMAS, the implementation projects
@@ -182,17 +179,16 @@ the tuning Gram resolves it. `SumstatFit.c_raw` retains the observed training
 vector, while `SumstatFit.r` records the moment actually fitted.
 
 An independent `z_valid` chooses the path by minimum summary MSE; that minimum
-remains a tuning statistic. Squared correlation is descriptive and is not the
-selection rule, because it would reward a predictor with the wrong sign or
-scale. Under PUMAS, both reported selection-path statistics average
-pseudo-split refits rather than scoring the returned full-data coefficient
-vector. A third untouched GWAS is required for regime-A assessment.
-With one GWAS, `tune="pumas"` uses a joint-Gaussian/CLT plug-in covariance to
-form pseudo-training and pseudo-tuning moments. It requires the explicit
-`weights_independent_of_z=True` acknowledgement because holding a score trained
-on the same `z` fixed would leak pseudo-tuning information. This is a two-way
-pseudotuning device, not the recursive four-stage PUMAS-ensemble assessment.
-`tune="none"` must be requested explicitly and is labelled in-sample reuse.
+remains a tuning statistic, and squared correlation is descriptive only.
+Under PUMAS, both reported selection-path statistics average pseudo-split
+refits rather than scoring the returned full-data coefficient vector.
+`tune="pumas"` forms pseudo-training and pseudo-tuning moments from a
+joint-Gaussian/CLT plug-in covariance — a two-way pseudotuning device, not the
+recursive four-stage PUMAS-ensemble assessment — and requires the explicit
+`weights_independent_of_z=True` acknowledgement. `tune="none"` must be
+requested explicitly and is labelled in-sample reuse. The operational
+train/tune/test contract is in
+[guide.md §4](guide.md#fitting-from-summary-statistics).
 
 The executable calibration checks the moment identity on discrete dosages,
 the null tuning-versus-assessment MSE gap, and Gaussian-versus-binary error of

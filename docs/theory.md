@@ -200,7 +200,7 @@ standardized genotypes are `W_s = diag(s) @ w`. For LD source `D` and target
 GWAS effects `u` (the API calls them `z`), the two Gaussian-objective moment
 estimates are
 
-**Equation 1. Score-space moments.**
+**Score-space moments.**
 
 ```
 G_raw = W_ld.T @ D @ W_ld    c_raw = W_gwas.T @ u
@@ -223,29 +223,23 @@ moments. With an external LD reference they are plug-in estimates in one raw
 score coordinate, not a single empirical covariance matrix: sampling noise can
 put `c` outside `range(G)` or make `c.T @ pinv(G) @ c > var(y)`. Those are
 diagnostics, not automatic proof of bad data. The solver still requires a
-positive-semidefinite `G` and a bounded penalized objective. A positive
-`ld_shrinkage` can make penalized singular directions well posed; an
+positive-semidefinite `G` and a bounded penalized objective; a positive
+`ld_shrinkage` can make penalized singular directions well posed, but an
 unpenalized null direction with nonzero linear signal cannot be repaired.
 
 When one LD Gram supplies both the fit and its selection criterion
-(`tune="none"` or PUMAS), the component of `c` in `null(G)` is not identifiable.
-`multipgs` projects that component away, reports its standardized norm and
-fraction, and retains the observed vector separately as `c_raw`. Independent
-tuning projects both training and tuning cross-moments onto the tuning Gram's
-range. Its own Gram may retain a direction missing from the fitting reference,
-but a direction missing from the tuning reference cannot influence either the
-fit or its selection.
+(`tune="none"` or PUMAS), the component of `c` in `null(G)` is not estimable
+and is projected away; independent tuning instead projects onto the tuning
+Gram's range. [algorithm.md](algorithm.md#summary-statistic-learned-combination)
+has the mechanics, including what is logged and what `c_raw` retains.
 
-An independent second GWAS can select the penalty by minimum summary MSE, but
-that selected minimum is tuning performance. Squared correlation is retained
-as a descriptive accuracy statistic, not a selection rule: squaring would give
-an oppositely directed predictor the same score. For PUMAS, both selection
-statistics average the pseudo-split refits; neither is a metric of the returned
-full-data coefficient vector. Regime-A assessment needs a third untouched
-GWAS. With one GWAS, the optional PUMAS-style split is a
-joint-Gaussian/CLT plug-in
-pseudotuning approximation and requires `W` to have been constructed without
-that GWAS. It is not external assessment.
+An independent second GWAS selects the penalty by minimum summary MSE. Squared
+correlation is not the selection rule: it would score an oppositely directed
+predictor just as highly. That selected minimum is still tuning performance, so
+assessment needs a third untouched GWAS. With only one GWAS, PUMAS-style
+pseudotuning is a joint-Gaussian/CLT plug-in approximation — valid for choosing
+the penalty, not for an accuracy claim. [guide.md
+§4](guide.md#fitting-from-summary-statistics) states the operational contract.
 
 ### The coordinate update
 
@@ -279,9 +273,9 @@ the binomial loss**, where the IRLS weights depend on the current fit, so
 
 Selection follows **Cross-Model Selection and Averaging**
 ([Privé, Aschard & Blum 2019](https://doi.org/10.1534/genetics.119.302019)):
-split the training set into `n_folds` parts; fit the path on all but one and
-score it on the held-out part; each fold keeps the coefficients at *its own*
-best `(α, λ)`; average those vectors.
+each fold keeps the coefficients at *its own* best `(α, λ)`, and the returned
+estimator averages those vectors;
+[algorithm.md](algorithm.md#cross-model-selection-and-averaging) has the steps.
 
 This is `multipgs`'s choice. **Albiñana et al. fitted with `cv.glmnet` and
 assessed by fivefold cross-validation in iPSYCH.** What is taken from the paper
@@ -319,29 +313,16 @@ point that every selection step must sit *inside* the resampling loop is
 An ordinary CMSA validation fold cannot also assess the stack: its phenotype
 selected that fold's `(α, λ)`. Nor can the operating point simply be borrowed
 from another ordinary fold, because that fold's model was trained on the first
-fold's individuals. The whole selection procedure must be nested.
+fold's individuals. The whole selection procedure must be nested — the outer
+loop, the signal gate it feeds, and the `cv_r2` definition are in
+[algorithm.md](algorithm.md#the-nested-gate).
 
-`multipgs` therefore holds out `assessment_folds` outer parts. Within each outer
-training set it builds a new penalty grid, runs an inner CMSA, averages its
-fold-selected coefficient vectors, and fits the unpenalized baseline. Only then
-are both predictors scored on the untouched outer part. Fold-local imputation is
-inside this loop as well. The Gaussian report is
-
-```
-cv_r2 = (SSE_baseline - SSE_inner_CMSA) / SST_y .
-```
-
-It is a **predictive loss gain**, not the same estimator as `incremental_r2`:
-the latter fits a calibration coefficient for the score against assessment
-outcomes, whereas nested prediction must not. The baseline contains covariates
-and every `unpenalized_score`, so forcing the target-trait score changes the
-question to "what did the penalized auxiliary scores add?"
-
-The final estimator is an ordinary all-fold CMSA average. It is deployed only
-when the mean nested loss gain exceeds one outer-fold standard error; otherwise
-the full-data unpenalized baseline is returned. Accordingly, `null_model` means
-no established *penalized increment*. It does not mean that forced score or
-covariate coefficients were erased.
+What `cv_r2` *is*: a **predictive loss gain** of the nested stack over the
+explicit unpenalized baseline on untouched outer rows, not the same estimator
+as `incremental_r2`: the latter fits a calibration coefficient for the score
+against assessment outcomes, whereas nested prediction must not. The baseline
+contains covariates and every `unpenalized_score`, so forcing the target-trait
+score changes the question to "what did the penalized auxiliary scores add?"
 
 The outer estimators use fewer than `n` individuals and may therefore be more
 shrunken than the returned estimator

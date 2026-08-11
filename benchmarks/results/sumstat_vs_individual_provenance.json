@@ -1,0 +1,27 @@
+{
+  "generated_utc": "2026-08-11T17:14:36.229434+00:00",
+  "elapsed_seconds": 7.623217792017385,
+  "command": [
+    "/Users/au507860/anaconda3/bin/python3",
+    "/Users/au507860/REPOS/multipgs/benchmarks/sumstat_vs_individual.py"
+  ],
+  "platform": "macOS-26.5.2-arm64-arm-64bit",
+  "python": "3.10.20",
+  "multipgs": "0.3.0",
+  "numpy": "1.26.4",
+  "ldpred3": "0.4.6",
+  "numba": "0.66.0",
+  "parameters": {
+    "seeds": 30,
+    "n": 8000,
+    "variants": 80,
+    "scores": 20,
+    "signal_scores": 3,
+    "fit_folds": 5,
+    "fit_assessment_folds": 3,
+    "fit_n_lambda": 40,
+    "n_lambda": 60,
+    "output_dir": "/Users/au507860/REPOS/multipgs/benchmarks/results"
+  },
+  "note": "The moments are computed from the same individuals the individual-level fit trains on, so agreement measures selection-routing differences (nested CMSA vs a tuning GWAS), not approximation error of the sufficient statistics. The tuning arm quantifies the cost of pseudotuning and in-sample tuning relative to an independent tuning GWAS; cohort C stays untouched by fitting, tuning and selection."
+}
