@@ -19,6 +19,15 @@
 from different discovery GWAS, and each GWAS's effective sample size. Nothing
 else.
 
+**To learn a combination entirely from summary statistics**
+(`multi_pgs_sumstats`): raw component-score definitions plus separate aligned
+standardized-genotype weights for the target GWAS and ancestry-matched LD
+reference. Their variant orders may differ, but score identities and counted
+alleles may not. One target GWAS fits the path; an independent second GWAS can
+tune it; a third untouched GWAS or cohort is needed to assess the selected
+model. With only one GWAS, PUMAS-style pseudotuning is available under the
+assumptions in §4.
+
 ### Effective sample size
 
 For a case/control GWAS, `n_eff = 4 / (1/n_case + 1/n_control)`, which is
@@ -55,6 +64,21 @@ mitigate that risk but do not abolish it.
 ## 2. Building the panel
 
 ### From PGS Catalog scoring files
+
+Acquire scoring files and the metadata needed to audit their provenance before
+building the panel:
+
+```bash
+multipgs fetch --trait MONDO_0004989 --include-children \
+    --out scores/ --build GRCh37 --cohort-overlap
+```
+
+This writes harmonized scoring files, `metadata.tsv`, and `n_eff.tsv`.
+`--cohort-overlap` flags shared *named* discovery cohorts; incomplete Catalog
+metadata means absence of a flag is not proof of disjoint samples. Pin the
+genome build to the LD reference or target genotypes. The Python equivalents
+are `search_scores`, `download_scores`, `write_score_metadata`, and
+`cohort_overlap`.
 
 ```python
 from multipgs import panel_from_catalog
@@ -222,6 +246,93 @@ fit is the full-data unpenalized baseline. "Null" describes the *increment*:
 forced scores and covariate coefficients remain fitted, and `fit.beta` need not
 be all zero. `fit.summary()` spells this out.
 
+### Fitting from summary statistics
+
+Let `W_ld` and `W_gwas` contain the same raw component scores converted with
+the empirical genotype SD of their respective LD and GWAS sources. The
+Gaussian regression uses `G = W_ld.T @ D @ W_ld` and
+`c = W_gwas.T @ z`, so no participant-level phenotype is required. With
+`alpha=1`, the lasso selects whole component scores. It is the score-space
+analogue of lassosum, not SNP-level lassosum, because the final SNP effects
+remain constrained to the span of those scores.
+
+```python
+from multipgs import (align_to_reference, multi_pgs_sumstats,
+                      score_moments)
+
+# Each matrix uses the empirical dosage SD of the source it accompanies.
+W_ld, score_ids, _ = align_to_reference(
+    scoring_files, ld_variants, sd=ld_dosage_sd)
+W_train, train_ids, _ = align_to_reference(
+    scoring_files, train_variants, sd=train_dosage_sd)
+W_tune, tune_ids, _ = align_to_reference(
+    scoring_files, tune_variants, sd=tune_dosage_sd)
+W_test, test_ids, _ = align_to_reference(
+    scoring_files, test_variants, sd=test_dosage_sd)
+assert score_ids == train_ids == tune_ids == test_ids
+
+fit = multi_pgs_sumstats(
+    W_ld, z_train, ld_ref, weights_gwas=W_train, score_ids=score_ids,
+    z_valid=z_tune, ld_valid=ld_ref, weights_gwas_valid=W_tune,
+    weights_ld_valid=W_ld, tune="independent")
+
+# Tuning chose lambda and any LD shrinkage. Assess on a third GWAS.
+c_test, G_test, _ = score_moments(
+    W_ld, z_test, ld_ref, weights_gwas=W_test)
+result = fit.evaluate(c_test, G_test, regime="A")
+print(result)
+```
+
+`z_train`, `z_tune`, and `z_test` must be mutually independent target-trait
+GWAS. The second one is a **tuning** set; reporting the maximum selected on it
+as evaluation would be ordinary selection optimism wearing a lab coat.
+`z_test` is the untouched assessment. Each `z` must be on the standardized
+allele-correlation scale returned by
+`ldpred3.standardize_betas(beta, se, n_eff)`, not the raw per-allele beta.
+The path point minimizes summary MSE. Squared correlation is descriptive;
+maximizing it would reward an oppositely directed predictor just as
+enthusiastically, which is not a charming property. Under PUMAS, the fit's MSE
+and R² fields average pseudo-split refits used for selection, not the returned
+full-data vector. Score that vector with
+`pseudo_r2(fit.beta, fit.gram, fit.r)`, or assess it with `fit.evaluate(...)`.
+
+If only one target GWAS exists, use
+`tune="pumas", n_eff=..., weights_independent_of_z=True`. This draws
+pseudo-training and pseudo-tuning moments from a joint-Gaussian/CLT plug-in
+model. It is an approximation and supplies pseudotuning only: it is neither an
+independent assessment nor the recursive four-way PUMAS-ensemble procedure.
+The flag is an acknowledgement, not an automated check: every component score
+must have been constructed independently of that target GWAS. Holding a
+target-derived score fixed would leak the pseudo-tuning sample back into the
+fit.
+
+Catalog weights multiply allele counts. Their exact standardized-genotype
+conversion uses the empirical dosage SD from the particular GWAS or LD source,
+passed as `sd=`. If one cohort supplies both `z` and `D`, reuse its aligned
+matrix explicitly; otherwise the two matrices generally differ.
+`af=..., hwe_genotype_sd=True` explicitly requests
+`sqrt(2 f (1-f))`; that HWE approximation ignores imputation uncertainty and
+departures from equilibrium.
+
+The LD reference must match the GWAS ancestry and raw score definitions. Its
+finite sample size bounds the rank that can be resolved, and compact LD
+encodings can introduce numerical indefiniteness. The solver rejects a
+materially indefinite `G` and any unbounded fitting objective. Population
+Schur conditions involving noisy external `c` are logged as diagnostics, not
+enforced as sample identities. Positive `ld_shrinkage` can make penalized
+singular directions well posed; it cannot repair mismatched alleles, ancestry,
+or effect units. `tune="none"` is available only when requested explicitly and
+is in-sample fitting, not validation.
+
+When that same LD Gram supplies both fitting and selection (`tune="none"` or
+`"pumas"`), its exact nullspace contains no estimable score variance. The code
+therefore projects the unresolved component of `c` out of `range(G)` and logs
+its norm and fraction. Independent tuning instead projects both the training
+and tuning cross-moments onto the tuning Gram's range. It can retain a direction
+absent from the fitting LD reference only when the tuning reference resolves
+it. `fit.r` is the moment actually fitted; `fit.c_raw` preserves the observed
+training moment.
+
 ## 5. Evaluating, and the ways this goes wrong
 
 ```python
@@ -301,6 +412,8 @@ result = score_from_weights("multi.weights", "new_cohort", scaling="frozen")
 `combine_weights` collapses `K` weight sets and their coefficients into one
 per-variant table, on the standardized scale ldpred3 applies. The new cohort is
 scored with no reference to the `K` inputs and no need to rebuild the panel.
+Both `MultiPGSFit` and `SumstatFit` expose raw-score coefficients as `beta`, so
+this deployment contract is the same for individual- and summary-level fits.
 
 Use `scaling="frozen"`. It reuses the `AF_REF`/`SD_REF` written into the file,
 so a cohort with different allele frequencies is still scored on the scale the

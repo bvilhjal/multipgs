@@ -1,5 +1,68 @@
 # Changelog
 
+## 0.3.0
+
+Summary-statistic multi-PGS fitting and reproducible PGS Catalog acquisition.
+
+### Summary-statistic Multi-PGS
+
+- `multi_pgs_sumstats` fits a lasso or elastic-net combination from
+  `W_ld.T @ D @ W_ld` and `W_gwas.T @ z`, without individual-level genotypes
+  or phenotypes. The penalty acts on whole component scores; this is a
+  lassosum-inspired score-space estimator, not SNP-level lassosum.
+- An independent `z_valid` tunes the path but does not assess the selected
+  model. `score_moments`, `evaluate_sumstat`, and `SumstatFit.evaluate` measure
+  a fixed combination against a third untouched GWAS; every result records its
+  declared provenance.
+- Path selection minimizes summary MSE. Squared pseudo-R² remains descriptive
+  and cannot select an oppositely directed predictor.
+- `tune="pumas"` supplies joint-Gaussian/CLT plug-in pseudotuning from one GWAS.
+  It is documented as an approximation, requires component weights constructed
+  independently of that GWAS, and is not reported as external validation.
+- `SumstatFit.beta` follows the package-wide raw-score coefficient contract;
+  `beta_std` supplies standardized-score coefficients, and
+  `frozen_variant_weights` and `combine_weights` expose the LD-frozen and raw
+  panel deployment routes without mixing their scales.
+- Score moments stream disjoint LD blocks and sparse score columns. Duplicate
+  sparse entries are coalesced, materially indefinite LD fails, and an
+  unbounded external-LD objective cannot return runaway coefficients.
+- GWAS and LD inputs carry separate, explicit standardized-genotype weight
+  matrices. This preserves one raw-score coordinate when their empirical
+  genotype standard deviations or variant sets differ.
+- Same-LD in-sample and PUMAS tuning project unresolved GWAS signal onto the LD
+  Gram's estimable range. Independent tuning projects both training and tuning
+  moments onto the tuning Gram's range, so it may retain a direction absent
+  from the fitting reference only when the tuning reference resolves it. All
+  discarded fractions are logged.
+- `align_to_reference` prefers the empirical dosage SD used by the
+  accompanying GWAS or LD source. HWE scaling from allele frequency remains
+  available only through the explicit `hwe_genotype_sd=True` approximation.
+- `benchmarks/sumstat_calibration.py` records the individual-level moment
+  identity, null tuning-versus-assessment MSE gap, and Gaussian/binary error of
+  the PUMAS covariance plug-in with per-seed provenance.
+
+### PGS Catalog acquisition
+
+- `search_scores` finds scores by trait, score identifiers, PMID, or Catalog
+  publication; `download_scores` retrieves harmonized scoring files for a
+  named genome build.
+- `write_score_metadata` writes discovery sample size, ancestry, method, and
+  publication metadata, while `cohort_overlap` flags named discovery cohorts
+  shared by score pairs.
+- `multipgs fetch` exposes the acquisition workflow, including response
+  caching, metadata-only runs, child-trait inclusion, and overlap reporting.
+- Download verification now requires matching score metadata, a valid scoring
+  table, and at least one variant; a bad cached file is removed so the next run
+  can retrieve it again.
+
+### Documentation and release
+
+- The README, guide, algorithm notes, API map, and bibliography now distinguish
+  fitting, tuning, and untouched assessment for both individual-level and
+  summary-statistic workflows.
+- The package version is `0.3.0`; the public summary-statistic API remains
+  Python-only in this release.
+
 ## 0.2.0
 
 Correctness, integrity, and packaging hardening after the first release.

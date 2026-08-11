@@ -269,6 +269,86 @@ def test_a_truncated_download_is_caught_by_verification(tmp_path, monkeypatch):
     assert paths == [None] and log["n_failed"] == 1
 
 
+@pytest.mark.parametrize("body, message", [
+    ("", "no pgs_id"),
+    ("#pgs_id=PGS000001\n", "no scoring-table column header"),
+    ("#pgs_id=PGS000001\nnot_a_table\nstill_not_a_variant\n",
+     "no valid scoring-table header"),
+    ("#pgs_id=PGS000001\n"
+     "rsID\tchr_name\tchr_position\teffect_allele\tother_allele\t"
+     "effect_weight\n", "no variant rows"),
+])
+def test_empty_scoring_downloads_are_rejected(tmp_path, body, message):
+    path = tmp_path / "empty.txt.gz"
+    with gzip.open(path, "wt", encoding="utf-8") as fh:
+        fh.write(body)
+    with pytest.raises(ValueError, match=message):
+        fetch._verify_scoring_file(str(path), "PGS000001")
+
+
+@pytest.mark.parametrize("row", [
+    "rs1\t1\t1000\tA\tG",                       # too few fields
+    "rs1\t1\t1000\tA\tG\t0.1\textra",        # too many fields
+    "rs1\t1\t1000\tA\tG\tnot-a-number",
+    "rs1\t1\t1000\tA\tG\tnan",
+    "rs1\t1\t1000\tA\tG\tinf",
+    ".\t.\t0\tA\tG\t0.1",                    # no usable identity
+    "\t1\tnot-a-position\tA\tG\t0.1",
+    "rs1\t1\t1000\t\tG\t0.1",               # no effect allele
+])
+def test_scoring_download_needs_a_structurally_valid_variant_row(
+        tmp_path, row):
+    path = tmp_path / "malformed.txt.gz"
+    with gzip.open(path, "wt", encoding="utf-8") as fh:
+        fh.write("#pgs_id=PGS000001\n")
+        fh.write("rsID\tchr_name\tchr_position\teffect_allele\t"
+                 "other_allele\teffect_weight\n")
+        fh.write(row + "\n")
+    with pytest.raises(ValueError, match="no structurally valid variant row"):
+        fetch._verify_scoring_file(str(path), "PGS000001")
+
+
+@pytest.mark.parametrize("row", [
+    "rs1\t\t\tA\tG\t0.1",       # usable ID; coordinates may be absent
+    "\t1\t1000\tA\tG\t0.1",     # usable coordinates; ID may be absent
+])
+def test_scoring_download_accepts_either_variant_identity(tmp_path, row):
+    path = tmp_path / "valid.txt.gz"
+    with gzip.open(path, "wt", encoding="utf-8") as fh:
+        fh.write("#pgs_id=PGS000001\n")
+        fh.write("rsID\tchr_name\tchr_position\teffect_allele\t"
+                 "other_allele\teffect_weight\n")
+        fh.write("garbage\twith\tthe\tright\tfield\tcount\n")
+        fh.write(row + "\n")
+    fetch._verify_scoring_file(str(path), "PGS000001")
+
+
+def test_a_bad_cached_download_is_removed_so_resume_can_retry(
+        tmp_path, monkeypatch):
+    record = fetch.ScoreRecord.from_api(_score("PGS000001"))
+    calls = []
+
+    def download(_url, dest, *, timeout=120):
+        calls.append(dest)
+        if len(calls) == 1:
+            with gzip.open(dest, "wt", encoding="utf-8"):
+                pass
+        else:
+            _write_scoring_file(dest, "PGS000001")
+
+    monkeypatch.setattr(fetch, "_download_file", download)
+    dest = str(tmp_path / "scores")
+    paths, log = fetch.download_scores([record], dest, on_error="skip")
+    assert paths == [None] and log["n_failed"] == 1
+    assert log["n_downloaded"] == 0 and log["n_cached"] == 0
+    assert not (tmp_path / "scores" /
+                "PGS000001_hmPOS_GRCh37.txt.gz").exists()
+
+    paths, log = fetch.download_scores([record], dest)
+    assert paths[0] is not None and log["n_downloaded"] == 1
+    assert len(calls) == 2
+
+
 def test_a_score_not_harmonized_on_the_build_is_an_error(tmp_path, monkeypatch):
     records = [fetch.ScoreRecord.from_api(
         _score("PGS000001", harmonized=("GRCh38",)))]

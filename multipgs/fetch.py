@@ -489,7 +489,19 @@ def _verify_scoring_file(path, pgs_id):
     know the tail arrived; these files are a few megabytes, so the cost is
     worth the certainty.
     """
+    from .catalog import _COLUMNS
+
     header = {}
+    column_header = None
+    column_index = None
+    tab_separated = False
+    schema_valid = False
+    n_rows = 0
+    has_valid_row = False
+
+    def present(value):
+        return value.strip().upper() not in {"", ".", "NA", "N/A", "NULL"}
+
     try:
         with gzip.open(path, "rt", encoding="utf-8", errors="replace") as fh:
             for line in fh:
@@ -498,16 +510,90 @@ def _verify_scoring_file(path, pgs_id):
                     if "=" in stripped:
                         key, _, value = stripped.partition("=")
                         header.setdefault(key.strip().lower(), value.strip())
-                # Keep reading past the header: an intact header proves nothing
-                # about an interrupted body.
+                    continue
+                raw = line.rstrip("\n").rstrip("\r")
+                if not raw.strip():
+                    continue
+                if column_header is None:
+                    tab_separated = "\t" in raw
+                    fields = raw.split("\t") if tab_separated else raw.split()
+                    column_header = [field.strip().lower()
+                                     for field in fields]
+                    lookup = {name: i for i, name in enumerate(column_header)}
+                    column_index = {
+                        key: next((lookup[name] for name in names
+                                   if name in lookup), None)
+                        for key, names in _COLUMNS.items()
+                    }
+                    schema_valid = (
+                        column_index["weight"] is not None
+                        and column_index["ea"] is not None
+                        and (column_index["id"] is not None
+                             or (column_index["chrom"] is not None
+                                 and column_index["pos"] is not None)))
+                    continue
+
+                n_rows += 1
+                # One valid row proves this is a scoring table. Continue to EOF
+                # without parsing the remaining rows so gzip tail verification
+                # remains complete and the added work stays constant.
+                if has_valid_row:
+                    continue
+                if not schema_valid:
+                    continue
+                fields = raw.split("\t") if tab_separated else raw.split()
+                if len(fields) != len(column_header):
+                    continue
+                try:
+                    weight = float(fields[column_index["weight"]])
+                except (TypeError, ValueError):
+                    continue
+                if not np.isfinite(weight):
+                    continue
+
+                if not present(fields[column_index["ea"]]):
+                    continue
+                has_id = (column_index["id"] is not None
+                          and present(fields[column_index["id"]]))
+                has_position = False
+                if (column_index["chrom"] is not None
+                        and column_index["pos"] is not None
+                        and present(fields[column_index["chrom"]])):
+                    position = fields[column_index["pos"]].strip()
+                    has_position = (position.isdigit()
+                                    and bool(position.lstrip("0")))
+                has_valid_row = has_id or has_position
+                # Keep reading to EOF: an intact header proves nothing about
+                # an interrupted body.
     except (OSError, EOFError, gzip.BadGzipFile) as exc:
         raise ValueError(f"{path} is not a readable gzip file — the download "
                          f"was probably truncated: {exc}") from exc
 
     got = header.get("pgs_id", "")
-    if got and got != pgs_id:
+    if not got:
+        raise ValueError(f"{path} has no pgs_id metadata and cannot be "
+                         f"verified as {pgs_id}")
+    if got != pgs_id:
         raise ValueError(f"{path} declares pgs_id={got!r} but was downloaded "
                          f"as {pgs_id!r}")
+    if column_header is None:
+        raise ValueError(f"{path} has no scoring-table column header")
+    has_weight = column_index["weight"] is not None
+    has_allele = column_index["ea"] is not None
+    has_id_column = column_index["id"] is not None
+    has_position_columns = (column_index["chrom"] is not None
+                            and column_index["pos"] is not None)
+    if not (has_weight and has_allele
+            and (has_id_column or has_position_columns)):
+        raise ValueError(f"{path} has no valid scoring-table header")
+    if n_rows == 0:
+        raise ValueError(f"{path} has no variant rows")
+    if not has_valid_row:
+        raise ValueError(
+            f"{path} has no structurally valid variant row: one row must "
+            f"have exactly {len(column_header)} fields, a finite numeric "
+            "effect weight, a non-missing effect allele, and either a variant "
+            "ID or a chromosome with a positive integer position")
 
 
 def download_scores(records, dest, *, build="GRCh37", overwrite=False,
@@ -563,13 +649,25 @@ def download_scores(records, dest, *, build="GRCh37", overwrite=False,
                 raise ValueError(
                     f"{record.pgs_id} has no harmonized file on {build}; the "
                     f"Catalog has it on {sorted(record.harmonized_urls) or 'no build'}")
-            if overwrite or not os.path.exists(path):
+            downloaded = overwrite or not os.path.exists(path)
+            if downloaded:
                 _download_file(url, path, timeout=timeout)
+            if verify:
+                try:
+                    _verify_scoring_file(path, record.pgs_id)
+                except Exception:
+                    # Do not strand a bad cache entry: without removal every
+                    # resumed run would trust the path, fail verification, and
+                    # never attempt the download again.
+                    try:
+                        os.remove(path)
+                    except FileNotFoundError:
+                        pass
+                    raise
+            if downloaded:
                 n_downloaded += 1
             else:
                 n_cached += 1
-            if verify:
-                _verify_scoring_file(path, record.pgs_id)
         except Exception as exc:                      # noqa: BLE001
             if on_error == "raise":
                 raise

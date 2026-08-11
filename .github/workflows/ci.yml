@@ -50,5 +50,9 @@ jobs:
                        "benchmarks/README.md", "benchmarks/meta_rules.py",
                        "benchmarks/results/meta_rules.csv",
                        "benchmarks/stack_scaling.py",
-                       "benchmarks/results/stack_scaling.csv"):
+                       "benchmarks/results/stack_scaling.csv",
+                       "benchmarks/sumstat_calibration.py",
+                       "benchmarks/results/sumstat_calibration.csv",
+                       "benchmarks/results/sumstat_calibration_summary.csv",
+                       "benchmarks/results/sumstat_calibration_provenance.json"):
               assert any(name.endswith("/" + path) for name in names), path

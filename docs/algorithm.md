@@ -127,11 +127,78 @@ Binomial remains `O(nD)` per sweep with an IRLS loop and is the slower family.
 
 The executable scaling artifact records wall time and absolute peak RSS for
 representative cases. On the committed Python 3.13/NumPy 2.1.3 run, 5 final
-folds, 3 assessment folds and 40 penalties took 0.054 s/171 MiB at
-`n=5,000, K=100` and 0.851 s/655 MiB at `n=20,000, K=500`, after kernel warm-up.
+folds, 3 assessment folds and 40 penalties took 0.049 s/149 MiB at
+`n=5,000, K=100` and 1.004 s/658 MiB at `n=20,000, K=500`, after kernel warm-up.
 See [`benchmarks/results/stack_scaling.csv`](../benchmarks/results/stack_scaling.csv)
 and its provenance file; absolute RSS includes the Python, NumPy and Numba
 runtime, so compare rows from one run rather than treating it as array bytes.
+
+## Summary-statistic learned combination
+
+For Gaussian stacking, the coordinate solver already needs only a Gram matrix
+and a score–phenotype covariance vector. Raw allele-count scores have
+dataset-specific standardized-genotype matrices `W_ld` and `W_gwas`, obtained
+with the empirical dosage SD of the LD and GWAS sources respectively. With `D`
+external LD and `z` standardized target-GWAS effects:
+
+**Equation 2. Summary-level sufficient statistics.**
+
+```
+G_raw = W_ld.T @ D @ W_ld    c_raw = W_gwas.T @ z
+```
+
+The implementation standardizes each score by
+`s_k = sqrt(G_raw[k,k])`, fits the existing covariance-update path, and converts
+the selected vector back to raw-score coefficients. Consequently
+`SumstatFit.beta`, `MultiPGSFit.beta`, and `combine_weights` share one contract;
+`SumstatFit.beta_std` is the coefficient vector on unit-variance scores.
+
+At the default `alpha=1`, the lasso acts on `K` whole component scores. The
+quadratic form is inspired by SNP-level lassosum, but the variables are
+different: the final variant weights combine the supplied raw score weights
+and cannot leave their span. `ld_shrinkage` separately adds a diagonal repair to penalized score
+coordinates; it is not folded into elastic-net `alpha`.
+
+`score_gram` consumes LD blocks in exact variant order and accumulates only the
+score columns active in each block. Peak working memory is
+`O(block_size · K_active + K²)`, not `O(mK)`. PUMAS-style repeats factor the
+`K × K` covariance once and reuse it for every noise draw.
+
+When `D` and `z` come from the same individuals, Equation 2 is an exact sample
+identity. With external LD it is a plug-in estimator: noisy `c` need not satisfy
+the population Schur bound against the finite-reference `G`. Such discrepancies
+are logged as diagnostics. Materially indefinite `G` still fails, and each
+fitted quadratic must be bounded. Positive `ld_shrinkage` repairs penalized
+singular directions; it cannot repair an unpenalized null direction with
+nonzero linear signal, mismatched alleles, or a wrong effect scale.
+
+Selection cannot learn from a direction to which its LD Gram assigns exactly
+zero score variance. For `tune="none"` and PUMAS, the implementation projects
+the unresolved component of `c` onto `range(G)` once, logs the discarded norm
+and fraction, and uses the projected moment for fitting and pseudo-splitting.
+Independent tuning projects both training and tuning cross-moments onto the
+tuning Gram's range; a direction absent from the fitting Gram remains only if
+the tuning Gram resolves it. `SumstatFit.c_raw` retains the observed training
+vector, while `SumstatFit.r` records the moment actually fitted.
+
+An independent `z_valid` chooses the path by minimum summary MSE; that minimum
+remains a tuning statistic. Squared correlation is descriptive and is not the
+selection rule, because it would reward a predictor with the wrong sign or
+scale. Under PUMAS, both reported selection-path statistics average
+pseudo-split refits rather than scoring the returned full-data coefficient
+vector. A third untouched GWAS is required for regime-A assessment.
+With one GWAS, `tune="pumas"` uses a joint-Gaussian/CLT plug-in covariance to
+form pseudo-training and pseudo-tuning moments. It requires the explicit
+`weights_independent_of_z=True` acknowledgement because holding a score trained
+on the same `z` fixed would leak pseudo-tuning information. This is a two-way
+pseudotuning device, not the recursive four-stage PUMAS-ensemble assessment.
+`tune="none"` must be requested explicitly and is labelled in-sample reuse.
+
+The executable calibration checks the moment identity on discrete dosages,
+the null tuning-versus-assessment MSE gap, and Gaussian-versus-binary error of
+the PUMAS covariance plug-in. Raw seeds, summaries, and provenance live in
+[`benchmarks/results`](../benchmarks/results); regenerate them with
+[`benchmarks/sumstat_calibration.py`](../benchmarks/sumstat_calibration.py).
 
 ## Score construction
 

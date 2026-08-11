@@ -682,8 +682,10 @@ def combine_weights(panel, fit, *, path=None):
     panel : ScorePanel
         Must carry ``weights`` — a panel read back with :func:`read_panel` from
         a plain score matrix does not.
-    fit : MultiPGSFit or MetaPGS
-        Its ``score_ids`` must match the panel's, in order.
+    fit : MultiPGSFit, MetaPGS, or SumstatFit
+        Its raw-score ``beta`` and ``score_ids`` must match the panel's, in
+        order. In particular, ``SumstatFit.beta`` is already on this raw score
+        scale; ``beta_std`` is for comparing effects, not deployment.
     path : str, optional
         Write the table here, in ldpred3's
         ``ID CHR POS A1 A2 WEIGHT AF_REF SD_REF`` format.
@@ -697,11 +699,34 @@ def combine_weights(panel, fit, *, path=None):
                          "is nothing to combine; rebuild it with "
                          "panel_from_catalog or panel_from_sumstats")
     beta = np.asarray(fit.beta, dtype=float)
+    if beta.ndim != 1:
+        raise ValueError(f"fit.beta must be a 1-D raw-score coefficient "
+                         f"vector, got shape {beta.shape}")
+    if not np.all(np.isfinite(beta)):
+        raise ValueError("fit.beta contains non-finite coefficients")
     if beta.size != panel.n_scores:
         raise ValueError(f"fit has {beta.size} coefficients but the panel has "
                          f"{panel.n_scores} scores")
-    panel_ids = [str(s) for s in np.asarray(panel.score_ids, dtype=object)]
-    fit_ids = [str(s) for s in np.asarray(fit.score_ids, dtype=object)]
+    if len(panel.weights) != panel.n_scores:
+        raise ValueError(f"panel has {len(panel.weights)} weight tables for "
+                         f"{panel.n_scores} score columns")
+    standardized = np.asarray(panel.standardized)
+    if standardized.shape != (panel.n_scores,):
+        raise ValueError("panel.standardized must have one entry per score")
+    panel_id_array = np.asarray(panel.score_ids, dtype=object)
+    fit_id_array = np.asarray(fit.score_ids, dtype=object)
+    if panel_id_array.shape != (panel.n_scores,):
+        raise ValueError("panel.score_ids must have one entry per score")
+    if fit_id_array.shape != (panel.n_scores,):
+        raise ValueError("fit.score_ids must have one entry per coefficient")
+    panel_ids = [str(s) for s in panel_id_array]
+    fit_ids = [str(s) for s in fit_id_array]
+    if len(set(panel_ids)) != len(panel_ids):
+        raise ValueError("panel.score_ids must be unique before combining "
+                         "weights")
+    if len(set(fit_ids)) != len(fit_ids):
+        raise ValueError("fit.score_ids must be unique before combining "
+                         "weights")
     if fit_ids != panel_ids:
         raise ValueError("the fit's score_ids do not match the panel's; "
                          "combining them would attach coefficients to the "
@@ -718,7 +743,7 @@ def combine_weights(panel, fit, *, path=None):
         sd = None if sd is None else np.asarray(sd, dtype=float)
         af = metadata.get("af")
         af = None if af is None else np.asarray(af, dtype=float)
-        if not panel.standardized[k]:
+        if not standardized[k]:
             if sd is None:
                 raise ValueError(
                     f"score {panel_ids[k]!r} has allele-count weights but no "

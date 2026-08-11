@@ -1,6 +1,6 @@
 {
-  "generated_utc": "2026-08-11T03:55:37.387211+00:00",
-  "elapsed_seconds": 7.7083958750008605,
+  "generated_utc": "2026-08-11T13:29:04.546460+00:00",
+  "elapsed_seconds": 4.736606999998912,
   "command": [
     "/opt/anaconda3/bin/python",
     "/Users/au507860/REPOS/multipgs/benchmarks/stack_scaling.py",
@@ -18,7 +18,7 @@
   ],
   "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
   "python": "3.13.5",
-  "multipgs": "0.2.0",
+  "multipgs": "0.3.0",
   "numpy": "2.1.3",
   "ldpred3": "0.4.6",
   "numba": "0.61.0",

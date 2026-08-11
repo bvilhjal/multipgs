@@ -4,7 +4,8 @@ Every name below is importable directly from `multipgs`. Use `help(name)` for
 the complete signature and validation rules.
 
 ```python
-from multipgs import panel_from_catalog, multi_pgs_fit, evaluate, combine_weights
+from multipgs import (panel_from_catalog, multi_pgs_fit, multi_pgs_sumstats,
+                      evaluate, combine_weights)
 ```
 
 ## Combining scores
@@ -14,8 +15,9 @@ from multipgs import panel_from_catalog, multi_pgs_fit, evaluate, combine_weight
 | Name | Purpose |
 |---|---|
 | `multi_pgs_fit` | learn a combination from a training phenotype (CMSA elastic net) |
+| `multi_pgs_sumstats` | learn a Gaussian combination from target GWAS statistics and external LD |
 | `meta_pgs` | combine same-trait scores with no phenotype, from `n_eff` or fitted accuracy |
-| `MultiPGSFit`, `MetaPGS` | result containers; both expose `.multi_pgs(scores)` and `.selected()` |
+| `MultiPGSFit`, `SumstatFit`, `MetaPGS` | fitted combinations on the common raw-score coefficient contract |
 | `FoldFit` | what one CMSA fold selected, and how it did |
 
 `MultiPGSFit.multi_pgs(scores)` is the combined score — what you evaluate.
@@ -28,9 +30,75 @@ Pass a `ScorePanel` to `.multi_pgs()` rather than a bare matrix and the score
 ids are checked against the fit. A bare matrix is matched by **position**, and a
 separately built panel can have the same columns in a different order.
 
+## Summary-statistic fitting
+
+**Table 2. Score-space sufficient statistics.**
+
+| Name | Purpose |
+|---|---|
+| `align_to_reference` | harmonize component weights to one data source's variant order and standardized-genotype scale |
+| `score_gram` | compute `G = W_ld.T @ D @ W_ld`, streaming LD blocks and sparse scores |
+| `score_moments` | compute `(c, G)` from separate GWAS- and LD-scaled weights |
+| `multi_pgs_sumstats`, `SumstatFit` | fit and retain the score-space lasso/elastic-net path |
+| `pseudo_r2` | fixed-vector summary-statistic R²; it does not establish independence |
+| `evaluate_sumstat`, `SumstatEval` | evaluate a fixed combination and retain its declared provenance |
+| `subsample_score_moments` | joint-Gaussian/CLT plug-in pseudo-split used for PUMAS-style tuning |
+| `REGIMES` | descriptions of external assessment, pseudotuning, and in-sample reuse |
+
+The shortest complete independent-GWAS workflow is:
+
+```python
+from multipgs import (align_to_reference, multi_pgs_sumstats,
+                      score_moments)
+
+W_ld, ids, _ = align_to_reference(scoring_files, ld_variants, sd=ld_sd)
+W_train, train_ids, _ = align_to_reference(
+    scoring_files, train_variants, sd=train_sd)
+W_tune, tune_ids, _ = align_to_reference(
+    scoring_files, tune_variants, sd=tune_sd)
+W_test, test_ids, _ = align_to_reference(
+    scoring_files, test_variants, sd=test_sd)
+assert ids == train_ids == tune_ids == test_ids
+fit = multi_pgs_sumstats(
+    W_ld, z_train, ld_ref, weights_gwas=W_train, score_ids=ids,
+    z_valid=z_tune, ld_valid=ld_ref, weights_gwas_valid=W_tune,
+    weights_ld_valid=W_ld, tune="independent")
+c_test, G_test, _ = score_moments(
+    W_ld, z_test, ld_ref, weights_gwas=W_test)
+assessment = fit.evaluate(c_test, G_test, regime="A")
+```
+
+`z_tune` selects hyperparameters; only `z_test`, from a third untouched GWAS,
+assesses the winner. Selection minimizes summary MSE; squared correlation is
+not maximized because it would ignore a wrong sign. For independent tuning,
+the fit's selection fields score the chosen vector on the tuning moments. For
+PUMAS, they instead average pseudo-split refits and do not score the returned
+full-data `fit.beta`; call `pseudo_r2(fit.beta, fit.gram, fit.r)` for that fixed
+vector. Each effect vector and its `W_gwas` must be aligned to that GWAS's
+variants; `W_ld` is aligned separately to the LD source. With one target GWAS,
+`tune="pumas", n_eff=n, weights_independent_of_z=True` is approximate
+pseudotuning, not assessment. The acknowledgement is valid only when `W` was
+built independently of that GWAS. `alpha=1` penalizes component-score
+coefficients; this is inspired by lassosum but does not fit SNP-level lassosum
+effects.
+
+Pass each source's empirical dosage `sd` when aligning its weights. Using
+`af=..., hwe_genotype_sd=True` instead requests the HWE approximation
+`sqrt(2*af*(1-af))`. The solver refuses materially indefinite LD or an
+unbounded objective. Noisy external-GWAS compatibility checks are diagnostics:
+positive LD shrinkage can stabilize penalized singular directions, but it
+cannot repair ancestry, allele, ordering, or effect-scale mismatches.
+For `tune="none"` and `"pumas"`, `fit.r` is `c` projected onto the fitting LD
+Gram's estimable range. Independent tuning projects both the training and
+tuning cross-moments onto the tuning Gram's range, so the returned fit contains
+only directions that its tuning LD can assess. A direction absent from the
+fitting reference may remain only when the tuning reference resolves it.
+`fit.c_raw` retains observed training `c`; discarded norms and fractions are
+logged.
+
 ## Building the panel
 
-**Table 2. Panel construction.**
+**Table 3. Panel construction.**
 
 | Name | Purpose |
 |---|---|
@@ -46,7 +114,7 @@ counts; `.index_of(score_id)`.
 
 ## Scoring files
 
-**Table 3. PGS Catalog I/O.**
+**Table 4. PGS Catalog I/O.**
 
 | Name | Purpose |
 |---|---|
@@ -58,9 +126,20 @@ Odds-ratio weights are log-transformed on read; non-additive rows
 (`is_dominant`, `is_haplotype`, ...) are dropped and counted; harmonized
 `hm_*` columns are preferred when present.
 
+## PGS Catalog acquisition
+
+**Table 5. Catalog network API.**
+
+| Name | Purpose |
+|---|---|
+| `search_scores`, `ScoreRecord` | find scores by trait, PGS ids, PMID, or Catalog publication |
+| `download_scores` | download harmonized scoring files for GRCh37 or GRCh38 |
+| `write_score_metadata` | write score-keyed discovery and publication metadata plus effective sample size |
+| `cohort_overlap` | flag score pairs sharing named discovery cohorts; a lower bound, not proof of sample overlap |
+
 ## Screening and expected accuracy
 
-**Table 4. Architecture.**
+**Table 6. Architecture.**
 
 | Name | Purpose |
 |---|---|
@@ -72,7 +151,7 @@ Odds-ratio weights are log-transformed on read; non-additive rows
 
 ## Evaluation
 
-**Table 5. Metrics.**
+**Table 7. Individual-level metrics.**
 
 | Name | Purpose |
 |---|---|
@@ -89,7 +168,7 @@ understates the shrinkage for a large R².
 
 ## Simulation
 
-**Table 6. Synthetic data.**
+**Table 8. Synthetic data.**
 
 | Name | Purpose |
 |---|---|
@@ -100,5 +179,16 @@ understates the shrinkage for a large R².
 
 ## Command line
 
-`multipgs panel | fit | meta | evaluate`. See `multipgs <command> --help`, or
-[guide.md](guide.md). `python -m multipgs` is the same entry point.
+**Table 9. Commands.**
+
+| Command | Purpose |
+|---|---|
+| `fetch` | acquire PGS Catalog scoring files and metadata |
+| `panel` | construct an individual-level score matrix |
+| `fit` | fit the individual-level learned combination |
+| `meta` | derive a same-trait combination without a phenotype |
+| `evaluate` | evaluate one score against individual-level phenotypes |
+
+See `multipgs <command> --help`, or [guide.md](guide.md). `python -m multipgs`
+is the same entry point. Summary-statistic fitting and evaluation are currently
+Python API only; there is no `sumstats` command in 0.3.0.

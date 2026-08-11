@@ -347,3 +347,62 @@ def test_combine_weights_reports_exact_cancellation():
     fit = SimpleNamespace(beta=np.ones(2), score_ids=panel.score_ids)
     with pytest.raises(ValueError, match="cancel exactly"):
         combine_weights(panel, fit)
+
+
+def test_sumstat_fit_combines_raw_coefficients_at_nonunit_score_sd():
+    """Summary fitting and deployment must use the same coefficient scale."""
+    from multipgs.sumstat import multi_pgs_sumstats
+
+    weights = np.array([[2.0, 0.0],
+                        [0.0, 0.5],
+                        [1.0, 1.5]])
+    variant_ids = np.array(["rs1", "rs2", "rs3"], dtype=object)
+
+    def table(column):
+        return {
+            "id": variant_ids,
+            "chrom": np.array(["1", "1", "1"], dtype=object),
+            "pos": np.array([100, 200, 300]),
+            "a1": np.array(["A", "C", "G"], dtype=object),
+            "a2": np.array(["G", "T", "A"], dtype=object),
+            "weight": weights[:, column],
+            "af": np.full(3, 0.2),
+            "sd": np.ones(3),
+        }
+
+    panel = _weight_panel([table(0), table(1)])
+    fit = multi_pgs_sumstats(
+        weights, np.array([0.5, -0.2, 0.3]), np.eye(3),
+        weights_gwas=weights,
+        score_ids=panel.score_ids, tune="none", n_lambda=12,
+        ld_shrinkage=[0.1])
+    assert not np.allclose(fit.score_sd, 1.0)
+    assert not np.allclose(fit.beta, fit.beta_std)
+
+    combined = combine_weights(panel, fit)
+    order = {str(s): i for i, s in enumerate(combined["id"])}
+    deployed = np.array([combined["weight"][order[str(s)]]
+                         for s in variant_ids])
+    assert np.allclose(deployed, fit.variant_weights(weights))
+    assert np.allclose(deployed, weights @ fit.beta)
+
+
+@pytest.mark.parametrize("beta, message", [
+    (np.ones((1, 2)), "1-D"),
+    (np.array([1.0, np.nan]), "non-finite"),
+])
+def test_combine_weights_rejects_invalid_raw_beta(beta, message):
+    panel = _weight_panel([_weight_table("A", "G", 1.0),
+                           _weight_table("A", "G", 2.0)])
+    fit = SimpleNamespace(beta=beta, score_ids=panel.score_ids)
+    with pytest.raises(ValueError, match=message):
+        combine_weights(panel, fit)
+
+
+def test_combine_weights_requires_unique_score_binding():
+    panel = _weight_panel([_weight_table("A", "G", 1.0),
+                           _weight_table("A", "G", 2.0)])
+    panel.score_ids = np.array(["same", "same"], dtype=object)
+    fit = SimpleNamespace(beta=np.ones(2), score_ids=panel.score_ids)
+    with pytest.raises(ValueError, match="score_ids must be unique"):
+        combine_weights(panel, fit)

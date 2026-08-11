@@ -1,7 +1,7 @@
 # Theory
 
-Why combining polygenic scores works, what the two combiners in this package
-estimate, and what the resulting numbers mean. [algorithm.md](algorithm.md) is
+Why combining polygenic scores works, what the three fitting routes in this
+package estimate, and what the resulting numbers mean. [algorithm.md](algorithm.md) is
 the companion: implementation choices, costs, and the measurements behind the
 defaults. [guide.md](guide.md) is how to run it.
 
@@ -158,16 +158,17 @@ a prediction of this model, not a limitation of the implementation.
 
 | | combine summary statistics | learned weights on scores | derived weights on scores |
 |---|---|---|---|
-| example | MTAG, wMT-SBLUP | **`multi_pgs_fit`** | **`meta_pgs`** |
-| needs a phenotyped cohort | no | yes | no |
+| example | MTAG, wMT-SBLUP | **`multi_pgs_fit`**, **`multi_pgs_sumstats`** | **`meta_pgs`** |
+| needs a phenotyped cohort | no | `multi_pgs_fit`: yes; `multi_pgs_sumstats`: no |
 | needs `r_G` / `h²` up front | yes | no | no |
-| assumption bought with | a correct multivariate model | `n` large enough to estimate `K` weights | the scores target one trait |
+| assumption bought with | a correct multivariate model | enough individuals, or aligned target-GWAS and LD moment estimates | the scores target one trait |
 
 MTAG combines *before* fitting, reweighting each trait's summary statistics by
 the estimated genetic covariance
 ([Turley et al. 2018](https://doi.org/10.1038/s41588-017-0009-4)). `multipgs`
 implements the two right-hand columns: they need no `r_G` estimate, at the cost
-of either a training cohort or a same-trait assumption.
+of a training phenotype, aligned summary-level moment estimates, or a
+same-trait assumption, according to the fitting route.
 
 ## 2. Learned weights: penalized regression over a panel
 
@@ -190,6 +191,61 @@ Albiñana et al. use the same device — covariates at penalty factor 0, scores 
 
 The combined score is `S·β`. Covariates are excluded from it deliberately: an
 accuracy figure that includes age and sex is not a polygenic-score accuracy.
+
+### The same Gaussian objective from summary statistics
+
+Let `w` denote the raw allele-count weights of the `K` component scores. In a
+data source with per-variant dosage SD `s`, the corresponding weights on
+standardized genotypes are `W_s = diag(s) @ w`. For LD source `D` and target
+GWAS effects `u` (the API calls them `z`), the two Gaussian-objective moment
+estimates are
+
+**Equation 1. Score-space moments.**
+
+```
+G_raw = W_ld.T @ D @ W_ld    c_raw = W_gwas.T @ u
+```
+
+`multi_pgs_sumstats` divides each score by
+`s_k = sqrt(G_raw[k,k])`, solves the same coordinate-descent problem with
+`G_kl = G_raw,kl/(s_k s_l)` and `c_k = c_raw,k/s_k`, and returns raw-score
+coefficients `beta`; `beta_std = beta * s` is the standardized-score vector.
+Thus `w @ beta` is the raw allele-count deployment vector; `W_ld @ beta` is
+the same score frozen to the LD source's standardized-genotype scale.
+
+At `alpha=1`, the L1 penalty is on the `K` component-score coefficients. This
+is the score-space analogue of lassosum's summary-statistic quadratic, but not
+SNP-level lassosum: `||beta||_1` is not `||w @ beta||_1`, and the fitted SNP
+effects cannot leave the span of the supplied component scores.
+
+When `D` and `u` are computed from the same individuals, these are exact sample
+moments. With an external LD reference they are plug-in estimates in one raw
+score coordinate, not a single empirical covariance matrix: sampling noise can
+put `c` outside `range(G)` or make `c.T @ pinv(G) @ c > var(y)`. Those are
+diagnostics, not automatic proof of bad data. The solver still requires a
+positive-semidefinite `G` and a bounded penalized objective. A positive
+`ld_shrinkage` can make penalized singular directions well posed; an
+unpenalized null direction with nonzero linear signal cannot be repaired.
+
+When one LD Gram supplies both the fit and its selection criterion
+(`tune="none"` or PUMAS), the component of `c` in `null(G)` is not identifiable.
+`multipgs` projects that component away, reports its standardized norm and
+fraction, and retains the observed vector separately as `c_raw`. Independent
+tuning projects both training and tuning cross-moments onto the tuning Gram's
+range. Its own Gram may retain a direction missing from the fitting reference,
+but a direction missing from the tuning reference cannot influence either the
+fit or its selection.
+
+An independent second GWAS can select the penalty by minimum summary MSE, but
+that selected minimum is tuning performance. Squared correlation is retained
+as a descriptive accuracy statistic, not a selection rule: squaring would give
+an oppositely directed predictor the same score. For PUMAS, both selection
+statistics average the pseudo-split refits; neither is a metric of the returned
+full-data coefficient vector. Regime-A assessment needs a third untouched
+GWAS. With one GWAS, the optional PUMAS-style split is a
+joint-Gaussian/CLT plug-in
+pseudotuning approximation and requires `W` to have been constructed without
+that GWAS. It is not external assessment.
 
 ### The coordinate update
 

@@ -5,7 +5,7 @@ GWAS than genetically correlated phenotypes. **Multi-PGS** can borrow from that
 auxiliary information by computing and combining scores for many traits; gains
 are possible when those signals generalize to the target cohort.
 
-Two combiners, for two situations:
+Three fitting routes, for three information sets:
 
 ``multi_pgs_fit`` — **learned weights**, when a training cohort exists.
     A penalized regression of the phenotype on the ``K`` scores, selected by
@@ -15,16 +15,24 @@ Two combiners, for two situations:
     Catalog scores. It learns which traits are relevant, so the input panel can
     be large and mostly irrelevant.
 
+``multi_pgs_sumstats`` — **learned weights**, when only summary statistics
+    exist. The same Gaussian score-stacking objective is fitted from
+    ``W_ld.T @ D @ W_ld`` and ``W_gwas.T @ z``. Its lasso selects whole
+    component scores; it is inspired by lassosum but is not SNP-level lassosum.
+    An independent target-trait GWAS can tune the penalty, while assessment
+    still requires a third untouched GWAS or individuals.
+
 ``meta_pgs`` — **derived weights**, when no phenotype is available.
     Scores of the *same* trait from different discovery GWAS, standardized and
     weighted by :math:`\\sqrt{n_\\mathrm{eff}}` (or by fitted accuracy, or
     decorrelated against each other). No training cohort, no tuning. It assumes
     the scores estimate one genetic value, which ``multi_pgs_fit`` does not.
 
-Getting the ``K`` scores is the other half of the problem, and
-:mod:`multipgs.panel` does it in one pass over the target genotypes — from PGS
-Catalog scoring files (:func:`panel_from_catalog`), or by fitting each GWAS with
-LDpred3 (:func:`panel_from_sumstats`). :func:`combine_weights` folds a fitted
+Getting the ``K`` scores is the other half of the problem.
+:mod:`multipgs.fetch` acquires PGS Catalog scoring files and their provenance;
+:mod:`multipgs.panel` then scores them in one pass over the target genotypes
+(:func:`panel_from_catalog`), or fits each GWAS with LDpred3
+(:func:`panel_from_sumstats`). :func:`combine_weights` folds a fitted
 combination back into a single per-variant weight file, which is the artefact
 you deploy.
 
@@ -43,7 +51,7 @@ from __future__ import annotations
 
 import importlib
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 # Public name -> submodule it lives in. No module name may equal one of its own
 # exported names: importing a submodule binds it on this package, and the cache
