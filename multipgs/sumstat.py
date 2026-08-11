@@ -315,9 +315,59 @@ def score_gram(weights, ld, *, n_variants=None):
         ``gram`` is ``W^T D W`` (``K x K``); ``score_var`` is its diagonal, the
         variance of each score under the reference's LD.
     """
+    return _score_gram_from_coo(_weight_columns(weights, n_variants), ld)
+
+
+def _block_quadform(corr, block_w):
+    """``W_b^T D_b W_b`` for one LD block, using its own representation.
+
+    ldpred3 stores a large block as a low-rank factor (LR8):
+    ``D = U U^T + diag(residual)``. Going through :func:`ldpred3.ld_matmul`
+    computes ``U (U^T W)`` — projecting back up to the block's full variant
+    dimension — only for this function to immediately contract it back down
+    again. Keeping the factor instead,
+
+        W^T D W = (U^T W)^T (U^T W) + (residual * W)^T W,
+
+    skips that back-projection and shrinks the second product from ``O(k A^2)``
+    to ``O(r A^2)``. In the bigsnpr HapMap3+ reference the low-rank blocks hold
+    the bulk of the variants — median 3,120 variants at median rank 890, so
+    ``r/k`` is about 0.29 — and this is where a genome-wide Gram spends its
+    time.
+
+    Everything else, including dense int8 and float32 blocks and any
+    representation added later, falls through to ``ld_matmul``, which is also
+    the fallback if the pinned ldpred3 does not expose the dequantizer.
+    """
     from ldpred3 import ld_matmul
 
-    rows, cols, vals, m, k = _weight_columns(weights, n_variants)
+    try:
+        from ldpred3 import LowRankLD
+
+        from ._ldpred3_compat import dequantize_ld
+    except (ImportError, AttributeError):    # pragma: no cover - older ldpred3
+        return block_w.T @ np.asarray(ld_matmul(corr, block_w), dtype=float)
+
+    block = dequantize_ld(corr)
+    if not isinstance(block, LowRankLD):
+        return block_w.T @ np.asarray(ld_matmul(block, block_w), dtype=float)
+    # float64 throughout, so a compact block does not lower the Gram's
+    # precision — the same contract ld_matmul documents for its own return.
+    factor = np.asarray(block.U, dtype=np.float64)
+    residual = np.asarray(block.residual_diag, dtype=np.float64)
+    projected = factor.T @ block_w
+    return projected.T @ projected + (block_w * residual[:, None]).T @ block_w
+
+
+def _score_gram_from_coo(parsed, ld):
+    """:func:`score_gram` on already-parsed weights.
+
+    Parsing a sparse weight set materializes three arrays over every non-zero
+    entry, which for a genome-wide panel is the largest allocation in the whole
+    fit. A caller that already holds the parse passes it here instead of
+    handing the raw weights back to be parsed a second time.
+    """
+    rows, cols, vals, m, k = parsed
     blocks = _as_blocks(ld, m)
 
     order = np.argsort(rows, kind="stable")
@@ -336,10 +386,7 @@ def score_gram(weights, ld, *, n_variants=None):
         local_cols = np.searchsorted(active, cols[start:stop])
         block_w = np.zeros((idx.size, active.size), dtype=float)
         block_w[rows[start:stop] - lo, local_cols] = vals[start:stop]
-        # ld_matmul returns float64 even for an int8 or float32 block, so a
-        # compact reference does not quietly lower the precision of the Gram.
-        local = block_w.T @ np.asarray(ld_matmul(corr, block_w), dtype=float)
-        gram[np.ix_(active, active)] += local
+        gram[np.ix_(active, active)] += _block_quadform(corr, block_w)
 
     # W^T D W is symmetric in exact arithmetic; the accumulation is not, and an
     # asymmetric Gram makes the coordinate descent's covariance updates drift.
@@ -347,10 +394,20 @@ def score_gram(weights, ld, *, n_variants=None):
     return gram, np.diag(gram).copy()
 
 
-def _directional_score_moments(beta, gram, r, var_y, label):
-    """Validate only the scalar score direction used by a fixed ``beta``."""
+def _symmetrized(gram):
+    """``(symmetric, asymmetry)`` for one Gram, computed once.
+
+    Both quantities cost ``O(K^2)`` and depend on nothing but ``gram``, so a
+    caller scoring a whole path against a fixed Gram prepares them once instead
+    of rebuilding them per candidate.
+    """
     asymmetry = float(np.max(np.abs(gram - gram.T))) if gram.size else 0.0
-    symmetric = 0.5 * (gram + gram.T)
+    return 0.5 * (gram + gram.T), asymmetry
+
+
+def _directional_score_moments(beta, gram, r, var_y, label, *, prepared=None):
+    """Validate only the scalar score direction used by a fixed ``beta``."""
+    symmetric, asymmetry = _symmetrized(gram) if prepared is None else prepared
     quad = float(beta @ symmetric @ beta)
     quad_scale = float(np.sum(
         beta * beta * np.maximum(np.diag(symmetric), 0.0)))
@@ -408,17 +465,48 @@ def _project_c_to_gram_range(c, gram):
 
 def _selection_candidate_valid(beta, gram, r, var_y):
     """Whether noisy plug-in moments can physically rank this path point."""
-    try:
-        num, quad, quad_tol, _, _ = _directional_score_moments(
-            beta, gram, r, var_y, "selection gram")
-    except ValueError:
-        return False, float("nan"), float("nan")
-    r2 = (float("nan") if quad <= quad_tol
-          else (num * num) / (quad * var_y))
+    valid, r2, mse = _selection_candidates_valid(
+        np.asarray(beta, dtype=float)[None, :], gram, r, var_y)
+    return bool(valid[0]), float(r2[0]), float(mse[0])
+
+
+def _selection_candidates_valid(path, gram, r, var_y, *, prepared=None):
+    """Vectorized :func:`_selection_candidate_valid` over a whole path.
+
+    The per-candidate form rebuilt the symmetrized Gram — ``O(K^2)`` — for
+    every one of the hundred-odd path points, for every shrinkage value, for
+    every PUMAS repeat. Preparing it once and taking all the quadratic forms as
+    one matrix product is the same arithmetic in a different order; at ``K=900``
+    it is the difference between 642 ms and 4 ms per path.
+
+    A candidate whose moments are physically impossible is reported invalid
+    with ``nan`` statistics, exactly as the scalar form's caught ``ValueError``
+    did.
+    """
+    path = np.atleast_2d(np.asarray(path, dtype=float))
+    symmetric, _ = _symmetrized(gram) if prepared is None else prepared
+    tiny = np.finfo(float).tiny
+    quad = np.einsum("ij,ij->i", path @ symmetric, path)
+    quad_scale = (path * path) @ np.maximum(np.diag(symmetric), 0.0)
+    quad_tol = 1e-12 * np.maximum(quad_scale, tiny)
+    num = path @ r
+    num_scale = np.sum(np.abs(path * r), axis=1)
+    num_tol = 1e-12 * np.maximum(
+        np.maximum(num_scale, np.sqrt(var_y * quad_scale)), tiny)
+
+    indefinite = quad < -quad_tol
+    quad = np.where(~indefinite & (quad < 0.0), 0.0, quad)
+    degenerate = (quad <= quad_tol) & (np.abs(num) > num_tol)
+    impossible = indefinite | degenerate
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        r2 = np.where(quad <= quad_tol, np.nan, (num * num) / (quad * var_y))
     mse = var_y - 2.0 * num + quad
-    valid = ((not np.isfinite(r2) or r2 <= 1.0 + 1e-8)
-             and mse >= -1e-8 * var_y)
-    return bool(valid), r2, mse
+    valid = ((~np.isfinite(r2) | (r2 <= 1.0 + 1e-8))
+             & (mse >= -1e-8 * var_y) & ~impossible)
+    r2 = np.where(impossible, np.nan, r2)
+    mse = np.where(impossible, np.nan, mse)
+    return valid, r2, mse
 
 
 def pseudo_r2(beta, gram, r, *, var_y=1.0):
@@ -454,19 +542,33 @@ def pseudo_r2(beta, gram, r, *, var_y=1.0):
 
 def _pseudo_r2_unchecked(beta, gram, r, var_y):
     """Fast fixed-vector R2 after the caller has validated the moments once."""
-    num = float(beta @ r)
-    den = float(beta @ gram @ beta)
-    den_scale = float(np.sum(beta * beta * np.maximum(np.diag(gram), 0.0)))
-    den_tol = 1e-12 * max(den_scale, np.finfo(float).tiny)
-    if den < -den_tol:
+    r2, _ = _pseudo_r2_batch(np.asarray(beta, dtype=float)[None, :], gram, r,
+                             var_y)
+    return float(r2[0])
+
+
+def _pseudo_r2_batch(paths, gram, r, var_y):
+    """Vectorized :func:`_pseudo_r2_unchecked`, returning ``(r2, quadratic)``.
+
+    Returning the quadratic form as well means the caller's MSE does not repeat
+    the ``O(K^2)`` product this already computed.
+    """
+    paths = np.atleast_2d(np.asarray(paths, dtype=float))
+    num = paths @ r
+    den = np.einsum("ij,ij->i", paths @ gram, paths)
+    den_scale = (paths * paths) @ np.maximum(np.diag(gram), 0.0)
+    den_tol = 1e-12 * np.maximum(den_scale, np.finfo(float).tiny)
+    negative = den < -den_tol
+    if np.any(negative):
+        worst = den[negative][0]
         raise ValueError(
-            f"beta^T G beta = {den!r} is negative, so the LD reference is not "
+            f"beta^T G beta = {worst!r} is negative, so the LD reference is not "
             "positive semi-definite here. Rebuild it with a ridge "
             "(ldpred3.compute_ld_blocks(..., ridge=...)) rather than trusting "
             "the accuracy this would report.")
-    if den <= den_tol:
-        return float("nan")
-    return (num * num) / (den * var_y)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        r2 = np.where(den <= den_tol, np.nan, (num * num) / (den * var_y))
+    return r2, den
 
 
 # ---------------------------------------------------------------------------
@@ -1107,12 +1209,13 @@ def multi_pgs_sumstats(weights_ld, z, ld, *, weights_gwas=None,
             raise ValueError("train_fraction must lie strictly in (0, 1)")
         n_repeats = _positive_integer(n_repeats, "n_repeats")
 
-    gram_raw, score_var = score_gram(
-        weights_ld, ld, n_variants=n_variants_ld)
+    # Parsed once and used for both the Gram and the fit's weight digest: at
+    # genome-wide scale these three arrays are the largest allocation here.
+    parsed_ld = _weight_columns(weights_ld, n_variants_ld)
+    rows_ld, cols_ld, vals_ld, m_ld, _ = parsed_ld
+    gram_raw, score_var = _score_gram_from_coo(parsed_ld, ld)
     k = gram_raw.shape[0]
 
-    rows_ld, cols_ld, vals_ld, m_ld, _ = _weight_columns(
-        weights_ld, n_variants_ld)
     wz, n_weight_entries_gwas, m_gwas = _score_cross_moment(
         weights_gwas, z, k, "weights_gwas")
     gram_raw, gram_factor_raw, coherence = _validate_moments(
@@ -1213,10 +1316,9 @@ def multi_pgs_sumstats(weights_ld, z, ld, *, weights_gwas=None,
         n_variants_ld_valid = _ld_variant_count(
             weights_ld_valid, ld_valid, n_variants_ld_valid,
             "n_variants_ld_valid")
-        gram_v = score_gram(weights_ld_valid, ld_valid,
-                            n_variants=n_variants_ld_valid)[0]
-        _, _, vals_ld_valid, m_ld_valid, k_valid = _weight_columns(
-            weights_ld_valid, n_variants_ld_valid)
+        parsed_ld_valid = _weight_columns(weights_ld_valid, n_variants_ld_valid)
+        _, _, vals_ld_valid, m_ld_valid, k_valid = parsed_ld_valid
+        gram_v = _score_gram_from_coo(parsed_ld_valid, ld_valid)[0]
         if k_valid != k:
             raise ValueError(
                 f"weights_ld_valid describes {k_valid} scores but weights_ld "
@@ -1249,6 +1351,10 @@ def multi_pgs_sumstats(weights_ld, z, ld, *, weights_gwas=None,
     else:
         sel_gram, sel_r, selection = gram, r, "in-sample"
 
+    # The selection Gram is fixed across the shrinkage grid, so symmetrize it
+    # once here rather than once per candidate inside the path scoring.
+    sel_prepared = None if sel_gram is None else _symmetrized(sel_gram)
+
     def _score_path(path_d, gram_fit, delta_value):
         """Descriptive R2 and calibration-sensitive MSE for one fitted path.
 
@@ -1260,13 +1366,9 @@ def multi_pgs_sumstats(weights_ld, z, ld, *, weights_gwas=None,
         sign or scale.
         """
         if splits is None:
-            r2 = np.full(path_d.shape[0], np.nan)
-            mse = np.full(path_d.shape[0], np.nan)
-            valid = np.zeros(path_d.shape[0], dtype=bool)
-            for i, candidate in enumerate(path_d):
-                valid[i], r2[i], mse[i] = _selection_candidate_valid(
-                    candidate, sel_gram, sel_r, var_y)
-            mse[~valid] = np.nan
+            valid, r2, mse = _selection_candidates_valid(
+                path_d, sel_gram, sel_r, var_y, prepared=sel_prepared)
+            mse = np.where(valid, mse, np.nan)
             return r2, mse, int(np.sum(~valid))
         per_repeat_r2 = np.full((len(splits), path_d.shape[0]), np.nan)
         per_repeat_mse = np.full((len(splits), path_d.shape[0]), np.nan)
@@ -1291,14 +1393,14 @@ def multi_pgs_sumstats(weights_ld, z, ld, *, weights_gwas=None,
             fitted_here = np.zeros(path_d.shape[0], dtype=bool)
             r_val_observed = c_val * scale
             r_val = range_vectors @ (range_vectors.T @ r_val_observed)
-            for local, path_index in enumerate(safe_indices):
-                b = fitted[local]
-                fitted_here[path_index] = True
-                per_repeat_r2[rep, path_index] = _pseudo_r2_unchecked(
-                    b, gram, r_val, var_y)
-                per_repeat_mse[rep, path_index] = (
-                    var_y - 2.0 * float(b @ r_val)
-                    + float(b @ gram @ b))
+            if safe_indices.size:
+                fitted = fitted[:safe_indices.size]
+                split_r2, quadratic = _pseudo_r2_batch(
+                    fitted, gram, r_val, var_y)
+                fitted_here[safe_indices] = True
+                per_repeat_r2[rep, safe_indices] = split_r2
+                per_repeat_mse[rep, safe_indices] = (
+                    var_y - 2.0 * (fitted @ r_val) + quadratic)
             safe_every_repeat &= fitted_here
         per_repeat_r2[:, ~safe_every_repeat] = np.nan
         per_repeat_mse[:, ~safe_every_repeat] = np.nan

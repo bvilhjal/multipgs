@@ -22,6 +22,14 @@ _MODULE_NAMES = {
     # NumPy fallback without it) and reuses the decorators rather than
     # maintaining a second, subtly different import guard.
     "ldpred3._numba": ("HAVE_NUMBA", "_jit_fastmath_nogil", "_jit_nogil"),
+    # ldpred3 documents dequantize_ld as "the single place every LD consumer
+    # that reads block values as float should route through", but does not list
+    # it in ``ld_repr.__all__``. multipgs is such a consumer: score_gram reads a
+    # block's low-rank factor directly to skip a back-projection, and must not
+    # read an int8 factor at 127x its true magnitude. Routed through the seam
+    # rather than imported at the use site, so the next dependency review sees
+    # it. :class:`ldpred3.LowRankLD` itself is public and imported normally.
+    "ldpred3.ld_repr": ("dequantize_ld",),
 }
 
 _NAME_TO_MODULE = {

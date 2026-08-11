@@ -1,5 +1,62 @@
 # Changelog
 
+## Unreleased
+
+Performance, with no intended change in results. Fitted coefficients,
+intercepts, cross-validated losses, selected penalties and per-fold selections
+are bit-identical to 0.3.0 across the Gaussian and binomial families. What
+moves, all from reassociated sums: `FoldFit.loss` and the summary-statistic
+path diagnostics by about one unit in the last place, and accumulated score
+columns by about 2e-12 relative.
+
+End to end, `multi_pgs_sumstats` is 1.9x faster at `K=100` and 2.7x at
+`K=900` (2.7s to 1.0s) with same-data tuning, 1.2x to 1.9x with PUMAS.
+`multi_pgs_fit` gains only 3-12%: its cost is dominated by forming the Gaussian
+sufficient statistics, not by the path.
+
+- `panel_from_catalog` accumulates each genotype block with one dense product
+  over the scores that touch it, instead of gathering columns per score. The
+  gather copies, so it was memory-bound and repeated `K` times. Measured 48x on
+  one block at 50,000 samples and 500 scores. The crossover is near a block
+  density of 0.005 and the gather is retained below it, so sparse panels do not
+  regress.
+- Summary-statistic path selection symmetrizes the selection Gram once per fit
+  rather than once per candidate, and scores the whole path in one batched
+  product. This was `O(K^2)` per path point, per shrinkage value, per PUMAS
+  repeat — 642 ms per path at `K=900`, now 4 ms.
+- `score_gram` reads an ldpred3 low-rank (LR8) block through its factor,
+  `W'DW = (U'W)'(U'W) + (residual * W)'W`, instead of asking `ld_matmul` to
+  project back up to the block's variant dimension. Reproducibly 1.5x to 1.7x
+  per low-rank block; genome-wide on the bigsnpr HapMap3+ reference the gain is
+  diluted to roughly 1.1x-1.3x, because 406 of its 625 blocks are dense and
+  unchanged, and run-to-run variance on the development machine is too large to
+  put a firmer number on it. Dense and int8 blocks, and any representation
+  added later, still route through `ld_matmul`. Int8 factors are dequantized
+  first; new tests pin that, the equivalence with the dense form, and mixed
+  references, none of which the suite previously covered.
+- The CMSA inner loop scores a whole block of the penalty path with one
+  product rather than one per penalty. Selection remains sequential, so the
+  abort counter and tie-breaking are unchanged.
+- `multi_pgs_sumstats` parses its sparse LD-basis weights once instead of
+  twice. This saves the second parse, not peak memory: measured peak allocation
+  along the Gram path is unchanged.
+- `benchmarks/real_ld_gram.py` reports score-space moments and their cost on a
+  real genome-wide LD reference: block census, Gram spectrum and rank, dead
+  scores, wall time and peak memory, and an optional check that the low-rank
+  fast path agrees with routing every block through `ld_matmul` (it does, to
+  5e-16). It faults the memory-mapped payload in before timing, because
+  otherwise the first route measured pays to page in a gigabyte and the second
+  looks twice as fast.
+
+Two things measured and deliberately **not** changed. Numba on the sparse
+scatters: `np.add.at` costs about 20 ms per 20 million entries in current
+NumPy, so its 2.2x is worth 11 ms in a 25-second genome-wide fit, and
+`np.bincount` is slower than either. `fastmath` on the coordinate-descent
+sweeps: 0.85x-0.99x, that is no faster, with bit-identical coefficients — the
+inner loop is an AXPY that Numba already vectorizes, with no reduction to
+reassociate. `_coord.py` keeps `_jit_nogil`, which costs nothing and preserves
+determinism.
+
 ## 0.3.0
 
 Summary-statistic multi-PGS fitting and reproducible PGS Catalog acquisition.

@@ -46,6 +46,12 @@ __all__ = ["ScorePanel", "panel_from_catalog", "panel_from_sumstats",
 # Genotype elements held in memory per streamed block. 8e6 float64 is 64 MB.
 _BLOCK_ELEMS = 8_000_000
 
+# Fraction of a block's (variant x active score) cells that must carry a weight
+# before one dense product beats per-score column gathers. See
+# :func:`_accumulate_block`; measured crossover is near 0.005 on this machine,
+# and the penalty for using the dense product just below it is about 20%.
+_GEMM_MIN_DENSITY = 1.0 / 128.0
+
 
 class _SharedVariantTable(Mapping):
     """Pickleable read-only mapping of shared Catalog variant metadata."""
@@ -452,12 +458,49 @@ def _accumulate_scores(per_score, n_samples, n_total, plink, dosage, *,
         block_matrix, mean_b, sd_b = _prepare_block(d, miss, standardize)
         af[start:stop] = mean_b / 2.0
         sd[start:stop] = sd_b
-        for s, (pos, w) in enumerate(mapped):
-            lo = np.searchsorted(pos, start)
-            hi = np.searchsorted(pos, stop)
-            if hi > lo:
-                scores[:, s] += block_matrix[:, pos[lo:hi] - start] @ w[lo:hi]
+        _accumulate_block(scores, block_matrix, mapped, start, stop)
     return scores, union, af, sd
+
+
+def _accumulate_block(scores, block_matrix, mapped, start, stop):
+    """Add one genotype block's contribution to every score that touches it.
+
+    Two ways to do the same sum, chosen by how densely the scores populate this
+    block. Scoring each score separately gathers its columns out of
+    ``block_matrix`` — and a fancy index *copies*, so the work is memory-bound
+    and repeated ``K`` times. Scattering the same weights into one
+    ``block x active`` matrix instead lets a single BLAS-3 call do all of them,
+    which is what :func:`multipgs.sumstat.score_gram` already does per LD block.
+
+    The dense product does more arithmetic (every variant against every active
+    score) and wins anyway once the block is populated enough for BLAS-3
+    throughput to beat the gathers: measured crossover is near a density of
+    0.005, rising to 2x by 0.008 and 6-8x by 0.06. Below
+    :data:`_GEMM_MIN_DENSITY` the gather is kept, where it is the cheaper of
+    the two.
+    """
+    active, entries = [], 0
+    for s, (pos, w) in enumerate(mapped):
+        lo = int(np.searchsorted(pos, start))
+        hi = int(np.searchsorted(pos, stop))
+        if hi > lo:
+            active.append((s, lo, hi))
+            entries += hi - lo
+    if not active:
+        return
+    width = stop - start
+    if entries >= _GEMM_MIN_DENSITY * width * len(active):
+        block_w = np.zeros((width, len(active)))
+        for local, (s, lo, hi) in enumerate(active):
+            pos, w = mapped[s]
+            block_w[pos[lo:hi] - start, local] = w[lo:hi]
+        contribution = block_matrix @ block_w
+        for local, (s, _, _) in enumerate(active):
+            scores[:, s] += contribution[:, local]
+        return
+    for s, lo, hi in active:
+        pos, w = mapped[s]
+        scores[:, s] += block_matrix[:, pos[lo:hi] - start] @ w[lo:hi]
 
 
 def _prepare_block(d, miss, standardize):

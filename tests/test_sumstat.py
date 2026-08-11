@@ -583,3 +583,114 @@ def test_subsample_validates_its_inputs():
             subsample_score_moments(c, gram, 1000.0, bad, var_y=1.0)
     with pytest.raises(ValueError, match="var_y must be"):
         subsample_score_moments(c, gram, 1000.0, 700.0, var_y=0.0)
+
+
+# ---------------------------------------------------------------------------
+# Low-rank LD blocks
+#
+# ldpred3 stores a large LD block as a factor, R = U U' + diag(residual), and
+# score_gram reads that factor directly rather than asking ld_matmul to project
+# back up to the block's variant dimension. Nothing else in this file builds
+# such a block, so without these the fast path ships untested — and it is the
+# path a real genome-wide reference spends most of its time in.
+# ---------------------------------------------------------------------------
+
+def _lowrank_factor(rng, m, rank):
+    """A factor whose row norms leave a positive residual under a unit diagonal.
+
+    ``LowRankLD`` describes a *correlation* block, so it requires
+    ``diag(U U') + residual_diag == 1``. Each row's factor mass is drawn below
+    one and the remainder becomes its residual.
+    """
+    factor = rng.standard_normal((m, rank))
+    explained = rng.uniform(0.55, 0.9, size=m)
+    factor *= np.sqrt(explained / np.sum(factor * factor, axis=1))[:, None]
+    return factor, 1.0 - explained
+
+
+def _lowrank_block(rng, m, rank):
+    """A LowRankLD block and the dense correlation matrix it stands for."""
+    from ldpred3 import LowRankLD
+
+    factor, residual = _lowrank_factor(rng, m, rank)
+    dense = factor @ factor.T + np.diag(residual)
+    return LowRankLD(U=factor, m=m, scale=1.0, residual_diag=residual), dense
+
+
+def test_low_rank_blocks_give_the_same_gram_as_their_dense_form():
+    rng = np.random.default_rng(11)
+    m, k = 60, 8
+    block, dense = _lowrank_block(rng, m, rank=9)
+    weights = [(np.sort(rng.choice(m, 20, replace=False)),
+                rng.standard_normal(20)) for _ in range(k)]
+
+    from_factor, var_factor = score_gram([(idx, w) for idx, w in weights],
+                                         [(block, np.arange(m))],
+                                         n_variants=m)
+    from_dense, var_dense = score_gram([(idx, w) for idx, w in weights],
+                                       [(dense, np.arange(m))], n_variants=m)
+    assert np.allclose(from_factor, from_dense, atol=1e-10)
+    assert np.allclose(var_factor, var_dense, atol=1e-10)
+    # And against the definition, not just against the other route.
+    explicit = np.zeros((k, k))
+    dense_w = np.zeros((m, k))
+    for j, (idx, w) in enumerate(weights):
+        dense_w[idx, j] = w
+    explicit = dense_w.T @ dense @ dense_w
+    assert np.allclose(from_factor, explicit, atol=1e-10)
+
+
+def test_low_rank_and_dense_blocks_mix_in_one_reference():
+    """A real reference stores small blocks densely and large ones as factors."""
+    rng = np.random.default_rng(12)
+    m_lr, m_dense, k = 50, 20, 6
+    block, lr_dense = _lowrank_block(rng, m_lr, rank=7)
+    small = rng.standard_normal((m_dense, m_dense))
+    small = small @ small.T / m_dense + np.eye(m_dense)
+    sd = np.sqrt(np.diag(small))
+    small = small / np.outer(sd, sd)
+
+    total = m_lr + m_dense
+    weights = [(np.sort(rng.choice(total, 15, replace=False)),
+                rng.standard_normal(15)) for _ in range(k)]
+    mixed = [(block, np.arange(m_lr)),
+             (small, np.arange(m_lr, total))]
+    all_dense = [(lr_dense, np.arange(m_lr)),
+                 (small, np.arange(m_lr, total))]
+    assert np.allclose(score_gram(weights, mixed, n_variants=total)[0],
+                       score_gram(weights, all_dense, n_variants=total)[0],
+                       atol=1e-10)
+
+
+def test_int8_low_rank_blocks_are_dequantized_before_use():
+    """An int8 factor read at face value would inflate the Gram enormously."""
+    from ldpred3 import LowRankLD
+    from ldpred3.ld_repr import dequantize_ld
+
+    rng = np.random.default_rng(13)
+    m, rank, k = 40, 6, 5
+    factor, _ = _lowrank_factor(rng, m, rank)
+    quantized = np.clip(np.round(factor * 127.0), -127, 127).astype(np.int8)
+    # Rounding moves the row norms, and LowRankLD checks the unit diagonal on
+    # the stored factor, so take the residual from the quantized rows.
+    stored = np.asarray(quantized, dtype=float) / 127.0
+    residual = 1.0 - np.sum(stored * stored, axis=1)
+    block = LowRankLD(U=quantized, m=m, scale=1.0 / 127.0,
+                      residual_diag=residual)
+    reference = dequantize_ld(block)
+
+    weights = [(np.sort(rng.choice(m, 12, replace=False)),
+                rng.standard_normal(12)) for _ in range(k)]
+    gram, _ = score_gram(weights, [(block, np.arange(m))], n_variants=m)
+    expected_dense = (np.asarray(reference.U, dtype=float)
+                      @ np.asarray(reference.U, dtype=float).T
+                      + np.diag(np.asarray(reference.residual_diag,
+                                           dtype=float)))
+    expected, _ = score_gram(weights, [(expected_dense, np.arange(m))],
+                             n_variants=m)
+    assert np.allclose(gram, expected, atol=1e-10)
+    # The failure this guards against is silent and enormous, not subtle.
+    naive = np.asarray(quantized, dtype=float)
+    naive = naive @ naive.T + np.diag(residual)
+    wrong, _ = score_gram(weights, [(naive, np.arange(m))], n_variants=m)
+    assert np.abs(wrong).max() > 100.0 * np.abs(gram).max()

@@ -129,6 +129,30 @@ signal — read it together with `cv_r2`, which stays at zero on noise. Under
 signal the internal estimate is unbiased to within a few thousandths,
 consistent with the "possibly conservative" language in the theory notes.
 
+## Real-LD score moments
+
+Every other benchmark here builds its LD from a simulator, which leaves two
+properties of practice unmeasured because a simulator does not produce them: a
+real reference is block-heterogeneous, and a real score panel is rank-deficient
+and near-collinear. `real_ld_gram.py` reports what `score_gram` and the fitter's
+own moment validation see on a real reference:
+
+```bash
+python benchmarks/real_ld_gram.py --ld /path/to/ldpred3_ldref_hm3.npz \
+    --scores pgs_catalog_scores/ --check-lowrank
+```
+
+The reference is supplied, not shipped. The one this was developed against is
+Privé's bigsnpr HapMap3+ European (UK Biobank) LD, converted to ldpred3's block
+format by `ldpred3/benchmarks/convert_bigsnpr_ldref.py`: 1,054,330 variants in
+625 blocks, 406 of them dense (median 451 variants) and 219 low-rank (median
+3,120 variants at median rank 890). Without `--scores` the panel is synthetic
+over the real LD, which exercises representation and cost but says nothing
+about real score collinearity; the two panel types are recorded separately in
+the provenance and must not be compared.
+
+Nothing here is an accuracy claim — it measures moments and what they cost.
+
 ## Summary-statistic and individual-level agreement
 
 `sumstat_vs_individual.py` simulates three independent cohorts sharing
