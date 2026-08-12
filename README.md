@@ -86,23 +86,22 @@ print(fit.summary())
 print(fit.selected(top=10))          # largest nonzero standardized weights
 ```
 
-Then measure it in individuals who trained neither the scores nor the
-combination:
-
-```python
-test = panel_from_catalog("pgs_catalog_scores/", "test_cohort")
-print(evaluate(y_test, fit.multi_pgs(test), covar=covar_test))
-```
-
-And collapse it to one weight file, which is what you deploy:
+For an independent cohort, first collapse the training-panel combination to one
+weight file and score the cohort on that frozen coordinate system:
 
 ```python
 from multipgs import combine_weights
 from ldpred3 import score_from_weights
 
 combine_weights(panel, fit, path="multi.weights")
-scores = score_from_weights("multi.weights", "another_cohort", scaling="frozen")
+test_score = score_from_weights("multi.weights", "test_cohort",
+                                scaling="frozen")
+print(evaluate(y_test, test_score.scores, covar=covar_test))
 ```
+
+The same `multi.weights` file is the deployment artifact. Do not rebuild a
+panel in the new cohort and pass it to `fit.multi_pgs`: cohort-specific score
+scales can silently change the fitted coordinate system.
 
 ## Summary-statistic learned combination
 
@@ -116,7 +115,9 @@ the score-space analogue of lassosum, not SNP-level lassosum. The contract:
   a third untouched GWAS or cohort is needed for an accuracy claim. With a
   single GWAS, `tune="pumas"` provides pseudotuning, not external assessment.
 - Each data source's component weights are aligned with that source's
-  empirical dosage SD.
+  empirical dosage SD. `align_to_reference` performs that conversion only when
+  `sd=` is supplied (or the explicit HWE approximation is requested); check
+  `log["standardized"]` before using its output as standardized-score weights.
 
 The full workflow, including the alignment code, is in
 [the guide](docs/guide.md#fitting-from-summary-statistics).
@@ -128,20 +129,21 @@ When several GWAS exist for *one* trait and there is no cohort to train on:
 ```python
 from multipgs import meta_pgs, daetwyler_r2
 
-accuracy = daetwyler_r2(h2, p, n_eff, n_variants)     # from LDpred3 fits
-combined = meta_pgs(panel, expected_r2=accuracy, method="expected_r2")
+expected_r2 = daetwyler_r2(h2, p, n_eff, n_variants)  # phenotypic R² proxy
+combined = meta_pgs(panel, expected_r2=expected_r2, method="expected_r2")
 prs = combined.multi_pgs(panel)
 ```
 
 `method="sqrt_n_eff"` needs only the discovery sample sizes.
-`method="expected_r2"` uses expected accuracies directly and is the appropriate
-choice for `daetwyler_r2` proxies. `method="decorrelated"` additionally uses the
-panel's score correlations to discount shared information, but its matrix
-inverse amplifies errors in the supplied accuracies. Reserve it for
-independently credible per-score target correlations, with every component
-score oriented consistently; pass the squared correlations as `expected_r2`.
-The API cannot encode a negative target correlation.
-Sample-size and Daetwyler proxies do not meet that bar. The derivation is in
+`method="expected_r2"` uses expected phenotypic R² proxies directly and is the
+appropriate choice for `daetwyler_r2` output when its transport assumptions are
+defensible. `method="decorrelated"` additionally uses the panel's score
+correlations to discount shared information, but its matrix inverse amplifies
+errors in the supplied target-correlation magnitudes. Reserve it for
+independently credible, transportable magnitudes, with every component score
+oriented consistently; pass their squares as `expected_r2`. The API cannot
+encode a negative target correlation. Sample-size and Daetwyler proxies do not
+meet that bar. The derivation is in
 [theory.md §3](docs/theory.md#3-derived-weights-no-phenotype-required) and the
 measurements in
 [docs/algorithm.md](docs/algorithm.md#choosing-a-meta-pgs-rule).
@@ -187,6 +189,9 @@ no summary-statistic fitting command.
 8. Match ancestry between discovery and target as closely as you can, and put
    principal components in the covariates. Nothing here models ancestry.
    ([theory](docs/theory.md#ancestry))
+9. Treat bootstrap intervals as conditional on the supplied scores and fitted
+   weights. They do not propagate discovery-GWAS, LD-reference, score-building,
+   or architecture-estimation uncertainty.
 
 The [guide](docs/guide.md) expands each point.
 
@@ -208,6 +213,7 @@ The [guide](docs/guide.md) expands each point.
   against the published record
 - [Python API map](docs/api.md)
 - [Changelog](CHANGELOG.md)
+- [Contributing](CONTRIBUTING.md) — development setup and contribution guidance
 
 ## Citation
 

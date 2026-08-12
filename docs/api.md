@@ -1,7 +1,7 @@
 # Python API
 
 Every name below is importable directly from `multipgs`. Use `help(name)` for
-the complete signature and validation rules.
+signatures and detailed notes.
 
 ```python
 from multipgs import (panel_from_catalog, multi_pgs_fit, multi_pgs_sumstats,
@@ -18,7 +18,7 @@ from multipgs import (panel_from_catalog, multi_pgs_fit, multi_pgs_sumstats,
 | `multi_pgs_sumstats` | learn a Gaussian combination from target GWAS statistics and external LD |
 | `meta_pgs` | combine consistently oriented same-trait scores with no phenotype, from `n_eff` or an expected target-accuracy proxy |
 | `MultiPGSFit`, `SumstatFit`, `MetaPGS` | fitted combinations on the common raw-score coefficient contract |
-| `FoldFit` | one CMSA fold's nonzero coefficients and validation loss |
+| `FoldFit` | one CMSA fold's selected alpha/lambda, held-out and baseline losses, sparsity, use flag, and convergence counters |
 
 `MultiPGSFit.multi_pgs(scores)` is the combined score — what you evaluate.
 `.predict(scores, covar)` is the full linear predictor including covariates, and
@@ -28,6 +28,11 @@ unpenalized baseline; it is not the OLS-recalibrated `incremental_r2` and does
 not provide a hypothesis test. The one-standard-error fallback is a conservative
 heuristic with no p-value or calibrated type-I error.
 
+Before interpreting coefficients, require `fit.log["solver_converged"]`. A false
+value means at least one baseline or path point exhausted its iteration limit;
+the log provides path-point, coordinate-descent, IRLS, and baseline counters,
+and each `FoldFit` retains its own convergence state.
+
 `MultiPGSFit.selected()` orders nonzero coefficients by `|beta_std|`. These are
 predictive weights, not causal trait effects; CMSA support is the union of fold
 supports and correlated scores can exchange weight.
@@ -35,6 +40,10 @@ supports and correlated scores can exchange weight.
 Pass a `ScorePanel` to `.multi_pgs()` rather than a bare matrix and the score
 ids are checked against the fit. A bare matrix is matched by **position**, and a
 separately built panel can have the same columns in a different order.
+That identity check does not freeze the score scale. For an independently
+scored cohort, use `combine_weights` and score the resulting weight file with
+`scaling="frozen"`; direct `.multi_pgs()` is for rows already on the fitted raw
+score coordinate.
 
 ## Summary-statistic fitting
 
@@ -42,7 +51,7 @@ separately built panel can have the same columns in a different order.
 
 | Name | Purpose |
 |---|---|
-| `align_to_reference` | harmonize component weights to one data source's variant order and standardized-genotype scale |
+| `align_to_reference` | harmonize component weights to one data source's variant order and optionally convert them to standardized-genotype scale |
 | `score_gram` | compute `G = W_ld.T @ D @ W_ld`, streaming LD blocks and sparse scores |
 | `score_moments` | compute `(c, G)` from separate GWAS- and LD-scaled weights |
 | `multi_pgs_sumstats`, `SumstatFit` | fit and retain the score-space lasso/elastic-net path |
@@ -57,6 +66,11 @@ Gram's range (`fit.r` is fitted, `fit.c_raw` observed) — is in
 [guide.md §4](guide.md#fitting-from-summary-statistics), with the derivation
 in [theory.md §2](theory.md#2-learned-weights-penalized-regression-over-a-panel)
 and the implementation in [algorithm.md](algorithm.md#summary-statistic-learned-combination).
+
+`align_to_reference` converts raw Catalog weights only when empirical `sd=` is
+supplied or `hwe_genotype_sd=True` is requested. Otherwise its output remains
+on the allele-count scale and `log["standardized"]` is false; it is suitable for
+`score_gram` only when the input weights were already standardized.
 
 ## Building the panel
 
@@ -105,18 +119,24 @@ Odds-ratio weights are log-transformed on read; non-additive rows
 
 | Name | Purpose |
 |---|---|
-| `daetwyler_r2` | expected phenotypic r² of a score for its own trait, from `h²`, `p`, `n_eff` |
+| `daetwyler_r2` | expected phenotypic r² of a score for its own trait, approximating effective independent effects as `n_variants · p` |
 | `Architecture` | per-score `h²`, polygenicity, inferred r², total/kept chains, `n_eff`, and optional fitted shrinkage |
 | `architectures_from_panel` | read those back out of an LDpred3-built panel |
 | `screen`, `ScreenResult` | represented model-level Hansen et al. gates, with per-score reasons |
 | `penalty_from_accuracy` | expected accuracy → elastic-net penalty factors |
 
-`meta_pgs(method="decorrelated")` constructs the nonnegative vector
-`sqrt(expected_r2)` before applying the inverse score-correlation matrix. Every
-score must therefore be oriented to the same positive target direction, and
-the supplied magnitudes must be independently credible in the target
-population. The API cannot encode a negative target correlation; sample-size
-or Daetwyler proxies are not automatically suitable for decorrelation.
+`meta_pgs(method="sqrt_n_eff")` requires same-trait, consistently oriented
+scores and discovery effective sample sizes. `method="expected_r2"` instead
+requires credible, target-transportable phenotypic R² magnitudes; Daetwyler
+output is a model proxy, not measured target accuracy.
+
+`meta_pgs(method="decorrelated")` constructs a nonnegative vector from
+`sqrt(expected_r2)`, or from `sqrt(n_eff)` when `expected_r2` is omitted, before
+applying the inverse score-correlation matrix. Every score must therefore be
+oriented to the same positive target direction, and the supplied magnitudes
+must be independently credible in the target population. The API cannot encode
+a negative target correlation; sample-size or Daetwyler proxies are not
+automatically suitable for decorrelation.
 
 ## Evaluation
 
@@ -136,6 +156,11 @@ correlation (and AUC direction for binary outcomes) separately. None of these
 metrics makes a combined score an automatically calibrated absolute-risk
 prediction; calibration slope and intercept require suitable held-out target
 data.
+
+Bootstrap intervals from `evaluate` resample target individuals while holding
+the supplied scores and fitted weights fixed. They do not propagate uncertainty
+from discovery GWAS, LD references, score construction, or architecture
+estimation.
 
 `liability_r2` includes the ascertainment correction; `ldpred3.h2_liability`
 applies only the leading factor, which is right for a heritability and
