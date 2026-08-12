@@ -317,6 +317,22 @@ def test_alpha_grid_is_searched_per_fold():
     assert {f.alpha for f in fit.folds} <= {1.0, 0.5, 0.1}
 
 
+def test_mixed_alpha_search_uses_an_independent_lambda_anchor_per_alpha():
+    rng = np.random.default_rng(410)
+    scores = rng.normal(size=(90, 5))
+    y = scores[:, 0] + rng.normal(size=90)
+    fit = multi_pgs_fit(
+        scores, y, alpha=[1.0, 0.01], n_folds=3, assessment_folds=2,
+        n_lambda=4, lambda_min_ratio=0.1, seed=0)
+    maxima = np.asarray(fit.log["lambda_max_by_alpha"])
+    minima = np.asarray(fit.log["lambda_min_by_alpha"])
+    assert maxima[1] / maxima[0] == pytest.approx(100.0)
+    assert minima == pytest.approx(maxima * 0.1)
+    # In particular, the lasso reaches its own low-penalty endpoint rather than
+    # inheriting the much larger endpoint anchored by alpha=0.01.
+    assert minima[0] < maxima[1] * 0.01
+
+
 def test_ridge_has_an_explicit_exact_unpenalized_baseline():
     """No finite ridge lambda is the null, so it must be fitted separately."""
     rng = np.random.default_rng(403)
@@ -420,6 +436,40 @@ def test_input_validation():
         multi_pgs_fit(sim.scores, sim.y, n_folds=1)
     with pytest.raises(ValueError, match="alpha"):
         multi_pgs_fit(sim.scores, sim.y, alpha=1.5, n_folds=3)
+
+
+@pytest.mark.parametrize(
+    "kwargs, message",
+    [({"n_folds": 2.5}, "positive integer"),
+     ({"assessment_folds": True}, "positive integer"),
+     ({"n_lambda": 0}, "positive integer"),
+     ({"n_abort": 0}, "positive integer"),
+     ({"max_iter": 0}, "positive integer"),
+     ({"dfmax": -1}, "non-negative integer"),
+     ({"dfmax": 1.5}, "non-negative integer"),
+     ({"tol": 0.0}, "strictly positive"),
+     ({"tol": np.nan}, "strictly positive"),
+     ({"lambda_min_ratio": 0.0}, r"\(0, 1\]"),
+     ({"lambda_min_ratio": 1.1}, r"\(0, 1\]")])
+def test_individual_fit_validates_numerical_controls(kwargs, message):
+    rng = np.random.default_rng(411)
+    scores = rng.normal(size=(40, 4))
+    with pytest.raises(ValueError, match=message):
+        multi_pgs_fit(scores, rng.normal(size=40), **kwargs)
+
+
+def test_fit_log_and_fold_results_expose_iteration_exhaustion():
+    rng = np.random.default_rng(412)
+    scores = rng.normal(size=(70, 4))
+    y = scores[:, 0] - scores[:, 1] + rng.normal(size=70)
+    fit = multi_pgs_fit(
+        scores, y, n_folds=3, assessment_folds=2, n_lambda=4, n_abort=4,
+        tol=1e-30, max_iter=1, seed=0)
+    assert fit.log["solver_converged"] is False
+    assert fit.log["n_iteration_exhausted"] > 0
+    assert "convergence_warning" in fit.log
+    assert any(not fold.converged for fold in fit.folds)
+    assert any(fold.n_iteration_exhausted > 0 for fold in fit.folds)
 
 
 def test_multi_pgs_rejects_a_reordered_panel():

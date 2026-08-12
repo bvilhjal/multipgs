@@ -165,7 +165,8 @@ def meta_pgs(scores, *, n_eff=None, expected_r2=None, method="sqrt_n_eff",
         Expected r² of each score for its own trait, e.g. from
         :func:`multipgs.daetwyler_r2`. Required for ``"expected_r2"``; used by
         ``"decorrelated"`` when given, which otherwise falls back to
-        ``n_eff``.
+        ``n_eff``. Values must be finite and lie in ``[0, 1]``; zero receives
+        zero weight.
     method : {"sqrt_n_eff", "expected_r2", "decorrelated"}
     ridge : float
         Ridge added to the correlation matrix's diagonal before inversion in
@@ -175,16 +176,13 @@ def meta_pgs(scores, *, n_eff=None, expected_r2=None, method="sqrt_n_eff",
         ``expected_r2``: raising it only drags the answer back toward the
         undecorrelated weighted sum, which it never quite reaches.
 
-        ``"decorrelated"`` requires accuracies that are right per score, not
-        merely correctly ordered, because ``C**-1`` amplifies their error along
-        the directions where the panel's scores differ least -- which in a
-        same-trait panel is noise. Accuracies derived from ``n_eff`` or
-        :func:`multipgs.daetwyler_r2` do not meet that bar on real panels: see
-        ``docs/algorithm.md``, where both are measured against the truth and
-        decorrelating comes out about fifty times worse than not. Use it when
-        each component carries its own fitted accuracy, such as LDpred3-auto's
-        ``r2_est`` from :func:`multipgs.panel_from_sumstats`; otherwise prefer
-        ``method="expected_r2"``.
+        ``"decorrelated"`` requires independently credible, transportable and
+        consistently oriented estimates of each score's target correlation,
+        not merely values in the right order, because ``C**-1`` amplifies their
+        errors along directions where the panel's scores differ least. Values
+        derived only from ``n_eff`` or :func:`multipgs.daetwyler_r2` do not meet
+        that requirement merely by being available. Without defensible
+        per-score correlations, prefer ``method="expected_r2"``.
     center, scale : array ``(K,)``, optional
         Standardization to apply instead of this cohort's own. Pass the
         training cohort's values to score a second cohort on the same scale.
@@ -277,17 +275,11 @@ def meta_pgs(scores, *, n_eff=None, expected_r2=None, method="sqrt_n_eff",
             w = np.linalg.solve(A, rho)
         except np.linalg.LinAlgError:
             w = np.linalg.lstsq(A, rho, rcond=None)[0]
-        # How far the inverse moved the answer, as description only. This is
-        # deliberately *not* a failure detector, and the attempt to make one is
-        # worth recording so it is not retried: on a real 24-score panel where
-        # this rule returned R2 0.00001 against 0.156 for the same accuracies
-        # undecorrelated, the alignment was 0.67 -- higher than the 0.40 of a
-        # configuration that scored three hundred times better. Alignment,
-        # negative-weight count and condition number all fail to separate those
-        # cases, and they must: the four differ only in rho, and it is rho's
-        # accuracy that decides the outcome. That is unobservable here, so no
-        # in-sample statistic can stand in for it. The precondition is
-        # documented instead, in docs/algorithm.md.
+        # Describe how far inversion moved the answer; do not treat this as a
+        # failure detector. Alignment, negative-weight count and conditioning
+        # cannot establish whether rho contains credible, transportable target
+        # correlations, which is the external requirement that decides whether
+        # decorrelation is defensible.
         norm_product = float(np.linalg.norm(w) * np.linalg.norm(rho))
         log["rho_alignment"] = (float(w @ rho) / norm_product
                                 if norm_product > 0 else float("nan"))
@@ -326,7 +318,8 @@ def _accuracy_vector(method, n_eff, expected_r2, K):
     v = np.asarray(expected_r2, dtype=float).ravel()
     if v.size != K:
         raise ValueError(f"expected_r2 has {v.size} entries for {K} scores")
-    v = np.where(np.isfinite(v), v, 0.0)
+    if not np.all(np.isfinite(v)) or np.any((v < 0.0) | (v > 1.0)):
+        raise ValueError("expected_r2 must be finite and lie in [0, 1]")
     if np.all(v <= 0):
         raise ValueError("every expected_r2 is non-positive; nothing to weight")
-    return np.sqrt(np.maximum(v, 0.0))
+    return np.sqrt(v)

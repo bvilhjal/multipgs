@@ -134,6 +134,11 @@ def test_input_validation():
         meta_pgs(sim.scores, n_eff=[1.0, 2.0])
     with pytest.raises(ValueError, match="finite and positive"):
         meta_pgs(sim.scores, n_eff=[1.0, -2.0, 3.0])
+    for bad_expected_r2 in ([0.1, 1.01, 0.2], [0.1, -0.01, 0.2],
+                            [0.1, np.nan, 0.2]):
+        with pytest.raises(ValueError, match=r"finite.*\[0, 1\]"):
+            meta_pgs(sim.scores, expected_r2=bad_expected_r2,
+                     method="expected_r2")
     with pytest.raises(ValueError, match="non-finite"):
         meta_pgs(np.full((10, 3), np.nan), n_eff=[1.0, 2.0, 3.0])
     with pytest.raises(ValueError, match="unique"):

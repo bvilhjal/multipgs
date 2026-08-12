@@ -91,6 +91,19 @@ def test_lambda_grid_rejects_all_unpenalized():
         _coord.lambda_grid(np.ones(4), np.zeros(4), 1.0)
 
 
+@pytest.mark.parametrize(
+    "kwargs, message",
+    [({"n_lambda": 0}, "positive integer"),
+     ({"n_lambda": 2.5}, "positive integer"),
+     ({"lambda_min_ratio": 0.0}, r"\(0, 1\]"),
+     ({"lambda_min_ratio": 1.1}, r"\(0, 1\]"),
+     ({"alpha": np.nan}, r"\[0, 1\]")])
+def test_lambda_grid_validates_numerical_controls(kwargs, message):
+    alpha = kwargs.pop("alpha", 1.0)
+    with pytest.raises(ValueError, match=message):
+        _coord.lambda_grid(np.ones(4), np.ones(4), alpha, **kwargs)
+
+
 def test_dfmax_truncates_the_path():
     _, _, G, r = _problem()
     pf = np.ones(G.shape[0])
@@ -156,3 +169,29 @@ def test_shape_validation():
     with pytest.raises(ValueError, match="y must be"):
         _coord.enet_path_binomial(np.zeros((5, 3)), np.zeros(4), pf=np.ones(3),
                                   alpha=1.0, lambdas=np.array([0.1]))
+
+
+def test_gaussian_path_optionally_reports_iteration_exhaustion():
+    G = np.array([[1.0, 0.8], [0.8, 1.0]])
+    r = np.array([1.0, -0.5])
+    result = _coord.enet_path_gaussian(
+        G, r, pf=np.ones(2), alpha=1.0, lambdas=np.array([0.0]),
+        tol=1e-30, max_iter=1, return_info=True)
+    coefs, n_fitted, info = result
+    assert coefs.shape == (1, 2) and n_fitted == 1
+    assert info["converged"] is False
+    assert info["n_iteration_exhausted"] == 1
+
+
+def test_binomial_path_optionally_reports_iteration_exhaustion():
+    X = np.array([[-1.0], [-0.5], [0.5], [1.0]])
+    y = np.array([0.0, 0.0, 1.0, 1.0])
+    result = _coord.enet_path_binomial(
+        X, y, pf=np.ones(1), alpha=1.0, lambdas=np.array([0.0]),
+        tol=1e-30, irls_tol=1e-30, max_iter=1, irls_max=1,
+        return_info=True)
+    _, _, n_fitted, info = result
+    assert n_fitted == 1
+    assert info["converged"] is False
+    assert info["n_iteration_exhausted"] == 1
+    assert info["n_irls_exhausted"] == 1

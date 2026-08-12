@@ -199,17 +199,20 @@ else:
 # ---------------------------------------------------------------------------
 
 def _path_gram(G, pf, beta, grad, lambdas, alpha, tol, max_iter, dfmax, out):
-    """Warm-started path. Returns how many ``lambdas`` were actually fitted."""
+    """Warm-started path. Return fitted and iteration-exhausted counts."""
     K = G.shape[0]
     allidx = np.arange(K)
     act = np.empty(K, dtype=np.int64)
     nlam = lambdas.shape[0]
     fitted = nlam
+    exhausted = 0
     for li in range(nlam):
         l1 = lambdas[li] * alpha
         l2 = lambdas[li] * (1.0 - alpha)
+        converged = False
         for _outer in range(max_iter):
             if _sweep_gram(G, beta, grad, pf, l1, l2, allidx, K) < tol:
+                converged = True
                 break
             n_act = 0
             for j in range(K):
@@ -219,6 +222,8 @@ def _path_gram(G, pf, beta, grad, lambdas, alpha, tol, max_iter, dfmax, out):
             for _inner in range(max_iter):
                 if _sweep_gram(G, beta, grad, pf, l1, l2, act, n_act) < tol:
                     break
+        if not converged:
+            exhausted += 1
         nnz = 0
         for j in range(K):
             out[li, j] = beta[j]
@@ -230,7 +235,7 @@ def _path_gram(G, pf, beta, grad, lambdas, alpha, tol, max_iter, dfmax, out):
             # fitted.
             fitted = li + 1
             break
-    return fitted
+    return fitted, exhausted
 
 
 _path_gram_jit = _jit_nogil(_path_gram) if HAVE_NUMBA else _path_gram
@@ -271,13 +276,29 @@ def lambda_grid(grad, pf, alpha, *, n_lambda=100, lambda_min_ratio=None,
     :math:`\\lambda` zeroes the solution, so the starting point is taken at
     ``alpha = 1e-3``, exactly as glmnet does.
     """
+    grad = np.asarray(grad, dtype=float)
     pf = np.asarray(pf, dtype=float)
-    a = max(float(alpha), 1e-3)
+    if grad.shape != pf.shape:
+        raise ValueError("grad and pf must have the same shape")
+    if not np.all(np.isfinite(grad)):
+        raise ValueError("grad must be finite")
+    if not np.all(np.isfinite(pf)) or np.any(pf < 0.0):
+        raise ValueError("pf must be finite and non-negative")
+    alpha = float(alpha)
+    if not np.isfinite(alpha) or not 0.0 <= alpha <= 1.0:
+        raise ValueError("alpha must be finite and lie in [0, 1]")
+    if isinstance(n_lambda, (bool, np.bool_)):
+        raise ValueError("n_lambda must be a positive integer")
+    n_lambda_float = float(n_lambda)
+    if (not np.isfinite(n_lambda_float) or n_lambda_float <= 0.0
+            or not n_lambda_float.is_integer()):
+        raise ValueError("n_lambda must be a positive integer")
+    n_lambda = int(n_lambda_float)
+    a = max(alpha, 1e-3)
     pen = pf > 0.0
     if not np.any(pen):
         raise ValueError("every column is unpenalized; nothing to select over")
-    lmax = float(np.max(np.abs(np.asarray(grad, dtype=float)[pen])
-                        / (a * pf[pen])))
+    lmax = float(np.max(np.abs(grad[pen]) / (a * pf[pen])))
     if not np.isfinite(lmax) or lmax <= 0.0:
         lmax = 1e-3
     if lambda_min_ratio is None:
@@ -285,20 +306,25 @@ def lambda_grid(grad, pf, alpha, *, n_lambda=100, lambda_min_ratio=None,
             lambda_min_ratio = 1e-3
         else:
             lambda_min_ratio = 1e-4 if n > n_penalized else 1e-2
-    n_lambda = int(n_lambda)
+    lambda_min_ratio = float(lambda_min_ratio)
+    if (not np.isfinite(lambda_min_ratio)
+            or not 0.0 < lambda_min_ratio <= 1.0):
+        raise ValueError("lambda_min_ratio must be finite and lie in (0, 1]")
     if n_lambda < 2:
         return np.array([lmax], dtype=float)
-    return np.geomspace(lmax, lmax * float(lambda_min_ratio), n_lambda)
+    return np.geomspace(lmax, lmax * lambda_min_ratio, n_lambda)
 
 
 def enet_path_gaussian(G, r, *, pf, alpha, lambdas, beta_init=None,
-                       grad_init=None, tol=1e-7, max_iter=1000, dfmax=None):
+                       grad_init=None, tol=1e-7, max_iter=1000, dfmax=None,
+                       return_info=False):
     """Elastic-net path for a squared-error loss, via covariance updates.
 
     ``G`` is :math:`X^\\top X / n` (symmetric; unit diagonal for standardized
     columns) and ``r`` is :math:`X^\\top y / n` for a centred ``y``. Returns
     ``(coefs, n_fitted)``; rows of ``coefs`` at or past ``n_fitted`` were not
-    fitted (``dfmax`` truncation).
+    fitted (``dfmax`` truncation). With ``return_info=True``, append a mapping
+    that reports whether any fitted penalty exhausted ``max_iter``.
     """
     G = np.ascontiguousarray(G, dtype=np.float64)
     r = np.ascontiguousarray(r, dtype=np.float64)
@@ -314,9 +340,17 @@ def enet_path_gaussian(G, r, *, pf, alpha, lambdas, beta_init=None,
         grad = np.array(grad_init, dtype=np.float64)
     out = np.zeros((lambdas.shape[0], K), dtype=np.float64)
     dfmax = K if dfmax is None else int(dfmax)
-    n_fitted = _path_gram_jit(G, pf, beta, grad, lambdas, float(alpha),
-                              float(tol), int(max_iter), dfmax, out)
-    return out, int(n_fitted)
+    n_fitted, n_exhausted = _path_gram_jit(
+        G, pf, beta, grad, lambdas, float(alpha), float(tol), int(max_iter),
+        dfmax, out)
+    result = (out, int(n_fitted))
+    if not return_info:
+        return result
+    info = {"converged": int(n_exhausted) == 0,
+            "n_iteration_exhausted": int(n_exhausted),
+            "n_coordinate_descent_exhausted": int(n_exhausted),
+            "n_irls_exhausted": 0}
+    return result + (info,)
 
 
 # ---------------------------------------------------------------------------
@@ -336,13 +370,15 @@ def _weighted_col_sumsq(X, w, n):
 
 def enet_path_binomial(X, y, *, pf, alpha, lambdas, beta_init=None,
                        b0_init=None, tol=1e-7, max_iter=100, irls_max=25,
-                       irls_tol=1e-7, dfmax=None, w_min=1e-5):
+                       irls_tol=1e-7, dfmax=None, w_min=1e-5,
+                       return_info=False):
     """Elastic-net path for a binomial log-likelihood (IRLS + naive updates).
 
     ``X`` should already be standardized and ``y`` coded 0/1. ``beta_init`` and
     ``b0_init`` warm-start the first penalty, which is what lets a caller walk
     a long grid in blocks without paying to re-descend it. Returns
-    ``(intercepts, coefs, n_fitted)``.
+    ``(intercepts, coefs, n_fitted)``. With ``return_info=True``, append a
+    mapping that counts coordinate-descent and IRLS iteration exhaustion.
     """
     X = np.asfortranarray(X, dtype=np.float64)
     y = np.ascontiguousarray(y, dtype=np.float64)
@@ -366,11 +402,17 @@ def enet_path_binomial(X, y, *, pf, alpha, lambdas, beta_init=None,
     allidx = np.arange(K, dtype=np.int64)
     act = np.empty(K, dtype=np.int64)
     n_fitted = lambdas.shape[0]
+    n_exhausted = 0
+    n_cd_exhausted = 0
+    n_irls_exhausted = 0
 
     for li in range(lambdas.shape[0]):
         l1 = lambdas[li] * alpha
         l2 = lambdas[li] * (1.0 - alpha)
         eta = b0 + X @ beta
+        path_exhausted = False
+        cd_path_exhausted = False
+        irls_converged = False
         for _irls in range(irls_max):
             p = 1.0 / (1.0 + np.exp(-eta))
             np.clip(p, 1e-9, 1.0 - 1e-9, out=p)
@@ -381,6 +423,7 @@ def enet_path_binomial(X, y, *, pf, alpha, lambdas, beta_init=None,
             xtwx = _weighted_col_sumsq(X, w, n)
             wsum = float(np.sum(w))
             eta_old = eta.copy()
+            cd_converged = False
             for _outer in range(max_iter):
                 shift = float(np.dot(w, res)) / wsum
                 b0 += shift
@@ -388,6 +431,7 @@ def enet_path_binomial(X, y, *, pf, alpha, lambdas, beta_init=None,
                 m = _sweep_wls(X, w, res, beta, xtwx, pf, l1, l2,
                                allidx, K, n)
                 if max(m, (wsum / n) * shift * shift) < tol:
+                    cd_converged = True
                     break
                 n_act = 0
                 for j in range(K):
@@ -402,9 +446,20 @@ def enet_path_binomial(X, y, *, pf, alpha, lambdas, beta_init=None,
                                    act, n_act, n)
                     if max(m, (wsum / n) * shift * shift) < tol:
                         break
+            if not cd_converged:
+                path_exhausted = True
+                cd_path_exhausted = True
             eta = b0 + X @ beta
             if float(np.max(np.abs(eta - eta_old))) < irls_tol:
+                irls_converged = True
                 break
+        if not irls_converged:
+            path_exhausted = True
+            n_irls_exhausted += 1
+        if path_exhausted:
+            n_exhausted += 1
+        if cd_path_exhausted:
+            n_cd_exhausted += 1
         # The lasso contract is exact sparsity.  At lambda_max, the IRLS
         # intercept can move the gradient by a few ulps and leave coefficients
         # such as 1e-15 instead of mathematical zero.  Remove only floating
@@ -418,4 +473,11 @@ def enet_path_binomial(X, y, *, pf, alpha, lambdas, beta_init=None,
         if int(np.count_nonzero(beta[pf > 0.0])) > dfmax:
             n_fitted = li + 1
             break
-    return b0s, coefs, int(n_fitted)
+    result = (b0s, coefs, int(n_fitted))
+    if not return_info:
+        return result
+    info = {"converged": n_exhausted == 0,
+            "n_iteration_exhausted": int(n_exhausted),
+            "n_coordinate_descent_exhausted": int(n_cd_exhausted),
+            "n_irls_exhausted": int(n_irls_exhausted)}
+    return result + (info,)

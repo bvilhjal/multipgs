@@ -1972,12 +1972,14 @@ def align_to_reference(scoring_files, variants, *, sd=None, af=None,
                        on_error="raise", progress=None):
     """Align PGS Catalog scoring files to an LD reference's variant table.
 
-    Returns weights on the **standardized** genotype scale, which is what
-    :func:`score_gram` needs and what catalog files are *not* on: a catalog
-    weight multiplies a raw allele count, and converting requires the empirical
-    dosage standard deviation used to construct the LD reference. HWE
-    ``sqrt(2 f (1-f))`` is available only as an explicit approximation because
-    it ignores imputation uncertainty and departures from HWE.
+    Returns allele-aligned weights. They are on the **standardized** genotype
+    scale only when ``sd`` is supplied or ``hwe_genotype_sd=True`` is requested;
+    otherwise catalog weights remain on their raw allele-count scale and the log
+    records ``standardized=False``. :func:`score_gram` needs standardized-scale
+    weights, so unscaled output is suitable only when the input weights were
+    already standardized. HWE ``sqrt(2 f (1-f))`` is available as an explicit
+    approximation because it ignores imputation uncertainty and departures from
+    HWE.
 
     Parameters
     ----------
@@ -1997,8 +1999,9 @@ def align_to_reference(scoring_files, variants, *, sd=None, af=None,
     Returns
     -------
     (pairs, score_ids, log) : (list of (index, weight), list of str, dict)
-        ``pairs`` goes straight to :func:`score_gram` and
-        :func:`multi_pgs_sumstats`.
+        ``pairs`` can go straight to :func:`score_gram` and
+        :func:`multi_pgs_sumstats` only when ``log["standardized"]`` is true or
+        the supplied scoring weights were already standardized.
     """
     from .catalog import harmonize_scoring_file, read_scoring_file
 

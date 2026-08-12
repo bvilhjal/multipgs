@@ -87,6 +87,9 @@ class FoldFit:
     entered the returned CMSA average. It is therefore true for every fold when
     the nested assessment passes the incremental-signal gate, and false for
     every fold when the returned fit is the full-data baseline.
+    ``converged`` is false when the fold's baseline or any fitted path point
+    exhausted its numerical iterations; ``n_iteration_exhausted`` counts those
+    path points.
     """
 
     fold: int
@@ -97,6 +100,8 @@ class FoldFit:
     null_loss: float
     n_nonzero: int
     used: bool
+    converged: bool = True
+    n_iteration_exhausted: int = 0
 
 
 @dataclass
@@ -258,6 +263,8 @@ class MultiPGSFit:
             n = self.log.get(key)
             if n:
                 lines.append(f"  {key.replace('_', ' ')}: {n}")
+        if "convergence_warning" in self.log:
+            lines.append("  Numerical warning: " + self.log["convergence_warning"])
         return "\n".join(lines)
 
     # -- internals -------------------------------------------------------
@@ -283,6 +290,32 @@ def _as_2d(a, name):
     if a.ndim != 2:
         raise ValueError(f"{name} must be 2-dimensional, got shape {a.shape}")
     return a
+
+
+def _positive_integer(value, name):
+    """Return an integer-valued public argument without truncating it."""
+    if isinstance(value, (bool, np.bool_)):
+        raise ValueError(f"{name} must be a positive integer")
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} must be a positive integer") from None
+    if not np.isfinite(numeric) or numeric <= 0.0 or not numeric.is_integer():
+        raise ValueError(f"{name} must be a positive integer")
+    return int(numeric)
+
+
+def _nonnegative_integer(value, name):
+    """Return a non-negative integer-valued public argument."""
+    if isinstance(value, (bool, np.bool_)):
+        raise ValueError(f"{name} must be a non-negative integer")
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} must be a non-negative integer") from None
+    if not np.isfinite(numeric) or numeric < 0.0 or not numeric.is_integer():
+        raise ValueError(f"{name} must be a non-negative integer")
+    return int(numeric)
 
 
 def _handle_missing(X, missing, name):
@@ -503,9 +536,9 @@ def multi_pgs_fit(scores, y, *, covar=None, family="gaussian", alpha=1.0,
         separate from ``n_folds`` so nested assessment does not make the final
         estimator needlessly expensive; 5 is normally enough for the gate.
     n_lambda, lambda_min_ratio : int, float
-        Penalty grid. The returned CMSA uses one grid computed on the full
-        training set so its fold results are comparable; every nested outer
-        assessment constructs a separate grid from its training rows only.
+        Penalty grid. The returned CMSA uses one grid per ``alpha``, computed
+        on the full training set and shared by its folds. Every nested outer
+        assessment constructs its alpha-specific grids from training rows only.
     n_abort : int
         Stop walking a fold's path after this many consecutive penalties fail
         to improve its held-out loss.
@@ -525,6 +558,10 @@ def multi_pgs_fit(scores, y, *, covar=None, family="gaussian", alpha=1.0,
         What to do about non-finite entries in ``scores``/``covar``.
     seed : int, optional
         Fold assignment. Set it if you need the fit to be reproducible.
+    tol : float
+        Strictly positive coordinate-descent convergence tolerance.
+    max_iter : int
+        Positive maximum coordinate-descent sweeps per fitted penalty.
 
     Returns
     -------
@@ -606,12 +643,25 @@ def multi_pgs_fit(scores, y, *, covar=None, family="gaussian", alpha=1.0,
             or np.any(alphas < 0) or np.any(alphas > 1)):
         raise ValueError("alpha must be finite, non-empty and lie in [0, 1]")
 
-    n_folds = int(n_folds)
+    n_folds = _positive_integer(n_folds, "n_folds")
     if not 2 <= n_folds <= n:
         raise ValueError(f"n_folds must be in [2, n={n}], got {n_folds}")
-    assessment_folds = int(assessment_folds)
+    assessment_folds = _positive_integer(assessment_folds, "assessment_folds")
     if assessment_folds < 2:
         raise ValueError("assessment_folds must be at least 2")
+    n_lambda = _positive_integer(n_lambda, "n_lambda")
+    n_abort = _positive_integer(n_abort, "n_abort")
+    max_iter = _positive_integer(max_iter, "max_iter")
+    if dfmax is not None:
+        dfmax = _nonnegative_integer(dfmax, "dfmax")
+    tol = float(tol)
+    if not np.isfinite(tol) or tol <= 0.0:
+        raise ValueError("tol must be finite and strictly positive")
+    if lambda_min_ratio is not None:
+        lambda_min_ratio = float(lambda_min_ratio)
+        if (not np.isfinite(lambda_min_ratio)
+                or not 0.0 < lambda_min_ratio <= 1.0):
+            raise ValueError("lambda_min_ratio must be finite and lie in (0, 1]")
     if n < 3:
         raise ValueError("nested assessment needs at least 3 individuals")
     n_assess = min(assessment_folds, n)
@@ -624,22 +674,28 @@ def multi_pgs_fit(scores, y, *, covar=None, family="gaussian", alpha=1.0,
     rng = np.random.default_rng(seed)
     parts = _folds(n, n_folds, rng, stratify=y if family == "binomial" else None)
 
-    # One penalty grid for every returned-CMSA fold, measured on the full data at
-    # the unpenalized baseline. cv.glmnet does the same: fold-specific grids would
-    # not be comparable, and averaging coefficients across them would be
-    # averaging across different problems.
+    # One full-data penalty grid per alpha, shared by every returned-CMSA fold.
+    # Lambda_max scales as 1 / alpha, so anchoring a mixed-alpha search at its
+    # smallest alpha would leave the lasso path over-penalized (catastrophically
+    # so when ridge is included). Fold-specific grids within an alpha would still
+    # make its fold selections incomparable, hence the full-data anchors here.
     gaussian_stats = _gaussian_stats(X, y) if family == "gaussian" else None
     if gaussian_stats is not None:
         center, scale, dead, _, _, _ = _gaussian_system(gaussian_stats)
-        lambdas = _lambda_grid_for_gaussian_stats(
-            gaussian_stats, pf, alphas.min(), n_lambda, lambda_min_ratio, K)
+        lambda_grids = np.vstack([
+            _lambda_grid_for_gaussian_stats(
+                gaussian_stats, pf, a, n_lambda, lambda_min_ratio, K)
+            for a in alphas])
     else:
         center, scale, dead = _standardize(X, None)
         Xs_full = (X - center) / scale
-        lambdas = _lambda_grid_for(Xs_full, y, pf, family, alphas.min(),
-                                   n_lambda, lambda_min_ratio, K)
+        lambda_grids = np.vstack([
+            _lambda_grid_for(Xs_full, y, pf, family, a, n_lambda,
+                             lambda_min_ratio, K)
+            for a in alphas])
 
     fits = []
+    cmsa_solver_info = _empty_solver_info()
     beta_sum = np.zeros(K + P)
     intercept_sum = 0.0
     for k, val_idx in enumerate(parts):
@@ -652,14 +708,19 @@ def multi_pgs_fit(scores, y, *, covar=None, family="gaussian", alpha=1.0,
             held_stats = _gaussian_stats_at_origin(
                 X, y, val_idx, reference=gaussian_stats)
             tr_stats = _subtract_gaussian_stats(gaussian_stats, held_stats)
-        best = _fit_one_fold(X, y, tr_idx, val_idx, pf, alphas, lambdas,
+        best = _fit_one_fold(X, y, tr_idx, val_idx, pf, alphas, lambda_grids,
                              family, n_abort, dfmax, tol, max_iter,
                              gaussian_stats=tr_stats)
+        best_info = best.get("solver_info", _empty_solver_info())
+        _merge_solver_info(cmsa_solver_info, best_info)
         fits.append(FoldFit(fold=k, alpha=best["alpha"], lam=best["lam"],
                             lam_index=best["lam_index"], loss=best["loss"],
-                            null_loss=best["null_loss"],
-                            n_nonzero=int(np.count_nonzero(best["beta"][:K])),
-                            used=False))
+                             null_loss=best["null_loss"],
+                             n_nonzero=int(np.count_nonzero(best["beta"][:K])),
+                             used=False,
+                             converged=bool(best_info.get("converged", True)),
+                             n_iteration_exhausted=int(best_info.get(
+                                 "n_iteration_exhausted", 0))))
         # Ordinary CMSA averages every fold-selected vector. Filtering this sum
         # by whether a fold happened to beat its own null is itself selection on
         # the validation data and biases the returned model.
@@ -671,10 +732,16 @@ def multi_pgs_fit(scores, y, *, covar=None, family="gaussian", alpha=1.0,
     cmsa_beta = beta_sum / len(fits)
     cmsa_intercept = intercept_sum / len(fits)
 
-    cv_loss, cv_null_loss, cv_gain_se, inner_folds = _nested_cv_assessment(
+    assessment = _nested_cv_assessment(
         X, y, pf, alphas, family, n_assess, assessment_inner, n_lambda,
         lambda_min_ratio, n_abort, dfmax, tol, max_iter, K, seed,
-        gaussian_stats=gaussian_stats, X_unimputed=X_unimputed)
+        gaussian_stats=gaussian_stats, X_unimputed=X_unimputed,
+        return_info=True)
+    # Keep compatibility with tests and third-party monkeypatches written for
+    # the former internal four-tuple.
+    cv_loss, cv_null_loss, cv_gain_se, inner_folds = assessment[:4]
+    assessment_solver_info = (assessment[4] if len(assessment) > 4
+                              else _empty_solver_info())
 
     # The outer folds are untouched by grid construction, tuning and fitting.
     # A one-standard-error gate avoids turning a chance-positive null estimate
@@ -687,13 +754,22 @@ def multi_pgs_fit(scores, y, *, covar=None, family="gaussian", alpha=1.0,
     if gate_passed:
         beta_raw = cmsa_beta
         intercept = cmsa_intercept
+        deployed_baseline_info = {"converged": True}
         for f in fits:
             f.used = True
     else:
-        beta_raw, intercept = _fit_unpenalized_baseline(
-            X, y, np.arange(n), pf, family, gaussian_stats=gaussian_stats)
+        beta_raw, intercept, deployed_baseline_info = \
+            _fit_unpenalized_baseline(
+                X, y, np.arange(n), pf, family,
+                gaussian_stats=gaussian_stats, return_info=True)
 
     n_used = sum(f.used for f in fits)
+    solver_info = _empty_solver_info()
+    _merge_solver_info(solver_info, cmsa_solver_info)
+    _merge_solver_info(solver_info, assessment_solver_info)
+    if not deployed_baseline_info["converged"]:
+        solver_info["converged"] = False
+        solver_info["n_baseline_not_converged"] += 1
 
     log = {
         "n": int(n), "n_scores": int(K), "n_covar": int(P),
@@ -702,8 +778,19 @@ def multi_pgs_fit(scores, y, *, covar=None, family="gaussian", alpha=1.0,
         "assessment_inner_folds": int(inner_folds),
         "cv_scheme": "nested_cmsa",
         "family": family, "alphas": alphas.tolist(),
-        "n_lambda": int(lambdas.size),
-        "lambda_max": float(lambdas[0]), "lambda_min": float(lambdas[-1]),
+        "n_lambda": int(lambda_grids.shape[1]),
+        "lambda_max": float(np.max(lambda_grids[:, 0])),
+        "lambda_min": float(np.min(lambda_grids[:, -1])),
+        "lambda_max_by_alpha": lambda_grids[:, 0].tolist(),
+        "lambda_min_by_alpha": lambda_grids[:, -1].tolist(),
+        "solver_converged": bool(solver_info["converged"]),
+        "n_path_points_fitted": int(solver_info["n_path_points_fitted"]),
+        "n_iteration_exhausted": int(solver_info["n_iteration_exhausted"]),
+        "n_coordinate_descent_exhausted": int(
+            solver_info["n_coordinate_descent_exhausted"]),
+        "n_irls_exhausted": int(solver_info["n_irls_exhausted"]),
+        "n_baseline_not_converged": int(
+            solver_info["n_baseline_not_converged"]),
         "dropped_constant": int(dead[:K].sum()),
         "imputed_missing": int(n_imp + n_imp_c),
         "unpenalized_scores": int(np.count_nonzero(pf_s == 0)),
@@ -725,6 +812,10 @@ def multi_pgs_fit(scores, y, *, covar=None, family="gaussian", alpha=1.0,
         log["null_model"] = (
             "nested cross-validation did not establish incremental signal; "
             "returned the full-data unpenalized baseline")
+    if not solver_info["converged"]:
+        log["convergence_warning"] = (
+            "one or more numerical fits exhausted their iteration limit; "
+            "inspect the solver counters and consider increasing max_iter")
 
     return MultiPGSFit(
         beta=beta_raw[:K], intercept=float(intercept),
@@ -757,7 +848,26 @@ def _impute_from_training(X, train):
     return out
 
 
-def _fit_unpenalized_baseline(X, y, idx, pf, family, *, gaussian_stats=None):
+def _empty_solver_info():
+    return {"converged": True, "n_path_points_fitted": 0,
+            "n_iteration_exhausted": 0,
+            "n_coordinate_descent_exhausted": 0,
+            "n_irls_exhausted": 0,
+            "n_baseline_not_converged": 0}
+
+
+def _merge_solver_info(target, source):
+    """Accumulate additive solver diagnostics in place."""
+    target["converged"] = (bool(target["converged"])
+                           and bool(source.get("converged", True)))
+    for key in ("n_path_points_fitted", "n_iteration_exhausted",
+                "n_coordinate_descent_exhausted", "n_irls_exhausted",
+                "n_baseline_not_converged"):
+        target[key] += int(source.get(key, 0))
+
+
+def _fit_unpenalized_baseline(X, y, idx, pf, family, *, gaussian_stats=None,
+                              return_info=False):
     """Fit intercept plus every ``pf == 0`` column on ``idx``.
 
     The returned coefficients are on the raw input scale. This is deliberately
@@ -770,19 +880,24 @@ def _fit_unpenalized_baseline(X, y, idx, pf, family, *, gaussian_stats=None):
         center, scale, _, G, r, ybar = _gaussian_system(stats)
         coef, _ = _coord.unpenalized_fit(G, r, pf)
         beta = coef / scale
-        return beta, float(ybar - np.dot(beta, center))
+        result = (beta, float(ybar - np.dot(beta, center)))
+        if return_info:
+            return result + ({"converged": True, "n_iter": 0,
+                              "linear_solve_failed": False},)
+        return result
 
     center, scale, _ = _standardize(X, idx)
     Xs = np.ascontiguousarray((X[idx] - center) / scale)
-    b0, coef = _binomial_baseline(Xs, y[idx], pf)
+    b0, coef, info = _binomial_baseline(Xs, y[idx], pf, return_info=True)
     beta = coef / scale
-    return beta, float(b0 - np.dot(beta, center))
+    result = (beta, float(b0 - np.dot(beta, center)))
+    return result + (info,) if return_info else result
 
 
 def _nested_cv_assessment(X, y, pf, alphas, family, n_outer, n_inner,
                           n_lambda, lambda_min_ratio, n_abort, dfmax, tol,
                           max_iter, K, seed, *, gaussian_stats=None,
-                          X_unimputed=None):
+                          X_unimputed=None, return_info=False):
     """Nested outer-fold assessment of an inner CMSA estimator.
 
     For each outer fold, all grid construction, fold selection and coefficient
@@ -798,11 +913,16 @@ def _nested_cv_assessment(X, y, pf, alphas, family, n_outer, n_inner,
     total_null = 0.0
     fold_gains = []
     inner_used = None
+    solver_info = _empty_solver_info()
+
+    def result(loss, null_loss, gain_se, inner):
+        values = (loss, null_loss, gain_se, inner)
+        return values + (solver_info,) if return_info else values
 
     for val in outer_parts:
         tr = _complement(n, val)
         if val.size == 0 or tr.size < 2:
-            return np.inf, np.inf, np.inf, 0
+            return result(np.inf, np.inf, np.inf, 0)
         Xk = X
         if X_unimputed is not None:
             Xk = _impute_from_training(X_unimputed, tr)
@@ -815,24 +935,33 @@ def _nested_cv_assessment(X, y, pf, alphas, family, n_outer, n_inner,
         tr_stats = (_gaussian_stats(Xk, y, tr)
                     if gaussian_stats is not None else None)
         if tr_stats is not None:
-            lambdas = _lambda_grid_for_gaussian_stats(
-                tr_stats, pf, alphas.min(), n_lambda, lambda_min_ratio, K)
+            lambda_grids = np.vstack([
+                _lambda_grid_for_gaussian_stats(
+                    tr_stats, pf, a, n_lambda, lambda_min_ratio, K)
+                for a in alphas])
         else:
             c, s, _ = _standardize(Xk, tr)
             Xs = (Xk[tr] - c) / s
-            lambdas = _lambda_grid_for(
-                Xs, y[tr], pf, family, alphas.min(), n_lambda,
-                lambda_min_ratio, K)
+            lambda_grids = np.vstack([
+                _lambda_grid_for(
+                    Xs, y[tr], pf, family, a, n_lambda,
+                    lambda_min_ratio, K)
+                for a in alphas])
 
-        baseline_beta, baseline_intercept = _fit_unpenalized_baseline(
-            Xk, y, tr, pf, family, gaussian_stats=tr_stats)
+        baseline_beta, baseline_intercept, baseline_info = \
+            _fit_unpenalized_baseline(
+                Xk, y, tr, pf, family, gaussian_stats=tr_stats,
+                return_info=True)
+        if not baseline_info["converged"]:
+            solver_info["converged"] = False
+            solver_info["n_baseline_not_converged"] += 1
         pred0 = baseline_intercept + Xk[val] @ baseline_beta
         null_loss = (_gaussian_loss(y[val], pred0) if family == "gaussian"
                      else _binomial_loss(y[val], pred0))
 
         ni = min(int(n_inner), tr.size)
         if ni < 2:
-            return np.inf, np.inf, np.inf, 0
+            return result(np.inf, np.inf, np.inf, 0)
         inner_used = ni if inner_used is None else min(inner_used, ni)
         inner_local = _folds(
             tr.size, ni, rng,
@@ -852,13 +981,15 @@ def _nested_cv_assessment(X, y, pf, alphas, family, n_outer, n_inner,
                     Xk, y, inner_val, reference=tr_stats)
                 train_stats = _subtract_gaussian_stats(tr_stats, held_stats)
             best = _fit_one_fold(
-                Xk, y, inner_tr, inner_val, pf, alphas, lambdas, family,
+                Xk, y, inner_tr, inner_val, pf, alphas, lambda_grids, family,
                 n_abort, dfmax, tol, max_iter, gaussian_stats=train_stats)
+            _merge_solver_info(
+                solver_info, best.get("solver_info", _empty_solver_info()))
             beta_sum += best["beta"]
             intercept_sum += best["intercept"]
             fitted += 1
         if fitted < 2:
-            return np.inf, np.inf, np.inf, 0
+            return result(np.inf, np.inf, np.inf, 0)
 
         beta = beta_sum / fitted
         intercept = intercept_sum / fitted
@@ -872,8 +1003,8 @@ def _nested_cv_assessment(X, y, pf, alphas, family, n_outer, n_inner,
     gains = np.asarray(fold_gains, dtype=float)
     gain_se = (float(np.std(gains, ddof=1) / np.sqrt(gains.size))
                if gains.size > 1 else np.inf)
-    return (total_loss / n, total_null / n, gain_se,
-            int(inner_used or 0))
+    return result(total_loss / n, total_null / n, gain_se,
+                  int(inner_used or 0))
 
 
 def _resolve_columns(sel, ids, K):
@@ -921,7 +1052,8 @@ def _lambda_grid_for_gaussian_stats(stats, pf, alpha, n_lambda, ratio, K):
         n=stats["n"], n_penalized=K)
 
 
-def _binomial_baseline(Xs, y, pf, *, max_iter=50, tol=1e-9):
+def _binomial_baseline(Xs, y, pf, *, max_iter=50, tol=1e-9,
+                       return_info=False):
     """Intercept and standardized coefficients for the unpenalized model."""
     n = Xs.shape[0]
     free = np.flatnonzero(pf <= 0.0)
@@ -929,7 +1061,11 @@ def _binomial_baseline(Xs, y, pf, *, max_iter=50, tol=1e-9):
     b = np.zeros(D.shape[1])
     ybar = min(max(float(y.mean()), 1e-6), 1 - 1e-6)
     b[0] = np.log(ybar / (1 - ybar))
-    for _ in range(max_iter):
+    converged = False
+    solve_failed = False
+    n_iter = 0
+    for iteration in range(max_iter):
+        n_iter = iteration + 1
         eta = D @ b
         p = np.empty_like(eta)
         pos = eta >= 0
@@ -943,13 +1079,20 @@ def _binomial_baseline(Xs, y, pf, *, max_iter=50, tol=1e-9):
         try:
             step = np.linalg.solve(H, D.T @ (y - p))
         except np.linalg.LinAlgError:
+            solve_failed = True
             break
         b += step
         if np.max(np.abs(step)) < tol:
+            converged = True
             break
     coef = np.zeros(Xs.shape[1])
     coef[free] = b[1:]
-    return float(b[0]), coef
+    result = (float(b[0]), coef)
+    if not return_info:
+        return result
+    info = {"converged": converged, "n_iter": int(n_iter),
+            "linear_solve_failed": solve_failed}
+    return result + (info,)
 
 
 def _null_probabilities(Xs, y, pf, *, max_iter=50, tol=1e-9):
@@ -974,6 +1117,7 @@ def _fit_one_fold(X, y, tr, val, pf, alphas, lambdas, family, n_abort, dfmax,
     pure ridge, whose finite-lambda path never contains an exact null model.
     """
     gaussian = family == "gaussian"
+    solver_info = _empty_solver_info()
     if gaussian:
         stats = (_gaussian_stats(X, y, tr) if gaussian_stats is None
                  else gaussian_stats)
@@ -981,13 +1125,18 @@ def _fit_one_fold(X, y, tr, val, pf, alphas, lambdas, family, n_abort, dfmax,
         base_coef, _ = _coord.unpenalized_fit(G, r, pf)
         Xtr = ytr = None
         base_b0 = ybar
+        baseline_info = {"converged": True}
     else:
         center, scale, _ = _standardize(X, tr)
         # The solver wants columns contiguous. Preparing that layout here once
         # avoids recopying the whole training matrix for every path block.
         Xtr = np.asfortranarray((X[tr] - center) / scale)
         ytr = y[tr]
-        base_b0, base_coef = _binomial_baseline(Xtr, ytr, pf)
+        base_b0, base_coef, baseline_info = _binomial_baseline(
+            Xtr, ytr, pf, return_info=True)
+    if not baseline_info["converged"]:
+        solver_info["converged"] = False
+        solver_info["n_baseline_not_converged"] = 1
     Xval = (X[val] - center) / scale
     yval = y[val]
 
@@ -998,6 +1147,9 @@ def _fit_one_fold(X, y, tr, val, pf, alphas, lambdas, family, n_abort, dfmax,
             "alpha_index": 0, "lam": float("inf"), "lam_index": -1,
             "coef": base_coef.copy(), "b0": float(base_b0)}
     for a_idx, a in enumerate(alphas):
+        alpha_lambdas = (np.asarray(lambdas[a_idx], dtype=float)
+                         if np.ndim(lambdas) == 2
+                         else np.asarray(lambdas, dtype=float))
         # Warm-start state carried down the grid, and across blocks of it.
         if gaussian:
             beta_w, grad_w = _coord.unpenalized_fit(G, r, pf)
@@ -1010,19 +1162,22 @@ def _fit_one_fold(X, y, tr, val, pf, alphas, lambdas, family, n_abort, dfmax,
         block = max(int(n_abort), 1)
         start = 0
         since_best = 0
-        while start < lambdas.size:
-            lams = lambdas[start:start + block]
+        while start < alpha_lambdas.size:
+            lams = alpha_lambdas[start:start + block]
             if gaussian:
-                coefs, nf = _coord.enet_path_gaussian(
+                coefs, nf, path_info = _coord.enet_path_gaussian(
                     G, r, pf=pf, alpha=a, lambdas=lams, beta_init=beta_w,
-                    grad_init=grad_w, tol=tol, max_iter=max_iter, dfmax=dfmax)
+                    grad_init=grad_w, tol=tol, max_iter=max_iter, dfmax=dfmax,
+                    return_info=True)
                 b0s = None
             else:
-                b0s, coefs, nf = _coord.enet_path_binomial(
+                b0s, coefs, nf, path_info = _coord.enet_path_binomial(
                     Xtr, ytr, pf=pf, alpha=a, lambdas=lams, beta_init=beta_w,
-                    b0_init=b0_w, tol=tol, max_iter=max(20, max_iter // 10),
-                    dfmax=dfmax)
+                    b0_init=b0_w, tol=tol, max_iter=max_iter, dfmax=dfmax,
+                    return_info=True)
             n_ok = min(nf, lams.size)
+            path_info["n_path_points_fitted"] = n_ok
+            _merge_solver_info(solver_info, path_info)
 
             # One BLAS-3 product for the whole block's held-out predictions.
             # Scoring each penalty separately issued n_ok matrix-vector calls
@@ -1059,4 +1214,5 @@ def _fit_one_fold(X, y, tr, val, pf, alphas, lambdas, family, n_abort, dfmax,
     return {"beta": beta_raw, "intercept": intercept, "loss": best["loss"],
             "null_loss": float(null_loss), "alpha": best["alpha"],
             "alpha_index": best["alpha_index"], "lam": best["lam"],
-            "lam_index": best["lam_index"], "n_val": int(val.size)}
+            "lam_index": best["lam_index"], "n_val": int(val.size),
+            "solver_info": solver_info}
