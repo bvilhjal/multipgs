@@ -1,11 +1,17 @@
 """The public surface: every advertised name imports and is documented."""
 
 import importlib
+import pathlib
 import pkgutil
+import re
+import subprocess
+import sys
 
 import pytest
 
 import multipgs
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 def test_every_exported_name_resolves():
@@ -67,3 +73,19 @@ def test_readme_examples_name_real_functions():
             if name and name.isidentifier():
                 assert hasattr(multipgs, name), \
                     f"README imports multipgs.{name}, which does not exist"
+
+
+def test_api_reference_maps_every_export():
+    text = (ROOT / "docs" / "api.md").read_text(encoding="utf-8")
+    documented = {name for name in multipgs.__all__
+                  if re.search(rf"\b{re.escape(name)}\b", text)}
+    expected = set(multipgs.__all__) - {"__version__"}
+    assert documented == expected, (
+        f"docs/api.md omits public names: {sorted(expected - documented)}")
+
+
+def test_minimal_example_runs_end_to_end():
+    completed = subprocess.run(
+        [sys.executable, "-m", "examples.minimal"], cwd=ROOT,
+        text=True, capture_output=True, timeout=180, check=False)
+    assert completed.returncode == 0, completed.stdout + completed.stderr

@@ -1,5 +1,6 @@
 """The documentation must not drift away from the code or the bibliography."""
 
+import importlib.util
 import pathlib
 import re
 
@@ -80,12 +81,46 @@ def test_methods_report_is_complete_and_linked():
     assert latex.count(r"\begin{equation}") >= 10
 
 
+def test_report_evidence_is_current_without_rerunning_the_suite():
+    generator = ROOT / "report" / "generate_evidence.py"
+    spec = importlib.util.spec_from_file_location("report_evidence", generator)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    evidence = module.validate_committed_evidence(ROOT)
+    assert evidence["tests"]["status"] == "passed"
+
+
 def test_internal_doc_links_resolve():
     for path in DOCS:
         text = path.read_text(encoding="utf-8")
         for target in re.findall(r"\]\((?!https?:|#)([^)#]+)", text):
             resolved = (path.parent / target).resolve()
             assert resolved.exists(), f"{path.name} links to missing {target}"
+
+
+def test_internal_doc_anchors_resolve():
+    """Check local Markdown fragments, including duplicate heading suffixes."""
+    def anchors(path):
+        found = set()
+        counts = {}
+        for heading in re.findall(r"^#{1,6}\s+(.+?)\s*$",
+                                  path.read_text(encoding="utf-8"), re.M):
+            slug = re.sub(r"[^\w\- ]", "", heading.lower())
+            slug = re.sub(r"\s+", "-", slug.strip())
+            number = counts.get(slug, 0)
+            counts[slug] = number + 1
+            found.add(slug if number == 0 else f"{slug}-{number}")
+        return found
+
+    for path in DOCS:
+        text = path.read_text(encoding="utf-8")
+        for target, fragment in re.findall(
+                r"\]\((?!https?:|mailto:)([^)#]*)#([^)]+)\)", text):
+            destination = (path.parent / target).resolve() if target else path
+            assert destination.exists(), f"{path.name} links to missing {target}"
+            assert fragment in anchors(destination), (
+                f"{path.name} links to missing #{fragment} in "
+                f"{destination.name}")
 
 
 def test_every_benchmark_named_in_the_docs_exists():

@@ -54,7 +54,7 @@
 \pagestyle{fancy}
 \fancyhf{}
 \fancyhead[L]{\small\textcolor{MidGray}{multipgs methods and validation}}
-\fancyhead[R]{\small\textcolor{MidGray}{v0.3.0}}
+\fancyhead[R]{\small\textcolor{MidGray}{v\ReportPackageVersion}}
 \fancyfoot[C]{\small\textcolor{MidGray}{\thepage}}
 \renewcommand{\headrulewidth}{0.3pt}
 
@@ -70,6 +70,7 @@
   \end{center}}
 \newcolumntype{Y}{>{\raggedright\arraybackslash}X}
 \newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+\input{generated_evidence.tex}
 
 \begin{document}
 
@@ -94,14 +95,16 @@
 \vspace{49mm}
 \begin{tabularx}{\linewidth}{@{}L{38mm}Y@{}}
 \toprule
-\textbf{Package} & \pkg{multipgs} version 0.3.0 \\
+\textbf{Package} & \pkg{multipgs} version \ReportPackageVersion \\
 \textbf{Report date} & 12 August 2026 \\
 \textbf{Scope} & Selection-index theory, three combination routes,
 deployment, evaluation, automated tests, and committed benchmark results \\
 \textbf{Evidence base} & Unit and contract tests, replicated synthetic
 experiments, real-LD simulations, and descriptive real-data diagnostics \\
-\textbf{Automated result} & 322 tests passed on Python 3.12.13, NumPy 2.5.2,
-scikit-learn 1.9.0, pytest 9.1.1, and ldpred3 0.4.6 \\
+\textbf{Automated result} & \ReportTestCount{} tests passed on Python
+\ReportPythonVersion, NumPy \ReportNumpyVersion, scikit-learn
+\ReportScikitLearnVersion, pytest \ReportPytestVersion, and ldpred3
+\ReportLdpredThreeVersion \\
 \textbf{Intended use} & Technical explanation and reproducible validation
 summary; not clinical validation, a regulatory assessment, or a substitute
 for independent outcome evaluation \\
@@ -465,7 +468,7 @@ selected coefficient vectors \cite{prive2019}. \pkg{multipgs} adds a separate
 nested outer-fold decision rule that falls back to the unpenalised baseline
 when the apparent increment is insufficient. The null benchmark shows that
 this is a pragmatic guard, not a calibrated hypothesis test: pure noise passed
-in 7 of 30 runs at \(n=1000\) and 4 of 30 at \(n=5000\).
+in \ReportNullPasses{} of \ReportNullReplicates{} checked runs overall.
 
 The averaged support is the union of fold supports. Consequently
 \code{selected()} reports predictive weights, not causal traits, unique genetic
@@ -515,8 +518,8 @@ MSE, not squared correlation, selects the path because \Rtwo{} is blind to a
 reversed predictor. An independent second GWAS can tune the path; a third is
 still needed for assessment. PUMAS-style pseudo-splitting uses a
 joint-Gaussian/CLT covariance approximation \cite{zhao2021}. In the committed
-calibration, relative covariance error is 3.77\% for Gaussian and 10.99\% for
-binary simulations.
+calibration, relative covariance error is \ReportPumasGaussianErrorPct\% for
+Gaussian and \ReportPumasBinaryErrorPct\% for binary simulations.
 
 \subsection{Training-free same-trait combination}
 
@@ -631,23 +634,26 @@ This metric depends on a stated prevalence assumption \cite{lee2012}.
 \protect\path{benchmarks/results/fit_accuracy_summary.csv}. Regimes A--D use
 \(n=2000\), E--H use \(n=10{,}000\); A,B,E,F use \(q=50\), the others
 \(q=200\); A,C,E,G use \(h^2=0.2\), the others \(h^2=0.5\). The multi-PGS
-beats the training-selected best single score in all 240 raw replicates.
+beats the training-selected best single score in \ReportFitWins{} of
+\ReportFitReplicates{} raw replicates.
 Because the simulated genetic value lies in the score span, this is an
 estimator sanity check, not evidence of clinical efficacy.}
 \label{fig:fit-accuracy}
 \end{figure}
 
 Across the eight regimes, mean uplift over the selected single score ranges
-from 0.0660 to 0.2307 \Rtwo{}. Based on regime means, the fitted stack closes
-83.4\%--99.2\% of the gap between the selected single score and the oracle.
-The overall mean nested-CV minus held-out difference is \(-0.00230\), slightly
-conservative in this simulation.
+from \ReportFitUpliftMin{} to \ReportFitUpliftMax{} \Rtwo{}. Based on regime
+means, the fitted stack closes \ReportFitGapClosedMinPct\%--
+\ReportFitGapClosedMaxPct\% of the gap between the selected single score and
+the oracle. The overall mean nested-CV minus held-out difference is
+\(\ReportFitCvMinusHoldout\), slightly conservative in this simulation.
 
 \subsection{Summary moments and LD-reference sensitivity}
 
 With exact individual moments, the summary and individual standardised
-coefficients correlate 0.999624 on average, and all compared held-out \Rtwo{}
-values lie between 0.4973 and 0.4982. This supports the score-space identity
+coefficients correlate \ReportSumstatBetaCorrelation{} on average, and all
+compared held-out \Rtwo{} values lie between \ReportSumstatRtwoMin{} and
+\ReportSumstatRtwoMax. This supports the score-space identity
 under the benchmark's strong-signal, small-\(q\) design.
 
 \begin{figure}[H]
@@ -683,8 +689,9 @@ under the benchmark's strong-signal, small-\(q\) design.
 \end{tikzpicture}
 \caption{Real-LD simulation from
 \protect\path{real_ld_simulation_summary.csv}. At reference \(n=50\), true fitted
-\Rtwo{} falls by 0.01795 relative to the infinite-reference result, while the
-own-reference estimate is inflated by 0.04446 (26.4\% of true fitted
+\Rtwo{} falls by \ReportLdTrueDropNfifty{} relative to the infinite-reference
+result, while the own-reference estimate is inflated by
+\ReportLdInflationNfifty{} (\ReportLdInflationNfiftyPct\% of true fitted
 \Rtwo{}). Reporting bias is larger than the loss in the fitted predictor.}
 \label{fig:ld-reference}
 \end{figure}
@@ -721,9 +728,13 @@ own-reference estimate is inflated by 0.04446 (26.4\% of true fitted
 \end{tikzpicture}
 \caption{Known-overlap simulation from
 \protect\path{overlap_inflation_summary.csv}. At overlap 0.10, reported-to-true
-\Rtwo{} ratios are 2.03 for multi-PGS and 4.89 for the single score; at 0.25,
-they are 3.98 and 14.73. Bivariate LDSC detected all 16 non-null runs and none
-of eight null runs in this 109,590-variant design. This does not imply
+\Rtwo{} ratios are \ReportOverlapMultiRatioTen{} for multi-PGS and
+\ReportOverlapSingleRatioTen{} for the single score; at 0.25, they are
+\ReportOverlapMultiRatioTwentyFive{} and
+\ReportOverlapSingleRatioTwentyFive. Bivariate LDSC detected
+\ReportOverlapDetectedNonnull{} of \ReportOverlapNonnullReplicates{} non-null
+runs and \ReportOverlapDetectedNull{} of \ReportOverlapNullReplicates{} null
+runs in this 109,590-variant design. This does not imply
 universal LDSC power, but it refutes the absolute claim that no downstream
 diagnostic can ever flag overlap.}
 \label{fig:overlap}
@@ -783,7 +794,9 @@ accuracies in the single checked 24-score CAD diagnostic (right). The right
 panel is a contaminated regime-C score-space description, not external outcome
 truth. Sources:
 \protect\path{meta_rules_summary.csv} and
-\protect\path{real_meta_rules_summary.csv}.}
+\protect\path{real_meta_rules_summary.csv}. The direct expected-\Rtwo{} proxy
+is \ReportRealMetaExpectedRtwo, versus
+\ReportRealMetaDecorrelatedRtwo{} after decorrelation.}
 \label{fig:decorrelation}
 \end{figure}
 
@@ -796,23 +809,31 @@ truth. Sources:
 \toprule
 \textbf{Artifact} & \textbf{Result} & \textbf{Interpretation} \\
 \midrule
-\path{fit_accuracy} & Multi-PGS wins 240/240 held-out simulations; uplift
-0.0660--0.2307 & Supports estimator sanity when truth lies in the score span;
+\path{fit_accuracy} & Multi-PGS wins \ReportFitWins/\ReportFitReplicates{}
+held-out simulations; uplift \ReportFitUpliftMin--\ReportFitUpliftMax{} &
+Supports estimator sanity when truth lies in the score span;
 does not establish real-outcome or clinical superiority. \\
-\path{null_gate} & Noise passes 11/60 runs overall & Shows the fallback is a
+\path{null_gate} & Noise passes \ReportNullPasses/\ReportNullReplicates{} runs
+overall & Shows the fallback is a
 decision heuristic, not a significance test. \\
-\path{sumstat_vs_individual} & coefficient correlation 0.999624; \Rtwo{}
-0.4973--0.4982 & Supports exact-moment Gaussian equivalence in a small-\(q\),
-strong-signal design. \\
-\path{sumstat_calibration} & PUMAS covariance relative error 3.77\% Gaussian,
-10.99\% binary & Quantifies approximation error; it does not validate
+\path{sumstat_vs_individual} & coefficient correlation
+\ReportSumstatBetaCorrelation; \Rtwo{}
+\ReportSumstatRtwoMin--\ReportSumstatRtwoMax{} & Supports exact-moment Gaussian
+equivalence in a small-\(q\), strong-signal design. \\
+\path{sumstat_calibration} & PUMAS covariance relative error
+\ReportPumasGaussianErrorPct\% Gaussian, \ReportPumasBinaryErrorPct\% binary &
+Quantifies approximation error; it does not validate
 pseudotuning as assessment. \\
-\path{real_ld_simulation} & reference \(n=50\) report inflation 0.04446 &
+\path{real_ld_simulation} & reference \(n=50\) report inflation
+\ReportLdInflationNfifty{} &
 Demonstrates reference-induced optimism under real LD. \\
-\path{overlap_inflation} & up to 3.98-fold multi-PGS and 14.73-fold single-score
-inflation & Demonstrates overlap danger under a known covariance construction. \\
-\path{real_meta_rules} & direct expected-\Rtwo{} proxy 0.17729 versus
-decorrelated 0.002261 & Shows severe proxy sensitivity in one regime-C CAD
+\path{overlap_inflation} & up to \ReportOverlapMultiRatioTwentyFive-fold
+multi-PGS and \ReportOverlapSingleRatioTwentyFive-fold single-score inflation
+& Demonstrates overlap danger under a known covariance construction. \\
+\path{real_meta_rules} & direct expected-\Rtwo{} proxy
+\ReportRealMetaExpectedRtwo{} versus decorrelated
+\ReportRealMetaDecorrelatedRtwo{} & Shows severe proxy sensitivity in one
+regime-C CAD
 diagnostic; cannot rank methods externally. \\
 \bottomrule
 \end{tabularx}
@@ -821,8 +842,9 @@ diagnostic; cannot rank methods externally. \\
 \section{Automated verification}
 \label{sec:verification}
 
-The complete automated suite passed 322 of 322 tests in the environment stated
-on the title page. It covers public API validation, allele and variant
+The complete automated suite passed \ReportTestCount{} of \ReportTestCount{}
+tests in the environment stated on the title page. It covers public API
+validation, allele and variant
 alignment, score-scale conversion, Gaussian and binomial fitting, summary
 moment construction, independent and pseudo-tuning, meta-score rules,
 evaluation metrics, serialization, documentation links, benchmark metadata,
@@ -997,6 +1019,13 @@ GWAS summary statistics.
 \appendix
 \section{Artifact provenance}
 \label{app:provenance}
+
+This report was generated in the context of source revision
+\texttt{\ReportSourceRevision}. Its reproducibility authority is the
+SHA-256 over the declared report inputs:
+\ReportInputDigestDisplay. The evidence generator records that input list,
+the test environment, and benchmark-derived headline values; generated files
+and the PDF are excluded to avoid a self-referential digest.
 
 \begin{table}[H]
 \centering

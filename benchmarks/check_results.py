@@ -9,6 +9,7 @@ and the principal tables are compared with their checked CSV sources.
 from __future__ import annotations
 
 import csv
+import importlib.util
 import json
 import math
 import re
@@ -196,6 +197,14 @@ def _check_readme():
         raise AssertionError("README supported ldpred3 range is stale")
 
 
+def _check_report_evidence():
+    path = HERE.parent / "report" / "generate_evidence.py"
+    spec = importlib.util.spec_from_file_location("report_evidence", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.validate_committed_evidence(HERE.parent)
+
+
 def check_results():
     """Raise ``AssertionError`` if a committed benchmark artifact has drifted."""
     _check_summary("fit_accuracy", ("n", "n_scores", "h2"), {
@@ -210,6 +219,7 @@ def check_results():
     _check_summary("sumstat_vs_individual", ())
     _check_provenance()
     _check_readme()
+    _check_report_evidence()
 
 
 if __name__ == "__main__":
