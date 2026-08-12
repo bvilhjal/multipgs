@@ -12,6 +12,7 @@ import argparse
 import csv
 import importlib
 import importlib.metadata
+import importlib.util
 import inspect
 import json
 import platform
@@ -30,7 +31,24 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from benchmarks._provenance import benchmark_identity
+
+def _local_benchmark_identity():
+    """Load this checkout's provenance helper without namespace collisions.
+
+    ldpred3 also exposes a ``benchmarks`` namespace.  A long-lived process may
+    therefore already have its module in ``sys.modules`` before this script is
+    imported.  Loading the adjacent helper by path keeps benchmark provenance
+    tied to the producer beside it.
+    """
+    path = Path(__file__).resolve().with_name("_provenance.py")
+    spec = importlib.util.spec_from_file_location(
+        "multipgs_benchmark_provenance", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.benchmark_identity
+
+
+benchmark_identity = _local_benchmark_identity()
 
 try:
     import resource

@@ -272,15 +272,18 @@ def benchmark_evidence(root=ROOT):
 
 
 def _distribution_version(distribution, module=None):
-    try:
-        version = importlib.metadata.version(distribution)
-    except importlib.metadata.PackageNotFoundError:
-        if module is None:
-            raise
+    if module is not None:
+        # Editable-install metadata can lag behind the source actually imported.
+        # The report describes the runtime used by the tests, so prefer that
+        # module's explicit version when it exposes one.
         imported = __import__(module)
         version = getattr(imported, "__version__", None)
-        if version is None:
-            raise RuntimeError(f"cannot determine {distribution} version")
+    else:
+        try:
+            version = importlib.metadata.version(distribution)
+        except importlib.metadata.PackageNotFoundError:
+            raise RuntimeError(
+                f"cannot determine {distribution} version") from None
     if not isinstance(version, str) or not version.strip():
         raise RuntimeError(f"cannot determine {distribution} version")
     return version

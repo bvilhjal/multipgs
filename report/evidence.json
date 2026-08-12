@@ -28,7 +28,7 @@
     "sumstat_r2_max": "0.4982",
     "sumstat_r2_min": "0.4973"
   },
-  "input_digest_sha256": "59311106563392a8652424e50768f3ee5ea035f7ade7fd7a79bfebe1095f6ce4",
+  "input_digest_sha256": "9785a4f6f3c0f718ae29076c087ec3e59d20aa715bbb8058879d4846ffad6a76",
   "inputs": [
     "benchmarks/_provenance.py",
     "benchmarks/check_results.py",
@@ -140,9 +140,9 @@
     "real_meta_direct": "(sqrtN,0.16416)(expected,0.17729)"
   },
   "schema_version": 1,
-  "source_revision": "65f177d75384",
+  "source_revision": "fca4a3c57d70",
   "tests": {
-    "count": 322,
+    "count": 331,
     "ldpred3": "0.4.6",
     "numpy": "2.5.2",
     "pytest": "9.1.1",
