@@ -2,7 +2,23 @@
 
 ## Unreleased
 
-Nothing yet.
+Reproducibility and CI:
+
+- `report/generate_evidence.py` orders its declared inputs by POSIX path string
+  instead of by `Path` comparison. `PurePath` ordering is a property of the
+  flavour — case-folded on Windows, case-sensitive on POSIX — so the input list
+  and the SHA-256 computed over it, the report's stated reproducibility
+  authority, depended on the operating system that generated them. Committed
+  evidence generated on one flavour failed its own freshness check on the
+  other. Regenerated `evidence.json`, `generated_evidence.tex` and the report
+  PDF in the corrected order.
+- CI checks out the private `bvilhjal/ldpred3` repository with an
+  `LDPRED3_TOKEN` secret when one is configured. The default `GITHUB_TOKEN` is
+  scoped to this repository alone, so that checkout failed with "Repository not
+  found" and every lint, test, build and packaging step below it was skipped.
+- The pinned ldpred3 revision moves from `dcde5737` to `1e3a686d` in the README
+  install command and in CI. The version specifier `ldpred3>=0.4.5,<0.5` cannot
+  distinguish them: both report 0.4.6.
 
 ## 0.3.1 - 2026-08-12
 

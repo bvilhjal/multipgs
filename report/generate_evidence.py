@@ -54,7 +54,16 @@ _INPUT_FILES = (
 
 
 def report_inputs(root=ROOT):
-    """Return the sorted, declared report inputs relative to ``root``."""
+    """Return the sorted, declared report inputs relative to ``root``.
+
+    Ordered by the POSIX path string, never by ``Path`` comparison. ``PurePath``
+    ordering is a property of the *flavour*: case-folded on Windows and
+    case-sensitive on POSIX, so sorting the paths themselves puts ``README.md``
+    before ``benchmarks/`` on Linux and after it on Windows. That order is also
+    the order :func:`report_input_digest` hashes in, which would make the
+    digest — the declared reproducibility authority — depend on the operating
+    system that generated it.
+    """
     root = Path(root)
     paths = {root / relative for relative in _INPUT_FILES}
     for pattern in _INPUT_GLOBS:
@@ -63,7 +72,8 @@ def report_inputs(root=ROOT):
     if missing:
         names = ", ".join(str(path.relative_to(root)) for path in missing)
         raise FileNotFoundError(f"missing declared report input(s): {names}")
-    return tuple(sorted(path.relative_to(root) for path in paths))
+    return tuple(sorted((path.relative_to(root) for path in paths),
+                        key=Path.as_posix))
 
 
 def report_input_digest(root=ROOT, inputs=None):

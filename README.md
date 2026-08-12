@@ -46,7 +46,7 @@ Python 3.9–3.14. Numba is strongly recommended. ldpred3 is not on PyPI, so its
 Git install needs authenticated GitHub read access:
 
 ```bash
-python -m pip install "ldpred3[fast] @ git+https://github.com/bvilhjal/ldpred3.git@dcde5737f720642105c0e1c79878219304fa3012"
+python -m pip install "ldpred3[fast] @ git+https://github.com/bvilhjal/ldpred3.git@1e3a686d3f3185dcb7b0aa82bd1ff687b3369a9e"
 python -m pip install "multipgs[fast] @ git+https://github.com/bvilhjal/multipgs.git"
 ```
 

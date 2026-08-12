@@ -90,6 +90,30 @@ def test_report_evidence_is_current_without_rerunning_the_suite():
     assert evidence["tests"]["status"] == "passed"
 
 
+def test_report_input_order_does_not_depend_on_the_operating_system():
+    """The digest's input order must be the same on Windows and POSIX.
+
+    ``sorted()`` over ``Path`` objects compares by flavour: case-folded on
+    Windows, case-sensitive on POSIX. Since :func:`report_input_digest` hashes
+    the inputs in this order, a flavour-dependent sort would make the recorded
+    digest — the report's stated reproducibility authority — disagree with
+    itself across platforms, and the committed evidence would fail its own
+    freshness check on the other one.
+    """
+    generator = ROOT / "report" / "generate_evidence.py"
+    spec = importlib.util.spec_from_file_location("report_evidence", generator)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    inputs = [path.as_posix() for path in module.report_inputs(ROOT)]
+    assert inputs == sorted(inputs)
+
+    # Same relative paths under the other flavour: the order must not move.
+    windows = sorted((pathlib.PureWindowsPath(name) for name in inputs),
+                     key=pathlib.PureWindowsPath.as_posix)
+    assert [path.as_posix() for path in windows] == inputs
+
+
 def test_internal_doc_links_resolve():
     for path in DOCS:
         text = path.read_text(encoding="utf-8")
