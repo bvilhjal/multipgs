@@ -48,7 +48,6 @@ import importlib
 import importlib.metadata
 import json
 import platform
-import resource
 import sys
 import time
 from datetime import datetime, timezone
@@ -62,6 +61,7 @@ if str(_ROOT) not in sys.path:
 
 import multipgs
 from benchmarks._provenance import benchmark_identity
+from benchmarks.stack_scaling import _rss_mb
 from multipgs.sumstat import _validate_moments, _weight_columns, score_gram
 
 
@@ -73,13 +73,8 @@ def _version(name):
 
 
 def _peak_rss_gb():
-    """Peak resident set size of this process, in GB.
-
-    ``ru_maxrss`` is bytes on macOS and kilobytes on Linux; getting this wrong
-    misreports memory by a factor of 1024, in the reassuring direction.
-    """
-    peak = float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
-    return peak / 1024.0 ** 3 if sys.platform == "darwin" else peak / 1024.0 ** 2
+    """Peak resident set size of this process, in GiB."""
+    return _rss_mb() / 1024.0
 
 
 def _sha256(path, chunk=8 * 1024 * 1024):

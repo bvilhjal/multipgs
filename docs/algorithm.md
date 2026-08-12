@@ -5,11 +5,11 @@
 ### Model
 
 For each CMSA fold, its training rows define column means and standard
-deviations. Write `S_tilde` and `C_tilde` for scores and covariates standardized
+deviations. Write `Z_tilde` and `X_tilde` for scores and covariates standardized
 with those training-only values. The fold fits
 
 ```
-minimise  (1/2n_train) L(y, a0 + C_tilde·eta + S_tilde·theta)
+minimise  (1/2n_train) L(y, a0 + X_tilde·eta + Z_tilde·theta)
           + lambda · sum_k pf_k · [ alpha·|theta_k| + (1-alpha)/2 · theta_k^2 ]
 ```
 
@@ -38,11 +38,12 @@ gives the rationale and its consequences). The steps are:
 
 1. Split the training set into `n_folds` parts (stratified by case status for a
    binary phenotype, so a rare-disease fold cannot come out with no cases).
-2. Compute one penalty grid on the full training set, at the unpenalized
-   baseline. This grid belongs to the returned estimator; the independent
-   assessment below constructs its own grid inside each outer-training set.
-3. For each fold, fit the elastic-net path on the other folds and score it on
-   the held-out part. Walk down the grid in blocks and stop after `n_abort`
+2. Compute one penalty grid **per alpha** on the full training set, at the
+   unpenalized baseline. These alpha-specific grids belong to the returned
+   estimator; the independent assessment below constructs new grids inside
+   each outer-training set.
+3. For each fold, fit the elastic-net paths on the other folds and score them on
+   the held-out part. Walk down each grid in blocks and stop after `n_abort`
    consecutive penalties fail to improve. Warm starts carry across blocks, so
    early stopping costs nothing over fitting the whole path.
 4. Each fold keeps the coefficients at *its own* best `(alpha, lambda)`.
@@ -126,6 +127,12 @@ Correctness is pinned against `sklearn`'s `ElasticNet` to ~1e-7 across
 `alpha ∈ {1.0, 0.5, 0.2}`, and the unpenalized-column handling against an
 explicit Frisch–Waugh–Lovell reference.
 
+The returned log records `solver_converged` plus the numbers of exhausted path
+points, coordinate-descent fits, IRLS fits, and baselines. Each `FoldFit` also
+records its selected `(alpha, lambda)`, held-out and baseline loss, sparsity,
+whether it entered the returned average, and its convergence counters. A false
+convergence flag is a numerical warning, not a scientific model diagnostic.
+
 ### Cost
 
 With `A = assessment_folds`, Gaussian sufficient-statistic construction is
@@ -162,6 +169,12 @@ The implementation standardizes each score by
 the selected vector back to raw-score coefficients. Consequently
 `SumstatFit.beta`, `MultiPGSFit.beta`, and `combine_weights` share one contract;
 `SumstatFit.beta_std` is the coefficient vector on unit-variance scores.
+
+`align_to_reference` converts raw Catalog allele-count weights to this scale
+only when `sd=` is supplied or the HWE approximation is explicitly requested.
+Otherwise it leaves weights unscaled and records `log["standardized"] = False`;
+that output is valid here only when the supplied weights were already on the
+standardized-genotype scale.
 
 At the default `alpha=1`, the lasso acts on `K` whole component scores. The
 quadratic form is inspired by SNP-level lassosum, but the variables are
@@ -237,18 +250,20 @@ combination to a correlation of 1 within 1e-8.
 
 ## The training-free combination
 
-For `K` scores of one trait from different discovery GWAS, with `z_k` the
+For `K` scores of one trait from different discovery GWAS, with `Z_k` the
 standardized score and `rho_k` its expected correlation with the genetic value,
 the optimal linear combination is `w ∝ C⁻¹ρ` where `C` is the correlation matrix
 of the scores — estimable from the target genotypes with no phenotype at all.
 
 Three rules, in increasing order of what they assume you know:
 
-| `method` | `ρ` from | `C` |
-|---|---|---|
-| `sqrt_n_eff` | `sqrt(n_eff)` | assumed `I` |
-| `expected_r2` | `sqrt(R²)` from the fitted architecture | assumed `I` |
-| `decorrelated` | either | estimated from the panel |
+**Table 1. Information required by each training-free rule.**
+
+| `method` | `ρ` proxy | `C` | Defensible prerequisite |
+|---|---|---|---|
+| `sqrt_n_eff` | `sqrt(n_eff)` | assumed `I` | same-trait, consistently oriented scores and discovery effective sample sizes |
+| `expected_r2` | `sqrt(expected_r2)` | assumed `I` | credible, target-transportable phenotypic R² magnitudes |
+| `decorrelated` | `sqrt(expected_r2)`, or `sqrt(n_eff)` as an API fallback | estimated from the target panel | independently credible target-correlation magnitudes; sample-size or Daetwyler proxies alone are insufficient |
 
 `sqrt_n_eff` is the rule in `code/meta_prs.R` of the
 [PGS-pipeline](https://github.com/olex2148/PGS-pipeline) accompanying Hansen
@@ -276,13 +291,13 @@ Against that, `sqrt_n_eff` supplies `sqrt(x_k)` and `expected_r2` supplies
 weighting by accuracy under-weights the best-powered GWAS more than weighting by
 sample size does — across the panel below, by a factor 5 against 2.2.
 
-Three same-trait scores (`n_eff` 150k/60k/20k, `h² = 0.4`, 5,000 causal
-variants, so `x` = 12, 4.8, 1.6), evaluated against a simulated phenotype at
+Three same-trait scores (`n_eff` 150k/60k/20k, `h² = 0.4`, `M = 5,000`
+effective independent effects, so `x` = 12, 4.8, 1.6), evaluated against a simulated phenotype at
 `n = 40,000`. The `shared` parameter correlates the scores' error terms; it is a
 stylized consequence of shared discovery information, not a literal fraction
 of overlapping samples.
 
-**Table 1. Mean phenotypic r² over 30 seeds (standard deviations are 0.003–0.004).**
+**Table 2. Mean phenotypic r² over 30 seeds (standard deviations are 0.003–0.004).**
 
 | shared error correlation | best single | `sqrt_n_eff` | `expected_r2` | decorr(`n_eff`) | decorr(`expected_r2`) |
 |---|---|---|---|---|---|
@@ -314,7 +329,7 @@ evidence for a universal rule ranking. Named-cohort metadata also flags 16 of
 24 scores as sharing at least one declared cohort with the target GWAS; that is
 a lower-bound overlap warning, not a complete cohort audit.
 
-**Table 2. Plug-in R² in the committed regime-C real-panel diagnostic.**
+**Table 3. Plug-in R² in the committed regime-C real-panel diagnostic.**
 
 | fixed rule | plug-in R² |
 |---|---:|
@@ -347,14 +362,6 @@ returned solution; none verifies the unknown target-correlation vector. There
 is no internal diagnostic that can turn an unvalidated proxy into a validated
 one.
 
-> An earlier version of this table reported the opposite ranking for the two
-> `C = I` rules. It was measuring a defect in `simulate_same_trait_panel`, which
-> set each score's accuracy to `sqrt(daetwyler_r2)` — the *phenotypic*
-> correlation, i.e.
-> `h·R_k` — which is precisely the quantity `expected_r2` consumes, so that rule
-> was handed the true `ρ` by construction. Fixed, and the numbers above are from
-> the corrected simulation.
-
 `ridge` regularises `C` before inversion. Near-duplicate scores make it
 ill-conditioned, and an unregularised inverse answers with two enormous weights
 of opposite sign that cancel to noise. Ridge controls that numerical
@@ -365,17 +372,19 @@ sensitivity; it does not make a misspecified `ρ` accurate.
 `daetwyler_r2(h2, p, n_eff, n_variants)` implements
 
 ```
-M   = n_variants · p
+M   ≈ n_variants · p
 x   = n_eff · h2 / M
 R_G² = x / (1 + x)             genetic-value accuracy squared
 R_y² = h2 · R_G²              phenotypic score R² returned by daetwyler_r2
 ```
 
-the bound of Daetwyler et al. (2008) with `M` taken from the fitted
-polygenicity rather than assumed a priori — Hansen et al.'s adaptation, which
-lets the bound follow each trait's own inferred architecture. It is an upper
-bound: causal variants are treated as known and independent, so LD-induced
-dilution and between-cohort heterogeneity are both ignored.
+the bound of Daetwyler et al. (2008), with `M` denoting an effective number of
+independent effects or chromosome segments. The code approximates it from
+fitted polygenicity as `n_variants · p` — Hansen et al.'s adaptation, which
+lets the bound follow each trait's inferred architecture. This is not a literal
+claim that the causal variants are known. It remains an upper bound because the
+independent-effect approximation, LD-induced dilution, and between-cohort
+heterogeneity are ignored.
 
 `screen` applies the model-level Hansen et al. gates represented by
 `Architecture`: `h²` in [0.01, 1], at least 20 of 50 chains converged, at least

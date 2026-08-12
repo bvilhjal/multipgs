@@ -35,6 +35,12 @@ jobs:
         with:
           python-version: "3.13"
       - run: python -m pip install --upgrade build twine numpy
+      - uses: actions/checkout@v4
+        with:
+          repository: bvilhjal/ldpred3
+          ref: dcde5737f720642105c0e1c79878219304fa3012
+          path: ldpred3
+      - run: python report/generate_evidence.py --check
       - run: python -m build
       - run: python -m twine check dist/*
       - name: Check distribution content
@@ -47,7 +53,8 @@ jobs:
           archive, = glob.glob("dist/*.tar.gz")
           with tarfile.open(archive) as source:
               names = source.getnames()
-          for path in ("CHANGELOG.md", "docs/guide.md", "examples/minimal.py",
+          for path in ("CHANGELOG.md", "CONTRIBUTING.md", "docs/guide.md",
+                       "docs/api.md", "examples/minimal.py",
                        "benchmarks/README.md", "benchmarks/meta_rules.py",
                        "benchmarks/results/meta_rules.csv",
                        "benchmarks/stack_scaling.py",
@@ -56,7 +63,10 @@ jobs:
                        "benchmarks/results/sumstat_calibration.csv",
                        "benchmarks/results/sumstat_calibration_summary.csv",
                        "benchmarks/results/sumstat_calibration_provenance.json",
-                       "report/README.md", "report/multipgs_methods.tex",
+                       "report/README.md", "report/evidence.json",
+                       "report/generate_evidence.py",
+                       "report/generated_evidence.tex",
+                       "report/multipgs_methods.tex",
                        "report/multipgs_methods.pdf"):
               assert any(name.endswith("/" + path) for name in names), path
 
@@ -86,9 +96,15 @@ jobs:
           wheel, = glob.glob("dist/*.whl")
           with zipfile.ZipFile(wheel) as package:
               names = package.namelist()
-          for path in ("share/doc/multipgs/README.md",
+          for path in ("share/doc/multipgs/CONTRIBUTING.md",
+                       "share/doc/multipgs/README.md",
+                       "share/doc/multipgs/evidence.json",
+                       "share/doc/multipgs/generate_evidence.py",
+                       "share/doc/multipgs/generated_evidence.tex",
                        "share/doc/multipgs/multipgs_methods.tex",
-                       "share/doc/multipgs/multipgs_methods.pdf"):
+                       "share/doc/multipgs/multipgs_methods.pdf",
+                       "share/doc/multipgs/docs/guide.md",
+                       "share/doc/multipgs/docs/api.md"):
               assert any(name.endswith(path) for name in names), path
           for path in ("multipgs/__init__.py", "multipgs/cli.py",
                        "multipgs/sumstat.py"):
@@ -96,6 +112,11 @@ jobs:
       - name: Install and smoke-test the built wheel
         shell: bash
         run: |
+          python -m pip install "./ldpred3"
           python -m pip install --force-reinstall --no-deps dist/*.whl
-          python -c "import importlib.metadata, multipgs; assert importlib.metadata.version('multipgs') == multipgs.__version__"
+          checkout="$PWD"
+          smoke_dir="$(mktemp -d)"
+          cd "$smoke_dir"
+          python -c "import importlib.metadata, pathlib, sysconfig, multipgs; source=pathlib.Path(multipgs.__file__).resolve(); purelib=pathlib.Path(sysconfig.get_paths()['purelib']).resolve(); assert pathlib.Path('$checkout').resolve() not in source.parents, source; assert purelib in source.parents, (source, purelib); assert importlib.metadata.version('multipgs') == multipgs.__version__"
           multipgs --version
+          python "$checkout/examples/minimal.py"

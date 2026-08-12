@@ -24,7 +24,7 @@ Fixed once and used throughout.
 | `R_k` | `cor(z_k, g_k)` — accuracy of score `k` for **its own trait's genetic value** |
 | `r_G(k,l)` | genetic correlation between traits `k` and `l` |
 | `N_k` | effective sample size of GWAS `k`; `4/(1/n_case + 1/n_control)` for case/control |
-| `M` | causal variants; the code uses `n_variants · p` from the fit |
+| `M` | effective number of independent effects or chromosome segments; the code approximates it as `n_variants · p` from the fit |
 | `x_k` | `N_k h_k² / M`, the power of GWAS `k` |
 | `C` | `K × K` correlation matrix of the standardized scores in the target |
 | `ρ` | `K`-vector, `ρ_k = cor(z_k, g_f)` |
@@ -447,9 +447,9 @@ relevance instead, is the right tool.
 
 ### The Daetwyler bound
 
-For a score built on `M` independent causal variants from a GWAS of `N`
-individuals, distinguish accuracy for the genetic value from accuracy for the
-phenotype:
+For a score whose architecture has effective complexity `M`, built from a GWAS
+of `N` individuals, distinguish accuracy for the genetic value from accuracy
+for the phenotype:
 
 ```
 R_G² = x/(1+x)                                  with  x = N h²/M
@@ -457,14 +457,18 @@ R_y² = h²·R_G² = h² / (1 + M/(N h²)) = h²·x/(1+x)
 ```
 
 `multipgs.daetwyler_r2` returns `R_y²`, the phenotypic value; the selection-index
-derivations above use `R_G`. `multipgs` takes `M = n_variants·p` from the fitted
-polygenicity rather than assuming it, following Hansen et al.'s adaptation, so
-the bound follows each trait's own architecture.
+derivations above use `R_G`. `multipgs` approximates `M` as
+`n_variants·p` from the fitted polygenicity, following Hansen et al.'s
+adaptation, so the bound follows each trait's own architecture. This is an
+effective-count approximation, not an assertion that the literal causal
+variants are known.
 
 It is an **upper** bound, and the assumptions say why:
 
-1. **Causal variants known and independent.** Real scores spread weight across
-   variants in LD with the causal ones, which dilutes accuracy.
+1. **Independent-effect approximation.** `M` must adequately summarize the
+   effective number of independently estimated effects or segments. Real scores
+   spread weight across variants in LD, so `n_variants·p` need not equal that
+   effective complexity.
 2. **No estimation error beyond sampling.** Phenotype measurement error,
    heterogeneity across contributing cohorts and imperfect imputation all
    reduce the realised value.
@@ -485,8 +489,9 @@ rather than real risk differences
 continuous, not categorical: accuracy declines with genetic distance even within
 Europe ([Privé et al. 2022](https://doi.org/10.1016/j.ajhg.2021.11.008)).
 
-`multi_pgs_fit`'s coefficients and `meta_pgs`'s `C`, being estimated in the
-target cohort, *are* appropriate to it. The inputs they combine are not.
+`multi_pgs_fit`'s coefficients and `meta_pgs`'s `C`, when estimated in the
+target cohort, are cohort-specific. That does not make the discovery scores,
+LD, or accuracy proxies transportable to it.
 `multipgs` does not implement the ancestry-projection normalisation that
 `pgsc_calc` applies ([Lambert et al. 2024](https://doi.org/10.1038/s41588-024-01937-x)).
 
@@ -560,11 +565,15 @@ proves absence; exclusion by design remains the defensible control.
 
 ### Reading an interval
 
-`evaluate` bootstraps by default. One trap: `incremental_r2` and
-`nagelkerke_r2` are truncated at zero, so for a null score the bootstrap
-distribution piles up at exactly 0 and the lower bound is 0 **by construction**.
-An interval like `[0.000, 0.004]` is not evidence of a small positive effect;
-it is what no effect looks like.
+`evaluate` bootstraps target individuals while holding the supplied component
+scores and fitted combination fixed. Its interval is therefore conditional on
+the discovery GWAS, LD reference, score construction, and architecture
+estimates; uncertainty from those upstream stages is not propagated.
+
+One further trap: `incremental_r2` and `nagelkerke_r2` are truncated at zero,
+so for a null score the bootstrap distribution piles up at exactly 0 and the
+lower bound is 0 **by construction**. An interval like `[0.000, 0.004]` is not
+evidence of a small positive effect; it is what no effect looks like.
 
 ## Further reading
 

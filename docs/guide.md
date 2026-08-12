@@ -1,32 +1,47 @@
 # User guide
 
-## 1. What you need
+## 1. Choose one of three routes
 
-**To learn a combination** (`multi_pgs_fit`):
+There is no validated universal threshold in `K` or `n` at which a route
+becomes worthwhile. A solver returning coefficients establishes computational
+feasibility, not generalization; accuracy claims require untouched assessment
+data.
 
-- **A panel of scores.** PGS Catalog scoring files, GWAS summary statistics to
-  fit yourself, or an `n × K` matrix you already have. There is no minimum `K`;
-  the method is worth reaching for from a handful of scores upward, and the
-  original paper used 937.
-- **A training cohort** with genotypes and the target phenotype. Hundreds of
-  individuals will fit something; the cross-validated number will be wide.
-- **Covariates**, if the cohort needs them — age, sex, genotyping batch,
-  principal components.
-- **Held-out individuals**, ideally. `fit.cv_r2` is a nested internal estimate
-  when you have none, with the caveats in §5.
+### Route A — individual-level learned combination
 
-**To combine without a phenotype** (`meta_pgs`): scores for the **same** trait
-from different discovery GWAS, and each GWAS's effective sample size. Nothing
-else.
+Use `multi_pgs_fit` when you have a target phenotype and a panel containing any
+mixture of focal, related-trait, and irrelevant scores. You need target
+genotypes or an existing `n × K` score matrix, appropriate covariates, and an
+unrelated training sample. Untouched individuals are required for an external
+accuracy claim; `fit.cv_r2` is a nested internal estimate when they are
+unavailable. Build the panel in §2, optionally screen in §3, fit in §4, assess
+in §5, and deploy in §6.
 
-**To learn a combination entirely from summary statistics**
-(`multi_pgs_sumstats`): raw component-score definitions plus separate aligned
-standardized-genotype weights for the target GWAS and ancestry-matched LD
-reference. Their variant orders may differ, but score identities and counted
-alleles may not. One target GWAS fits the path; an independent second GWAS can
-tune it; a third untouched GWAS or cohort is needed to assess the selected
-model. With only one GWAS, PUMAS-style pseudotuning is available under the
-assumptions in §4.
+### Route B — summary-statistic learned combination
+
+Use `multi_pgs_sumstats` when you have no phenotyped cohort but do have raw
+component-score definitions, standardized target-GWAS effects, and an
+ancestry-matched LD reference. Align each data source on its own genotype scale.
+One target GWAS fits the path, an independent second GWAS can tune it, and a
+third untouched GWAS or cohort is needed to assess the selected model. With one
+GWAS, PUMAS-style pseudotuning is available under the assumptions in §4; it is
+not external assessment.
+
+### Route C — same-trait training-free combination
+
+Use `meta_pgs` only when every consistently oriented score estimates the same
+trait in the target population. Its requirements depend on the rule:
+
+- `sqrt_n_eff` needs each discovery GWAS's effective sample size.
+- `expected_r2` needs a credible, target-transportable phenotypic R² magnitude
+  per score; Daetwyler values are model-based proxies, not measured target
+  accuracy.
+- `decorrelated` additionally estimates the score correlation matrix from the
+  target panel and needs independently credible target-correlation magnitudes.
+  Sample-size and Daetwyler proxies alone do not justify the inversion.
+
+The API accepts squared, nonnegative magnitudes and therefore cannot represent
+a genuinely negative target correlation. See §7 for the operational choice.
 
 ### Effective sample size
 
@@ -45,11 +60,13 @@ standard — before fitting.
 
 ### Is it worth doing at all?
 
-Often, but not always, and the theory says exactly when. The gain from a
-correlated trait scales as `r_G² · R_k² · (1 - R_f²)²`, so it is **quadratic in
-how weak your own score is**. At a genetic correlation of 0.5 with one auxiliary
-trait, the relative gain runs from about +115% when your own GWAS is badly
-underpowered to +0.7% when it is well powered
+Theory identifies regimes in which gains are possible; the package validation
+does not establish a universal sample-size cutoff or real-world superiority.
+Under the stated model, the gain from a correlated trait scales as
+`r_G² · R_k² · (1 - R_f²)²`, so it is **quadratic in how weak your own score
+is**. At a genetic correlation of 0.5 with one auxiliary trait, the model's
+relative gain runs from about +115% when your own GWAS is badly underpowered to
++0.7% when it is well powered
 ([theory.md §1](theory.md#why-the-gain-concentrates-on-underpowered-traits) has
 the table and its derivation). Holding heritability, polygenicity, ancestry
 transfer and auxiliary genetic correlation fixed, a larger focal GWAS usually
@@ -106,7 +123,7 @@ panel = panel_from_catalog("scores/", "cohort", min_matched=1000,
                            on_error="skip")
 ```
 
-### From GWAS summary statistics
+### Building component scores from GWAS summary statistics
 
 ```python
 from multipgs import panel_from_sumstats
@@ -237,12 +254,19 @@ fit.predict(scores, covar)   # full linear predictor, incl. covariates
 fit.selected(top=10)         # (score_id, beta_std, beta), largest first
 fit.cv_r2                    # nested predictive gain over the baseline
 fit.n_folds_used             # all CMSA folds on a pass; zero on fallback
+fit.log["solver_converged"]  # false if any numerical fit exhausted iterations
 ```
 
 Rank scores by `beta_std`, not `beta`: raw coefficients depend on whatever scale
 each input score happened to arrive on. `selected()` reports nonzero predictive
 weights, not causal traits. CMSA support is the union of fold supports, and
 correlated scores can exchange or share weight.
+
+Read `fit.summary()` and require `fit.log["solver_converged"]` before trusting
+the coefficients. If it is false, inspect `n_iteration_exhausted`,
+`n_coordinate_descent_exhausted`, `n_irls_exhausted`, and
+`n_baseline_not_converged`; increasing `max_iter` is the first numerical check,
+not a guarantee that the model is otherwise well specified.
 
 `cv_r2 = (SSE_baseline - SSE_inner_CMSA) / SST` over untouched outer folds. It
 is a predictive loss gain, not `incremental_r2`: the latter recalibrates the
@@ -275,15 +299,17 @@ from multipgs import (align_to_reference, multi_pgs_sumstats,
                       score_moments)
 
 # Each matrix uses the empirical dosage SD of the source it accompanies.
-W_ld, score_ids, _ = align_to_reference(
+W_ld, score_ids, log_ld = align_to_reference(
     scoring_files, ld_variants, sd=ld_dosage_sd)
-W_train, train_ids, _ = align_to_reference(
+W_train, train_ids, log_train = align_to_reference(
     scoring_files, train_variants, sd=train_dosage_sd)
-W_tune, tune_ids, _ = align_to_reference(
+W_tune, tune_ids, log_tune = align_to_reference(
     scoring_files, tune_variants, sd=tune_dosage_sd)
-W_test, test_ids, _ = align_to_reference(
+W_test, test_ids, log_test = align_to_reference(
     scoring_files, test_variants, sd=test_dosage_sd)
 assert score_ids == train_ids == tune_ids == test_ids
+assert all(log["standardized"] for log in
+           (log_ld, log_train, log_tune, log_test))
 
 fit = multi_pgs_sumstats(
     W_ld, z_train, ld_ref, weights_gwas=W_train, score_ids=score_ids,
@@ -317,9 +343,13 @@ The contract:
   been built independently of that GWAS.
 - **Alignment is per source.** `af=..., hwe_genotype_sd=True` requests the
   `sqrt(2 f (1-f))` approximation instead of an empirical `sd=`; it ignores
-  imputation uncertainty and departures from equilibrium. If one cohort
-  supplies both `z` and `D`, pass its aligned matrix in both roles explicitly.
-  Do not silently reuse a matrix across populations because its shape matches.
+  imputation uncertainty and departures from equilibrium. Without `sd=` or
+  that explicit approximation, `align_to_reference` leaves Catalog weights on
+  the allele-count scale and records `log["standardized"] = False`; such output
+  is suitable here only if the input weights were already standardized. If one
+  cohort supplies both `z` and `D`, pass its aligned matrix in both roles
+  explicitly. Do not silently reuse a matrix across populations because its
+  shape matches.
 - **The LD reference** must match the GWAS ancestry and raw score definitions.
   Its finite sample size bounds the resolvable rank, and compact LD encodings
   can introduce numerical indefiniteness. The solver rejects a materially
@@ -346,25 +376,28 @@ regime — measured in
 ## 5. Evaluating, and the ways this goes wrong
 
 ```python
-from multipgs import evaluate
+from multipgs import combine_weights, evaluate
+from ldpred3 import score_from_weights
 
-# Pass the panel, not panel.scores: the score ids get checked against the fit.
-print(evaluate(y_test, fit.multi_pgs(test_panel), covar=covar_test,
+combine_weights(panel, fit, path="multi.weights")
+test_score = score_from_weights("multi.weights", "test_cohort",
+                                scaling="frozen")
+print(evaluate(y_test, test_score.scores, covar=covar_test,
                family="binomial", prevalence=0.01))
 ```
 
-**Check that the test panel is the same scores in the same order.** A bare
-matrix is matched by *position*. A separately built panel can legitimately come
-back with `K` columns in a different order — `on_error="skip"` may drop a
-different file, a different `min_matched` may exclude a different score, and a
-list of paths does not sort the way a directory does. Swapping two columns of a
-ten-score panel took held-out r² from 0.448 to 0.075 in testing, with no error
-raised. Passing the `ScorePanel` itself (or `score_ids=`) makes `multi_pgs`
-check, and realigning is one call:
+**Keep identity checks separate from scale transport.** For untouched rows of
+the same already-built panel, `fit.multi_pgs(panel.scores[test_rows])` remains
+on the fitted raw-score coordinate. A bare matrix is matched by *position*;
+when a `ScorePanel` is passed, score ids are checked. A separately built panel
+can return columns in a different order, and realigning identities is one call:
 
 ```python
 test_panel = test_panel.select(list(fit.score_ids))
 ```
+
+That check does not freeze score scale. For an independently scored cohort,
+use the combined weight file and `scaling="frozen"` as above.
 
 **Scores are only comparable across cohorts if you freeze the scale.** `beta` is
 on the raw score scale, and a catalog score's raw scale depends on the cohort it
@@ -373,15 +406,16 @@ a different variant set may match. For a held-out cohort scored from its own
 genotypes, go through `combine_weights` and `scaling="frozen"` (§6) rather than
 rebuilding a panel and calling `multi_pgs` on it.
 
-**Sample overlap is the failure that matters.** If individuals in your training
-or test cohort contributed to the GWAS behind an input score, that score is
-partly fitted to your own data, the combination will reward it, and every
-number goes up. Many PGS Catalog scores are UK Biobank-derived, so a UK
-Biobank target is the worst case — check each score's development samples in
-its Catalog metadata. Exclude overlap when the panel is built: target-cohort
-resampling, including `fit.cv_r2`, cannot diagnose contamination shared by
-every fold. Named-cohort metadata or external genome-wide diagnostics may flag
-overlap under favourable conditions, but exclusion by design is stronger
+**Sample overlap can bias assessment.** If individuals in your training or test
+cohort contributed to the GWAS behind an input score, that score is partly
+fitted to your own data and accuracy can be inflated. The magnitude and even
+visibility of the bias depend on discovery design, score construction,
+relatedness, and overlap fraction. Many PGS Catalog scores are UK
+Biobank-derived, so check each score's development samples in its Catalog
+metadata. Exclude overlap when the panel is built: target-cohort resampling,
+including `fit.cv_r2`, cannot diagnose contamination shared by every fold.
+Named-cohort metadata or external genome-wide diagnostics may flag overlap
+under favourable conditions, but exclusion by design is stronger
 ([why](theory.md#sample-overlap)).
 
 **Evaluate the score, not the model.** `r2` of a prediction that already
@@ -402,18 +436,22 @@ Pass `prevalence=`; [theory.md §4](theory.md#liability-scale) gives the model.
 **Ancestry is not modelled anywhere in this package.** Many PGS Catalog scores
 are European-derived, and accuracy falls substantially in a target ancestry
 unmatched to discovery. `multi_pgs_fit`'s coefficients and `meta_pgs`'s `C` are
-estimated in *your* cohort and so are appropriate to it, but `daetwyler_r2`,
-`screen`, `penalty_from_accuracy` and `meta_pgs(expected_r2=…)` are
+cohort-specific estimates, but they do not repair non-portable discovery scores
+or LD. `daetwyler_r2`, `screen`, `penalty_from_accuracy` and
+`meta_pgs(expected_r2=…)` are
 ancestry-blind — `h²`, `p` and `n_eff` describe the discovery cohort. Put
 ancestry principal components in the covariates; [theory.md
 §4](theory.md#ancestry) has the evidence.
 
 **Report the interval — and know where it is bounded by construction.**
-`evaluate` bootstraps by default; with a few thousand individuals the interval
-on R² is usually wide enough to swallow the difference between the methods you
-are comparing. And `incremental_r2` and `nagelkerke_r2` are truncated at zero:
-for a useless score the bootstrap piles up at exactly 0, so `[0.000, 0.004]` is
-what *no* effect looks like, not a small effect bounded away from zero
+`evaluate` bootstraps target individuals while holding the component scores and
+fitted weights fixed. Its intervals therefore condition on upstream discovery
+GWAS, LD reference, score construction, and architecture estimates; they do not
+propagate uncertainty from those stages. With a few thousand individuals an R²
+interval may still be wide enough to cover the difference between methods.
+Also, `incremental_r2` and `nagelkerke_r2` are truncated at zero: for a useless
+score the bootstrap piles up at exactly 0, so `[0.000, 0.004]` is what *no*
+effect looks like, not a small effect bounded away from zero
 ([theory.md §4](theory.md#reading-an-interval)).
 
 ## 6. Deploying

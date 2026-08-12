@@ -40,8 +40,10 @@ you deploy.
 using the summary-statistic screening of Hansen et al.
 (`Research Square, 2026 <https://doi.org/10.21203/rs.3.rs-9415305/v1>`_).
 
-A worked end-to-end example is in ``examples/minimal.py``; the input contract
-and the ways this goes wrong are in ``docs/guide.md``.
+A worked end-to-end example is in the repository's
+`examples/minimal.py <https://github.com/bvilhjal/multipgs/blob/main/examples/minimal.py>`_;
+the input contract and failure modes are in
+`docs/guide.md <https://github.com/bvilhjal/multipgs/blob/main/docs/guide.md>`_.
 
 Names are imported **lazily** (PEP 562), so ``import multipgs`` stays cheap and
 does not pull in ldpred3's Numba kernels until something needs them.
@@ -51,7 +53,7 @@ from __future__ import annotations
 
 import importlib
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 # Public name -> submodule it lives in. No module name may equal one of its own
 # exported names: importing a submodule binds it on this package, and the cache

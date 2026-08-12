@@ -12,10 +12,10 @@ import argparse
 import csv
 import importlib
 import importlib.metadata
+import importlib.util
 import inspect
 import json
 import platform
-import resource
 import subprocess
 import sys
 import time
@@ -31,12 +31,71 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from benchmarks._provenance import benchmark_identity
+
+def _local_benchmark_identity():
+    """Load this checkout's provenance helper without namespace collisions.
+
+    ldpred3 also exposes a ``benchmarks`` namespace.  A long-lived process may
+    therefore already have its module in ``sys.modules`` before this script is
+    imported.  Loading the adjacent helper by path keeps benchmark provenance
+    tied to the producer beside it.
+    """
+    path = Path(__file__).resolve().with_name("_provenance.py")
+    spec = importlib.util.spec_from_file_location(
+        "multipgs_benchmark_provenance", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.benchmark_identity
+
+
+benchmark_identity = _local_benchmark_identity()
+
+try:
+    import resource
+except ImportError:  # Windows has no resource module.
+    resource = None
+
+
+def _windows_peak_rss_mb():
+    """Peak working set for this process from the Windows PSAPI."""
+    import ctypes
+    from ctypes import wintypes
+
+    class ProcessMemoryCounters(ctypes.Structure):
+        _fields_ = [
+            ("cb", wintypes.DWORD),
+            ("PageFaultCount", wintypes.DWORD),
+            ("PeakWorkingSetSize", ctypes.c_size_t),
+            ("WorkingSetSize", ctypes.c_size_t),
+            ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+            ("PagefileUsage", ctypes.c_size_t),
+            ("PeakPagefileUsage", ctypes.c_size_t),
+        ]
+
+    counters = ProcessMemoryCounters()
+    counters.cb = ctypes.sizeof(counters)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    psapi = ctypes.WinDLL("psapi", use_last_error=True)
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    psapi.GetProcessMemoryInfo.argtypes = (
+        wintypes.HANDLE, ctypes.POINTER(ProcessMemoryCounters), wintypes.DWORD)
+    psapi.GetProcessMemoryInfo.restype = wintypes.BOOL
+    if not psapi.GetProcessMemoryInfo(
+            kernel32.GetCurrentProcess(), ctypes.byref(counters), counters.cb):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return float(counters.PeakWorkingSetSize) / 1024.0 ** 2
 
 
 def _rss_mb():
+    if resource is None:
+        if platform.system() == "Windows":
+            return _windows_peak_rss_mb()
+        raise RuntimeError("peak RSS is unsupported on this platform")
     value = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    # macOS reports bytes; Linux and the other supported CI platforms report KiB.
+    # macOS reports bytes; other POSIX platforms report KiB.
     return value / (1024.0 ** 2 if platform.system() == "Darwin" else 1024.0)
 
 

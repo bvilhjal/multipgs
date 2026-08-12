@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+Nothing yet.
+
+## 0.3.1 - 2026-08-12
+
 Correctness and documentation:
 
 - Independent summary-statistic tuning now constructs an orthonormal basis in
@@ -27,13 +31,14 @@ Correctness and documentation:
 - The packaged LaTeX/PDF artifact is now a methods and validation report,
   focused on the project, its equations, and committed test results.
 
-The performance changes below have no intended change in results. Fitted
-coefficients, intercepts, cross-validated losses, selected penalties and
-per-fold selections are bit-identical to 0.3.0 across the Gaussian and
-binomial families. What
-moves, all from reassociated sums: `FoldFit.loss` and the summary-statistic
-path diagnostics by about one unit in the last place, and accumulated score
-columns by about 2e-12 relative.
+Apart from the correctness changes above, the performance changes below have
+no intended change in results. For scalar-alpha fits, fitted coefficients,
+intercepts, cross-validated losses, selected penalties, and per-fold
+selections are bit-identical to 0.3.0 across the Gaussian and binomial
+families. Mixed-alpha fits intentionally differ because each alpha now uses a
+correctly anchored lambda grid. Reassociated sums can also move
+`FoldFit.loss` and summary-statistic path diagnostics by about one unit in the
+last place, and accumulated score columns by about 2e-12 relative.
 
 End to end, `multi_pgs_sumstats` is 1.9x faster at `K=100` and 2.7x at
 `K=900` (2.7s to 1.0s) with same-data tuning, 1.2x to 1.9x with PUMAS.

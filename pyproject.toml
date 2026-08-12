@@ -38,6 +38,7 @@ classifiers = [
 Homepage = "https://github.com/bvilhjal/multipgs"
 Repository = "https://github.com/bvilhjal/multipgs"
 Issues = "https://github.com/bvilhjal/multipgs/issues"
+Documentation = "https://github.com/bvilhjal/multipgs#documentation"
 
 [project.scripts]
 multipgs = "multipgs.cli:main"
@@ -55,9 +56,20 @@ packages = ["multipgs"]
 
 [tool.setuptools.data-files]
 "share/doc/multipgs" = [
+    "CONTRIBUTING.md",
     "report/README.md",
+    "report/evidence.json",
+    "report/generate_evidence.py",
+    "report/generated_evidence.tex",
     "report/multipgs_methods.tex",
     "report/multipgs_methods.pdf",
+]
+"share/doc/multipgs/docs" = [
+    "docs/algorithm.md",
+    "docs/api.md",
+    "docs/guide.md",
+    "docs/references.md",
+    "docs/theory.md",
 ]
 
 [tool.setuptools.dynamic]
