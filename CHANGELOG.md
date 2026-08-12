@@ -2,7 +2,34 @@
 
 ## Unreleased
 
-Nothing yet.
+Reproducibility and CI:
+
+- `report/generate_evidence.py` orders its declared inputs by POSIX path string
+  instead of by `Path` comparison. `PurePath` ordering is a property of the
+  flavour — case-folded on Windows, case-sensitive on POSIX — so the input list
+  and the SHA-256 computed over it, the report's stated reproducibility
+  authority, depended on the operating system that generated them. Committed
+  evidence generated on one flavour failed its own freshness check on the
+  other. Regenerated `evidence.json`, `generated_evidence.tex` and the report
+  PDF in the corrected order.
+- CI checks out the private `bvilhjal/ldpred3` repository with an
+  `LDPRED3_TOKEN` secret when one is configured. The default `GITHUB_TOKEN` is
+  scoped to this repository alone, so that checkout failed with "Repository not
+  found" and every lint, test, build and packaging step below it was skipped.
+- The pinned ldpred3 revision moves from `dcde5737` to `1e3a686d` in the README
+  install command and in CI. The version specifier `ldpred3>=0.4.5,<0.5` cannot
+  distinguish them: both report 0.4.6.
+
+Clarity, with no change in results:
+
+- The binomial path's IRLS probabilities saturate their exponent before
+  `exp`, which previously overflowed to `inf` and emitted an overflow warning
+  once a working `eta` fell below about -709. Fitted values are bit-identical:
+  the clip bound sits inside the finite range of `exp`, and every `eta` past it
+  was already pinned to the same probability clip.
+- `meta_pgs` no longer wraps its constant-score comment in an empty
+  conditional, and `evaluate` documents that a liability-scale R² is converted
+  from `incremental_r2` when covariates are supplied and from `r2` otherwise.
 
 ## 0.3.1 - 2026-08-12
 

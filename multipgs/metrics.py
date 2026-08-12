@@ -261,7 +261,10 @@ def evaluate(y, pred, *, covar=None, family="gaussian", prevalence=None,
     family : {"gaussian", "binomial"}
     prevalence : float, optional
         Population prevalence. Adds a liability-scale R² for a binary
-        phenotype; the sample case fraction is used as ``P``.
+        phenotype; the sample case fraction is used as ``P``. The observed-scale
+        input is ``incremental_r2`` when ``covar`` is given and ``r2`` when it
+        is not, so the reported liability R² is the score's own accuracy in both
+        cases rather than one that absorbs the covariates.
     n_boot : int
         Bootstrap replicates for the intervals. ``0`` skips them.
     level : float

@@ -13,11 +13,19 @@ jobs:
         python-version: ["3.9", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
+      # ldpred3 is a separate private repository, so the default GITHUB_TOKEN
+      # -- scoped to this repository alone -- cannot see it and the checkout
+      # fails with "Repository not found", skipping every step below it. Set an
+      # LDPRED3_TOKEN repository secret to a token with read access to
+      # bvilhjal/ldpred3 (a fine-grained PAT with Contents: read is enough).
+      # Without the secret this falls back to the default token and CI still
+      # cannot reach ldpred3.
       - uses: actions/checkout@v4
         with:
           repository: bvilhjal/ldpred3
-          ref: dcde5737f720642105c0e1c79878219304fa3012
+          ref: 1e3a686d3f3185dcb7b0aa82bd1ff687b3369a9e
           path: ldpred3
+          token: ${{ secrets.LDPRED3_TOKEN || github.token }}
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
@@ -38,8 +46,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: bvilhjal/ldpred3
-          ref: dcde5737f720642105c0e1c79878219304fa3012
+          ref: 1e3a686d3f3185dcb7b0aa82bd1ff687b3369a9e
           path: ldpred3
+          token: ${{ secrets.LDPRED3_TOKEN || github.token }}
       - run: python report/generate_evidence.py --check
       - run: python -m build
       - run: python -m twine check dist/*

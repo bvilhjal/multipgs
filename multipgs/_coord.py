@@ -414,7 +414,15 @@ def enet_path_binomial(X, y, *, pf, alpha, lambdas, beta_init=None,
         cd_path_exhausted = False
         irls_converged = False
         for _irls in range(irls_max):
-            p = 1.0 / (1.0 + np.exp(-eta))
+            # exp overflows to inf below eta ~ -709 and warns while doing it.
+            # Saturating the exponent first is bit-identical to the unclipped
+            # form after the probability clip below -- 700 is inside the range
+            # where exp is finite, and both branches leave every |eta| past it
+            # pinned to the same clip bound. :mod:`multipgs.stack` writes its
+            # sigmoids as an explicit two-branch expression instead, which is
+            # equally stable but moves results by a few ulp; that is fine for a
+            # one-shot baseline and not for this warm-started inner loop.
+            p = 1.0 / (1.0 + np.exp(-np.clip(eta, -700.0, 700.0)))
             np.clip(p, 1e-9, 1.0 - 1e-9, out=p)
             w = np.maximum(p * (1.0 - p), w_min)
             # Working residual z - eta with z = eta + (y - p) / w, so the

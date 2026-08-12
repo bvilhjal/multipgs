@@ -241,12 +241,11 @@ def meta_pgs(scores, *, n_eff=None, expected_r2=None, method="sqrt_n_eff",
         raise ValueError("ridge must be finite and non-negative") from None
     if not np.isfinite(ridge_value) or ridge_value < 0:
         raise ValueError("ridge must be finite and non-negative")
+    # A constant score carries nothing, so it gets weight 0 below rather than
+    # dividing the combination by ~0. Substituting 1 here only keeps that
+    # division finite; ``dead`` is what actually zeroes the weight.
     dead = scale <= 1e-12
     scale = np.where(dead, 1.0, scale)
-    if dead.any():
-        # A constant score carries nothing; give it weight 0 rather than let it
-        # divide the combination by ~0.
-        pass
 
     rho = _accuracy_vector(method, n_eff, expected_r2, K)
     rho = np.where(dead, 0.0, rho)
