@@ -125,14 +125,18 @@ When several GWAS exist for *one* trait and there is no cohort to train on:
 from multipgs import meta_pgs, daetwyler_r2
 
 accuracy = daetwyler_r2(h2, p, n_eff, n_variants)     # from LDpred3 fits
-combined = meta_pgs(panel, expected_r2=accuracy, method="decorrelated")
+combined = meta_pgs(panel, expected_r2=accuracy, method="expected_r2")
 prs = combined.multi_pgs(panel)
 ```
 
 `method="sqrt_n_eff"` needs only the discovery sample sizes.
-`method="decorrelated"` additionally discounts scores for information they
-share — for example when discovery studies reuse cohorts — but wants
-`expected_r2` rather than `n_eff`. The derivation is in
+`method="expected_r2"` uses expected accuracies directly and is the appropriate
+choice for `daetwyler_r2` proxies. `method="decorrelated"` additionally uses the
+panel's score correlations to discount shared information, but its matrix
+inverse amplifies errors in the supplied accuracies. Reserve it for
+independently credible per-score target correlations, with every component
+score oriented consistently; pass the squared correlations as `expected_r2`.
+Sample-size and Daetwyler proxies do not meet that bar. The derivation is in
 [theory.md §3](docs/theory.md#3-derived-weights-no-phenotype-required) and the
 measurements in
 [docs/algorithm.md](docs/algorithm.md#choosing-a-meta-pgs-rule).

@@ -14,3 +14,7 @@ Build from this directory with:
 The figures are drawn in LaTeX from values copied from the checked benchmark
 summary CSV files named in Appendix A. Regenerate or re-audit the report when
 those artifacts or the reviewed source commit change.
+
+The reviewed defects and recommendations are historical findings for commit
+0ce9ad8. Later commits may implement them; consult the package changelog and
+current tests before treating a finding as unresolved.

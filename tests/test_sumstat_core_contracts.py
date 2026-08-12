@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from multipgs.sumstat import (
+    _range_basis,
     evaluate_sumstat,
     multi_pgs_sumstats,
     pseudo_r2,
@@ -11,6 +12,19 @@ from multipgs.sumstat import (
     score_moments,
     subsample_score_moments,
 )
+
+
+@pytest.mark.parametrize("gram", [
+    np.array([[4.0, 3.0], [3.0, 9.0]]),
+    np.ones((2, 2)),
+])
+def test_range_basis_defines_an_orthogonal_projection(gram):
+    vectors = _range_basis(gram)[0]
+    projection = vectors @ vectors.T
+
+    assert np.allclose(vectors.T @ vectors, np.eye(vectors.shape[1]))
+    assert np.allclose(projection, projection.T)
+    assert np.allclose(projection @ projection, projection)
 
 
 def test_fit_exposes_raw_coefficients_and_raw_moments():
@@ -303,6 +317,66 @@ def test_train_and_tuning_sources_may_have_distinct_variants_and_orders():
     assert fit.log["n_variants_ld_valid"] == 4
     assert fit.log["n_variants_gwas_valid"] == 5
     assert fit.log["selection"] == "independent GWAS"
+
+
+def test_full_rank_independent_tuning_preserves_unequal_scale_moments():
+    weights_train = np.diag([1.0, 10.0])
+    z_train = np.array([0.2, 0.01])
+    gram_valid = np.array([[4.0, 3.0], [3.0, 9.0]])
+    weights_valid = np.linalg.cholesky(gram_valid).T
+    c_valid = np.array([0.4, 0.7])
+    z_valid = np.linalg.solve(weights_valid.T, c_valid)
+
+    fit = multi_pgs_sumstats(
+        weights_train, z_train, np.eye(2), weights_gwas=weights_train,
+        z_valid=z_valid, ld_valid=np.eye(2),
+        weights_gwas_valid=weights_valid,
+        weights_ld_valid=weights_valid, tune="independent",
+        ld_shrinkage=0.1, n_lambda=20)
+
+    assert fit.log["gram_rank"] == fit.log["tuning_gram_rank"] == 2
+    assert np.allclose(fit.r, weights_train.T @ z_train)
+    assert fit.log["tuning_discarded_ld_null_c_norm"] == pytest.approx(
+        0.0, abs=1e-14)
+    assert fit.log[
+        "training_discarded_by_tuning_ld_c_norm"] == pytest.approx(
+            0.0, abs=1e-14)
+
+
+def test_independent_tuning_is_invariant_to_positive_score_rescaling():
+    weights_train = np.diag([1.0, 10.0])
+    z_train = np.array([0.2, 0.01])
+    gram_valid = np.array([[4.0, 3.0], [3.0, 9.0]])
+    weights_valid = np.linalg.cholesky(gram_valid).T
+    z_valid = np.linalg.solve(weights_valid.T, np.array([0.4, 0.7]))
+    kwargs = {"z_valid": z_valid, "ld_valid": np.eye(2),
+              "tune": "independent", "ld_shrinkage": [0.0, 0.1],
+              "n_lambda": 20}
+
+    fit = multi_pgs_sumstats(
+        weights_train, z_train, np.eye(2), weights_gwas=weights_train,
+        weights_gwas_valid=weights_valid, weights_ld_valid=weights_valid,
+        **kwargs)
+    score_rescaling = np.array([3.0, 1e-6])
+    scaled_train = weights_train * score_rescaling
+    scaled_valid = weights_valid * score_rescaling
+    scaled_fit = multi_pgs_sumstats(
+        scaled_train, z_train, np.eye(2), weights_gwas=scaled_train,
+        weights_gwas_valid=scaled_valid, weights_ld_valid=scaled_valid,
+        **kwargs)
+
+    assert np.allclose(fit.beta_std, scaled_fit.beta_std)
+    assert np.allclose(fit.frozen_variant_weights(weights_train),
+                       scaled_fit.frozen_variant_weights(scaled_train))
+    assert fit.selection_mse == pytest.approx(scaled_fit.selection_mse)
+    assert fit.log["ld_shrinkage"] == scaled_fit.log["ld_shrinkage"]
+    assert fit.log[
+        "tuning_discarded_ld_null_c_fraction"] == pytest.approx(
+            scaled_fit.log["tuning_discarded_ld_null_c_fraction"])
+    assert fit.log[
+        "training_discarded_by_tuning_ld_c_fraction"] == pytest.approx(
+            scaled_fit.log[
+                "training_discarded_by_tuning_ld_c_fraction"])
 
 
 def test_independent_selection_projects_its_own_gram_null_signal():

@@ -2,9 +2,21 @@
 
 ## Unreleased
 
-Performance, with no intended change in results. Fitted coefficients,
-intercepts, cross-validated losses, selected penalties and per-fold selections
-are bit-identical to 0.3.0 across the Gaussian and binomial families. What
+Correctness and documentation:
+
+- Independent summary-statistic tuning now constructs an orthonormal basis in
+  training-standardised coordinates before projecting moments. Previously,
+  unequal training and tuning score scales could turn the nominal projection
+  into a non-idempotent transformation, corrupting moments even when the
+  tuning Gram was full rank.
+- The training-free examples now use `method="expected_r2"` for Daetwyler
+  accuracy proxies. `method="decorrelated"` is reserved for independently
+  credible, consistently oriented per-score target correlations.
+
+The performance changes below have no intended change in results. Fitted
+coefficients, intercepts, cross-validated losses, selected penalties and
+per-fold selections are bit-identical to 0.3.0 across the Gaussian and
+binomial families. What
 moves, all from reassociated sums: `FoldFit.loss` and the summary-statistic
 path diagnostics by about one unit in the last place, and accumulated score
 columns by about 2e-12 relative.

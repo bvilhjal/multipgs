@@ -1323,15 +1323,18 @@ def multi_pgs_sumstats(weights_ld, z, ld, *, weights_gwas=None,
             raise ValueError(
                 f"weights_ld_valid describes {k_valid} scores but weights_ld "
                 f"describes {k}; score identity and column order must agree")
-        gram_v, gram_v_factor, validation_coherence = _validate_moments(
+        gram_v, _, validation_coherence = _validate_moments(
             wz_v, gram_v, var_y, label="tuning")
         # The TRAINING scale, deliberately. beta comes off a path fitted in
         # training-standardized coordinates, so both halves of
         # (beta'r)^2 / (beta'G beta) must use those same coordinates.
         sel_gram = gram_v * np.outer(scale, scale)
         sel_r_observed = wz_v * scale
-        tuning_basis = _range_basis_from_factor(
-            gram_v_factor * scale[:, None])[0]
+        # Multiplying the tuning factor by the TRAINING scale generally
+        # destroys orthogonality between its columns.  Build the range basis
+        # from the resulting tuning Gram itself; column-normalising that
+        # transformed factor would make B B' a non-idempotent non-projection.
+        tuning_basis = _range_basis(sel_gram)[0]
         sel_r = tuning_basis @ (tuning_basis.T @ sel_r_observed)
         training_r_before_tuning_projection = r.copy()
         r = tuning_basis @ (tuning_basis.T @ r)

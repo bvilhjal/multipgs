@@ -366,8 +366,10 @@ or test cohort contributed to the GWAS behind an input score, that score is
 partly fitted to your own data, the combination will reward it, and every
 number goes up. Many PGS Catalog scores are UK Biobank-derived, so a UK
 Biobank target is the worst case — check each score's development samples in
-its Catalog metadata. Exclude overlap when the panel is built; nothing
-downstream can detect it, including `fit.cv_r2`
+its Catalog metadata. Exclude overlap when the panel is built: target-cohort
+resampling, including `fit.cv_r2`, cannot diagnose contamination shared by
+every fold. Named-cohort metadata or external genome-wide diagnostics may flag
+overlap under favourable conditions, but exclusion by design is stronger
 ([why](theory.md#sample-overlap)).
 
 **Evaluate the score, not the model.** `r2` of a prediction that already
@@ -438,9 +440,13 @@ of different traits by their own sample sizes assumes a relevance that the
 sample size cannot express; `multi_pgs_fit` learns it instead. The runnable
 example shows this failure directly.
 
-If the discovery GWAS overlap — a consortium meta-analysis usually contains a
-cohort you are also using separately — use `method="decorrelated"`, and give it
-`expected_r2` rather than `n_eff`. See
+Discovery-GWAS overlap — for example, when a consortium meta-analysis contains
+a cohort also used separately — does not by itself justify
+`method="decorrelated"`. Its inverse correlation matrix amplifies errors in the
+accuracy vector. Use `method="expected_r2"` for `daetwyler_r2` proxies. Reserve
+`method="decorrelated"` for independently credible per-score target
+correlations, with every component score oriented consistently; pass the
+squared correlations as `expected_r2`. See
 [algorithm.md](algorithm.md#choosing-a-meta-pgs-rule) for the measurements, and
 [theory.md §3](theory.md#3-derived-weights-no-phenotype-required) for why the
 cruder statistic has the better-shaped weights.
