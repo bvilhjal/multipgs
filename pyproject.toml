@@ -53,6 +53,13 @@ lint = ["ruff>=0.5"]
 [tool.setuptools]
 packages = ["multipgs"]
 
+[tool.setuptools.data-files]
+"share/doc/multipgs" = [
+    "report/README.md",
+    "report/multipgs_review.tex",
+    "report/multipgs_review.pdf",
+]
+
 [tool.setuptools.dynamic]
 version = { attr = "multipgs.__version__" }
 

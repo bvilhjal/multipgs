@@ -12,7 +12,7 @@ DOI_RE = re.compile(r"https://doi\.org/(10\.[^\s)\]>`]+)")
 
 
 def _dois(text):
-    return {m.group(1).rstrip(".,;") for m in DOI_RE.finditer(text)}
+    return {m.group(1).rstrip(".,;}") for m in DOI_RE.finditer(text)}
 
 
 def test_every_doi_cited_in_the_docs_is_in_the_bibliography():
@@ -50,6 +50,29 @@ def test_docs_exist_and_are_linked_from_the_readme(name):
     assert (ROOT / "docs" / name).exists()
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     assert f"docs/{name}" in readme, f"README does not link docs/{name}"
+
+
+def test_technical_review_is_complete_and_linked():
+    """The versioned review is a real deliverable, not a dangling link."""
+    report = ROOT / "report"
+    source = report / "multipgs_review.tex"
+    pdf = report / "multipgs_review.pdf"
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert source.exists()
+    assert pdf.exists()
+    assert "report/multipgs_review.tex" in readme
+    assert "report/multipgs_review.pdf" in readme
+    assert pdf.stat().st_size > 100_000
+    assert pdf.read_bytes().startswith(b"%PDF-")
+
+    latex = source.read_text(encoding="utf-8")
+    bibliography = _dois(
+        (ROOT / "docs" / "references.md").read_text(encoding="utf-8"))
+    assert not (_dois(latex) - bibliography)
+    assert latex.count(r"\begin{figure}") >= 5
+    assert latex.count(r"\begin{table}") + latex.count(r"\begin{longtable}") >= 5
+    assert latex.count(r"\begin{equation}") >= 10
 
 
 def test_internal_doc_links_resolve():

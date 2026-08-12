@@ -1,5 +1,6 @@
 include CHANGELOG.md
 recursive-include docs *.md
+recursive-include report *.md *.tex *.pdf
 recursive-include examples *.py
 graft benchmarks
 prune benchmarks/__pycache__

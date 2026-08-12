@@ -37,11 +37,12 @@ jobs:
       - run: python -m pip install --upgrade build twine
       - run: python -m build
       - run: python -m twine check dist/*
-      - name: Check source-distribution content
+      - name: Check distribution content
         shell: python
         run: |
           import glob
           import tarfile
+          import zipfile
 
           archive, = glob.glob("dist/*.tar.gz")
           with tarfile.open(archive) as source:
@@ -54,5 +55,15 @@ jobs:
                        "benchmarks/sumstat_calibration.py",
                        "benchmarks/results/sumstat_calibration.csv",
                        "benchmarks/results/sumstat_calibration_summary.csv",
-                       "benchmarks/results/sumstat_calibration_provenance.json"):
+                       "benchmarks/results/sumstat_calibration_provenance.json",
+                       "report/README.md", "report/multipgs_review.tex",
+                       "report/multipgs_review.pdf"):
               assert any(name.endswith("/" + path) for name in names), path
+
+          wheel, = glob.glob("dist/*.whl")
+          with zipfile.ZipFile(wheel) as package:
+              names = package.namelist()
+          for path in ("share/doc/multipgs/README.md",
+                       "share/doc/multipgs/multipgs_review.tex",
+                       "share/doc/multipgs/multipgs_review.pdf"):
+              assert any(name.endswith(path) for name in names), path
