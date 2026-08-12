@@ -15,6 +15,11 @@ ld_scaling_results.csv
 *.egg-info/
 build/
 dist/
+report/*.aux
+report/*.log
+report/*.out
+report/*.toc
+.pdf-preview/
 
 # Ephemeral test-dependency staging (created by the codex test harness)
 .codex-test-deps/

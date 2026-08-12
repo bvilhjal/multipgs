@@ -1,20 +1,15 @@
-# multipgs technical review
+# multipgs methods and validation report
 
-This directory contains the versioned technical review of multipgs 0.3.0 at
-commit 0ce9ad8:
+This directory contains the packaged technical report for multipgs:
 
-- multipgs_review.tex is the editable LaTeX source.
-- multipgs_review.pdf is the compiled and visually verified report.
+- `multipgs_methods.tex` is the editable LaTeX source.
+- `multipgs_methods.pdf` is the compiled and visually verified report.
 
 Build from this directory with:
 
-    pdflatex -interaction=nonstopmode -halt-on-error multipgs_review.tex
-    pdflatex -interaction=nonstopmode -halt-on-error multipgs_review.tex
+    pdflatex -interaction=nonstopmode -halt-on-error multipgs_methods.tex
+    pdflatex -interaction=nonstopmode -halt-on-error multipgs_methods.tex
 
 The figures are drawn in LaTeX from values copied from the checked benchmark
-summary CSV files named in Appendix A. Regenerate or re-audit the report when
-those artifacts or the reviewed source commit change.
-
-The reviewed defects and recommendations are historical findings for commit
-0ce9ad8. Later commits may implement them; consult the package changelog and
-current tests before treating a finding as unresolved.
+summary CSV files named in Appendix A. Regenerate and visually inspect the PDF
+when those artifacts, methods, or documented test results change.

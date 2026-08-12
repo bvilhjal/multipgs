@@ -56,8 +56,8 @@ packages = ["multipgs"]
 [tool.setuptools.data-files]
 "share/doc/multipgs" = [
     "report/README.md",
-    "report/multipgs_review.tex",
-    "report/multipgs_review.pdf",
+    "report/multipgs_methods.tex",
+    "report/multipgs_methods.pdf",
 ]
 
 [tool.setuptools.dynamic]

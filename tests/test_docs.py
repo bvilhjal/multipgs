@@ -52,21 +52,26 @@ def test_docs_exist_and_are_linked_from_the_readme(name):
     assert f"docs/{name}" in readme, f"README does not link docs/{name}"
 
 
-def test_technical_review_is_complete_and_linked():
-    """The versioned review is a real deliverable, not a dangling link."""
+def test_methods_report_is_complete_and_linked():
+    """The packaged methods report is a real deliverable, not an audit."""
     report = ROOT / "report"
-    source = report / "multipgs_review.tex"
-    pdf = report / "multipgs_review.pdf"
+    source = report / "multipgs_methods.tex"
+    pdf = report / "multipgs_methods.pdf"
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
     assert source.exists()
     assert pdf.exists()
-    assert "report/multipgs_review.tex" in readme
-    assert "report/multipgs_review.pdf" in readme
+    assert "report/multipgs_methods.tex" in readme
+    assert "report/multipgs_methods.pdf" in readme
     assert pdf.stat().st_size > 100_000
     assert pdf.read_bytes().startswith(b"%PDF-")
 
     latex = source.read_text(encoding="utf-8")
+    assert "METHODS AND VALIDATION" in latex
+    assert r"\section{Implemented methods}" in latex
+    assert r"\section{Validation results}" in latex
+    assert "Technical review findings" not in latex
+    assert "Recommended roadmap" not in latex
     bibliography = _dois(
         (ROOT / "docs" / "references.md").read_text(encoding="utf-8"))
     assert not (_dois(latex) - bibliography)

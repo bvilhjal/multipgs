@@ -44,17 +44,17 @@
 
 \color{Ink}
 \hypersetup{
-  pdftitle={multipgs: Theory, Methods, and Technical Review},
-  pdfauthor={Technical review for the multipgs package},
-  pdfsubject={Theory, implementation, documentation, benchmarks, and packaging},
+  pdftitle={multipgs: Theory, Implemented Methods, and Validation Results},
+  pdfauthor={multipgs contributors},
+  pdfsubject={Theory, implemented methods, tests, and benchmark results},
   pdfkeywords={polygenic score, multi-PGS, elastic net, summary statistics,
-               selection index, technical review}
+               selection index, validation}
 }
 
 \pagestyle{fancy}
 \fancyhf{}
-\fancyhead[L]{\small\textcolor{MidGray}{multipgs technical review}}
-\fancyhead[R]{\small\textcolor{MidGray}{v0.3.0 / 0ce9ad8}}
+\fancyhead[L]{\small\textcolor{MidGray}{multipgs methods and validation}}
+\fancyhead[R]{\small\textcolor{MidGray}{v0.3.0}}
 \fancyfoot[C]{\small\textcolor{MidGray}{\thepage}}
 \renewcommand{\headrulewidth}{0.3pt}
 
@@ -68,7 +68,6 @@
   \textbf{\textcolor{#1}{#2}}
   \end{minipage}}
   \end{center}}
-\newcommand{\finding}[2]{\textbf{\textcolor{#1}{#2}}}
 \newcolumntype{Y}{>{\raggedright\arraybackslash}X}
 \newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
 
@@ -85,33 +84,33 @@
 
 \vspace*{19mm}
 {\color{white}\sffamily
-{\Large TECHNICAL REVIEW\par}
+{\Large METHODS AND VALIDATION\par}
 \vspace{8mm}
 {\fontsize{30}{34}\selectfont\bfseries multipgs\par}
 \vspace{3mm}
-{\fontsize{19}{23}\selectfont Theory, methods, evidence, and documentation\par}
+{\fontsize{19}{23}\selectfont Theory, implemented methods, and test results\par}
 }
 
 \vspace{49mm}
 \begin{tabularx}{\linewidth}{@{}L{38mm}Y@{}}
 \toprule
-\textbf{Reviewed state} & Package version 0.3.0, commit
-\code{0ce9ad8888356dc5834f5e8c323621765ac7afb3} \\
-\textbf{Review date} & 12 August 2026 \\
-\textbf{Scope} & Mathematical theory, three fitting routes, implementation
-contracts, checked-in benchmarks, user documentation, tests, and distribution
-packaging \\
-\textbf{Test baseline} & 294 tests passed on Python 3.12.13, NumPy 2.5.2,
-scikit-learn 1.9.0, pytest 9.1.1, and local ldpred3 0.4.6 \\
-\textbf{Artifact status} & This report is descriptive and diagnostic. It is
-not a clinical validation, regulatory assessment, or substitute for
-independent outcome evaluation. \\
+\textbf{Package} & \pkg{multipgs} version 0.3.0 \\
+\textbf{Report date} & 12 August 2026 \\
+\textbf{Scope} & Selection-index theory, three combination routes,
+deployment, evaluation, automated tests, and committed benchmark results \\
+\textbf{Evidence base} & Unit and contract tests, replicated synthetic
+experiments, real-LD simulations, and descriptive real-data diagnostics \\
+\textbf{Automated result} & 322 tests passed on Python 3.12.13, NumPy 2.5.2,
+scikit-learn 1.9.0, pytest 9.1.1, and ldpred3 0.4.6 \\
+\textbf{Intended use} & Technical explanation and reproducible validation
+summary; not clinical validation, a regulatory assessment, or a substitute
+for independent outcome evaluation \\
 \bottomrule
 \end{tabularx}
 
 \vfill
-{\small\textcolor{MidGray}{Prepared as a versioned documentation artifact for
-the \pkg{multipgs} source and wheel distributions.}}
+{\small\textcolor{MidGray}{Packaged with the \pkg{multipgs} source and wheel
+distributions.}}
 \end{titlepage}
 
 \hypersetup{pageanchor=true}
@@ -120,65 +119,54 @@ the \pkg{multipgs} source and wheel distributions.}}
 \begin{abstract}
 \pkg{multipgs} combines multiple polygenic scores through three distinct
 information routes: individual-level penalised stacking, score-space
-summary-statistic stacking, and a training-free same-trait meta-score. The
-selection-index theory is sound, the individual and summary Gaussian objectives
-are algebraically coherent when their score scales are handled correctly, and
-the repository contains unusually extensive benchmark provenance. The review
-also found one high-severity correctness defect in independent-GWAS tuning, one
-unsafe user-facing recommendation for decorrelated weights, and several
-documentation and provenance inconsistencies. Existing simulations support
-estimator sanity and moment identities, but they do not establish clinical
-utility, ancestry portability, or real-world comparative superiority.
+summary-statistic stacking, and a training-free same-trait meta-score. This
+report derives their common selection-index foundation, states the data and
+scale contracts for each route, and summarises the package's automated tests
+and committed benchmark results. The evidence establishes numerical identities
+and controlled estimator behaviour. It does not establish clinical utility,
+ancestry portability, or real-world comparative superiority.
 \end{abstract}
 
-\section*{Executive conclusions}
+\section*{Project at a glance}
 
-\statusbox{Teal}{Overall assessment. The mathematical core is credible. The
-reviewed state has broad documentation, 294 passing tests, and 34 checked
-benchmark artifacts. Its evidence should nevertheless be described as a
-combination of algebraic checks, controlled simulations, and real-data
-diagnostics - not as end-to-end clinical validation.}
+\statusbox{Teal}{Purpose. The package learns or constructs one deployable
+polygenic score from several component scores while keeping variant
+harmonisation, score scale, tuning, and untouched assessment explicit.}
 
-\statusbox{Critical}{Route-blocking finding. Independent summary-statistic
-tuning forms a non-orthogonal basis and applies \(BB^{\mathsf T}\) as if it
-were an orthogonal projection. A full-rank two-score example discards 95.6\%
-of both tuning and training moments when the mathematically correct discarded
-fraction is zero.}
+\statusbox{DeepBlue}{Three information routes. Individual-level stacking uses
+target phenotypes; summary-statistic stacking uses score-space GWAS moments;
+the training-free route uses same-trait sample-size or expected-accuracy
+proxies. The routes solve different information problems.}
 
-\statusbox{Amber}{Documentation finding. The README and guide recommend
-\code{decorrelated} with Daetwyler-derived accuracy, while the checked real CAD
-diagnostic gives \Rtwo{} 0.1773 without decorrelation and 0.00226 with it.
-The rule is theoretically optimal only when its per-score target correlations
-are accurately specified and consistently oriented.}
+\statusbox{Amber}{Evidence boundary. Automated tests and committed simulations
+validate numerical contracts and behaviour under stated designs. External
+outcomes, population transport, calibration, and decision utility remain the
+responsibility of each application.}
 
 \begin{table}[H]
 \centering
-\caption{Decision summary for the reviewed package state.}
-\label{tab:decision-summary}
+\caption{Project components and their roles.}
+\label{tab:project-summary}
 \small
 \begin{tabularx}{\linewidth}{@{}L{29mm}Y L{34mm}@{}}
 \toprule
-\textbf{Area} & \textbf{Conclusion} & \textbf{Recommended disposition} \\
+\textbf{Component} & \textbf{Role} & \textbf{Primary output} \\
 \midrule
-Theory & Selection-index optimum, two-score gain, Daetwyler scaling, and
-score-space moments are internally coherent under stated assumptions. &
-Retain; tighten assumptions and notation. \\
-Individual fit & Strong simulation sanity checks; CMSA and the nested fallback
-are package-specific departures from the published Multi-PGS workflow. &
-Usable with independent external assessment. \\
-Summary fit & Exact-moment simulations agree closely with individual fitting,
-but independent tuning contains a confirmed projection defect. &
-Block independent tuning until fixed and regression-tested. \\
-Training-free fit & Simple rules are transparent; decorrelation can amplify
-small accuracy misspecification catastrophically. &
-Default to the undecorrelated rule unless component accuracy is independently
-credible. \\
-Evidence & 294 tests pass and 34 benchmark artifacts are checked in; real
-outcome validation and ancestry-transfer evidence are absent. &
-Describe evidence level precisely; do not imply clinical validity. \\
-Documentation & Broad and candid, but several high-impact statements have
-drifted from code and checked results. &
-Correct the user-facing recipe and automate result-to-prose checks. \\
+Panel construction & Align variants and alleles, convert score scales, and
+represent component scores consistently. & \code{ScorePanel} and aligned
+variant weights \\
+Individual fit & Learn a sparse elastic-net combination from target-cohort
+scores, phenotype, and optional covariates. & Raw-scale score coefficients,
+cross-validated diagnostics, and frozen variant weights \\
+Summary fit & Learn score coefficients from GWAS cross-moments and an LD-based
+score Gram matrix. & Standardised and raw-scale coefficients, tuning log, and
+frozen variant weights \\
+Training-free fit & Construct a same-trait rule from metadata-derived accuracy
+proxies, optionally using credible target score correlations. & Normalised
+component coefficients and a combined variant score \\
+Evaluation & Quantify discrimination or incremental prediction on untouched
+data. & \Rtwo{}, incremental \Rtwo{}, liability-scale \Rtwo{}, AUC, and
+uncertainty summaries \\
 \bottomrule
 \end{tabularx}
 \end{table}
@@ -188,18 +176,18 @@ Correct the user-facing recipe and automate result-to-prose checks. \\
 \clearpage
 \pagenumbering{arabic}
 
-\section{Scope and review method}
+\section{Project scope and evidence}
 \label{sec:scope}
 
-The review covered the public modules under \path{multipgs/}, the README,
-theory, algorithm, guide, API map, bibliography, tests, build metadata, and all
-checked benchmark summaries and provenance records. The report is pinned to
-commit \code{0ce9ad8}; later source or benchmark changes can invalidate its
-line-level findings.
+The package operates after component PGS weights have been obtained. It does
+not discover variants, estimate GWAS effects, or provide clinical risk
+calibration. Its central task is smaller: harmonise component scores, combine
+them using the information available, freeze a deployable variant-weight
+vector, and evaluate that score on untouched data.
 
-The evidence was classified into four levels:
+The validation evidence is organised into four levels:
 \begin{enumerate}
-  \item algebraic identities and direct numerical counterexamples;
+  \item algebraic identities and numerical invariants;
   \item unit and contract tests;
   \item replicated synthetic or real-LD simulations with checked raw rows;
   \item descriptive real-data diagnostics without an untouched outcome truth.
@@ -212,7 +200,7 @@ reported fivefold out-of-sample assessment \cite{albinana2023}. \pkg{multipgs}
 implements the same broad estimator, but substitutes CMSA, adds a nested
 fallback gate, supports a package-specific summary-statistic objective, and
 uses a different incremental-\Rtwo{} convention. Those differences are
-features, not clerical details, and are made explicit below.
+made explicit below.
 
 \section{Statistical theory}
 \label{sec:theory}
@@ -285,8 +273,7 @@ errors may be correlated across scores. Under independent residual errors,
 Discovery sample overlap is one mechanism that can correlate the residual
 errors; shared pipelines, LD references, model fitting, and other common
 estimation artifacts can do so as well. Conversely, overlap need not induce a
-large covariance in every design. The word \emph{exactly} is therefore
-unwarranted.
+large covariance in every design.
 
 For a weight vector \(w\), the squared genetic-value correlation of the linear
 index is
@@ -445,11 +432,17 @@ metadata-derived weights remain hypotheses until tested \\
 \subsection{Individual-level penalised stacking}
 
 Within each training fold, score columns are imputed and standardised. With
-unpenalised covariates \(X\), the Gaussian or binomial elastic-net objective is
+unpenalised covariates \(X\), write
+\(\eta_i=b_0+X_i^{\mathsf T}\gamma+Z_i^{\mathsf T}\theta\). The Gaussian or
+binomial elastic-net objective is
 \begin{equation}
   \min_{b_0,\gamma,\theta}
-  \frac{1}{2n}\,
-  \mathcal L\!\left(y,b_0+X\gamma+Z\theta\right)
+  \underbrace{\begin{cases}
+    (2n)^{-1}\sum_i(y_i-\eta_i)^2,
+      & \text{Gaussian},\\
+    -n^{-1}\sum_i\{y_i\eta_i-\log(1+\exp\eta_i)\},
+      & \text{binomial},
+  \end{cases}}_{\mathcal Q(y,\eta)}
   +\lambda\sum_{k=1}^{q}p_k
   \left\{\alpha|\theta_k|
   +\frac{1-\alpha}{2}\theta_k^2\right\}.
@@ -599,7 +592,7 @@ For binary outcomes, with population prevalence \(\pi\), sample case fraction
 \end{equation}
 This metric depends on a stated prevalence assumption \cite{lee2012}.
 
-\section{Empirical evidence in the repository}
+\section{Validation results}
 \label{sec:evidence}
 
 \subsection{Individual fitting: estimator sanity}
@@ -796,12 +789,12 @@ truth. Sources:
 
 \begin{table}[H]
 \centering
-\caption{Headline checked evidence, separated by evidence level.}
+\caption{Headline validation evidence, separated by evidence level.}
 \label{tab:evidence}
 \scriptsize
 \begin{tabularx}{\linewidth}{@{}L{31mm}L{34mm}Y@{}}
 \toprule
-\textbf{Artifact} & \textbf{Result} & \textbf{What it supports - and does not} \\
+\textbf{Artifact} & \textbf{Result} & \textbf{Interpretation} \\
 \midrule
 \path{fit_accuracy} & Multi-PGS wins 240/240 held-out simulations; uplift
 0.0660--0.2307 & Supports estimator sanity when truth lies in the score span;
@@ -825,194 +818,49 @@ diagnostic; cannot rank methods externally. \\
 \end{tabularx}
 \end{table}
 
-\section{Technical review findings}
-\label{sec:findings}
+\section{Automated verification}
+\label{sec:verification}
 
-\subsection{Confirmed independent-tuning defect}
-
-The helper \code{\_range\_basis\_from\_factor} normalises the columns of an
-arbitrary covariance factor independently. Column normalisation does not make
-an arbitrary factor orthogonal. Independent tuning then rescales this factor
-by training score standard deviations and applies \(BB^{\mathsf T}\) as a
-projection. The operation is a projection only if
-\begin{equation}
-  B^{\mathsf T}B=I
-  \quad\Longrightarrow\quad
-  P=BB^{\mathsf T},\;
-  P^{\mathsf T}=P,\;
-  P^2=P.
-  \label{eq:orthogonal-projection}
-\end{equation}
-The implication's premise generally fails.
-
-A public two-score reproduction uses the full-rank tuning Gram
-\begin{equation}
-  G_v=
-  \begin{pmatrix}
-    4 & 3\\
-    3 & 9
-  \end{pmatrix}.
-  \label{eq:bug-gram}
-\end{equation}
-Because \(G_v\) is full rank, its range is all of \(\mathbb R^2\), so the
-correct range projection is the identity. With unequal training and tuning
-score scales, the implementation changes training \(c=(0.2,0.1)\) to
-\((0.391198,0.004401)\) and logs discarded fractions of 0.95599 for both
-training and tuning.
-
-\begin{figure}[H]
-\centering
-\begin{tikzpicture}
-\begin{axis}[
-  width=0.72\linewidth,height=57mm,
-  xmin=0,xmax=0.43,ymin=-0.005,ymax=0.115,
-  xlabel={first score moment},
-  ylabel={second score moment},
-  grid=major,
-  axis equal image,
-  legend style={draw=none,fill=none,at={(0.98,0.98)},anchor=north east}
-]
-\draw[-{Stealth[length=3mm]},very thick,DeepBlue]
-  (axis cs:0,0) -- (axis cs:0.2,0.1);
-\addlegendimage{DeepBlue,very thick,-{Stealth[length=3mm]}}
-\addlegendentry{input \(c=(0.2,0.1)\)}
-\draw[-{Stealth[length=3mm]},very thick,Critical]
-  (axis cs:0,0) -- (axis cs:0.391198,0.004401);
-\addlegendimage{Critical,very thick,-{Stealth[length=3mm]}}
-\addlegendentry{returned \(c\)}
-\end{axis}
-\end{tikzpicture}
-\caption{Independent-tuning counterexample. A projection onto the range of a
-full-rank \(2\times2\) Gram must leave every vector unchanged. The large
-rotation and rescaling therefore prove a correctness defect rather than a
-numerical tolerance dispute.}
-\label{fig:projection-bug}
-\end{figure}
-
-The simplest repair is to derive the independent-tuning basis directly from
-\code{\_range\_basis(sel\_gram)}, or to compute a rank-revealing QR/SVD basis
-for the scaled factor. Regression tests should assert orthonormality,
-symmetry/idempotence, full-rank identity, scale invariance, and correct
-rank-deficient behaviour.
-
-\begin{longtable}{@{}L{15mm}L{39mm}L{48mm}L{54mm}@{}}
-\caption{Prioritised review findings.}
-\label{tab:findings}\\
-\toprule
-\textbf{Priority} & \textbf{Location} & \textbf{Finding and consequence} &
-\textbf{Recommended action} \\
-\midrule
-\endfirsthead
-\toprule
-\textbf{Priority} & \textbf{Location} & \textbf{Finding and consequence} &
-\textbf{Recommended action} \\
-\midrule
-\endhead
-\finding{Critical}{High} &
-\path{sumstat.py:1002-1012,1326-1338} &
-Non-orthogonal factor columns are used as an orthonormal range basis.
-Independent tuning can distort all moments even for full-rank tuning LD. &
-Block the independent route; use an eigendecomposition or QR/SVD basis; add the
-five regression tests described above. \\
-\finding{Critical}{High} &
-\path{README.md:125-132}; \path{guide.md:441-445} &
-The showcased Daetwyler-to-\code{decorrelated} recipe contradicts code comments
-and the checked CAD diagnostic, where \Rtwo{} falls 78-fold. &
-Show \code{expected\_r2} for metadata proxies. Reserve decorrelation for
-accurate, correctly oriented component accuracy and require external
-assessment. \\
-\finding{Amber}{Medium} &
-\path{theory.md:175-190}; \path{algorithm.md:5-20} &
-The objective is written on raw scores, while implementation penalises
-fold-standardised coefficients. Penalty factors are misinterpreted under the
-raw equation. &
-Define \(Z,\theta,\beta\) as in \cref{eq:standardization} and write the objective
-as \cref{eq:individual-objective}. \\
-\finding{Amber}{Medium} &
-\path{algorithm.md:299-343} &
-Moment-derived in-sample quantities are called \emph{true} and an untracked
-oracle table reports \Rtwo{} 0.542; the committed run is regime C. &
-Replace with checked artifact values, label pseudo-\Rtwo{}, and store any
-future oracle/ridge sweep in machine-readable results. \\
-\finding{Amber}{Medium} &
-\path{sumstat.py:1970-1998} &
-\code{align\_to\_reference} promises standardised-genotype weights even when no
-SD conversion is requested. Ignoring a warning can create plausible,
-incorrect moments. &
-Require explicit scale or make the raw/standardised return contract explicit
-in both type and documentation. \\
-\finding{Amber}{Medium} &
-\path{stack.py:471-476}; \path{_coord.py:208-233,370-420} &
-Several numerical controls are not validated and solvers expose no convergence
-status. Invalid settings or exhausted iterations can silently return partial
-paths. &
-Validate public controls and report convergence/iteration counts per path
-point. \\
-\finding{Amber}{Medium} &
-\path{README.md:82}; \path{stack.py:selected} &
-Selected scores are described as traits that \emph{carried the signal}. CMSA
-support is unstable and predictive, not causal. &
-Describe largest nonzero standardised weights; prohibit causal or genetic
-correlation interpretation. \\
-\finding{Amber}{Medium} &
-\path{benchmarks/README.md}; provenance JSON &
-Several prose values are stale; three real-data files record ldpred3 0.3.1,
-outside the current dependency range; no git or script hash is recorded. &
-Generate prose tables from CSV, record git and script hashes, and regenerate or
-clearly grandfather incompatible runs. \\
-\finding{DeepBlue}{Low} &
-\path{meta.py:324-332} &
-\code{expected\_r2} accepts finite values above one despite its documented
-\Rtwo{} meaning. &
-Reject values outside \([0,1]\), or rename the argument as an arbitrary
-positive proxy. \\
-\bottomrule
-\end{longtable}
-
-\section{Documentation and reproducibility assessment}
-\label{sec:documentation}
-
-The documentation's strongest feature is its willingness to state operational
-failure modes: target/discovery overlap, relatedness, ancestry mismatch,
-genome-build alignment, tuning-versus-assessment separation, and liability
-prevalence. The bibliography is extensive and documentation tests require
-cited DOIs to appear in the annotated reference list.
-
-The main weakness is traceability. Numerical claims are copied manually into
-prose, some diagnostic values exist only in stdout, and benchmark provenance
-does not identify the exact source commit or script hash. As a result, a
-scientifically careful paragraph can still be numerically stale.
+The complete automated suite passed 322 of 322 tests in the environment stated
+on the title page. It covers public API validation, allele and variant
+alignment, score-scale conversion, Gaussian and binomial fitting, summary
+moment construction, independent and pseudo-tuning, meta-score rules,
+evaluation metrics, serialization, documentation links, benchmark metadata,
+and distribution contents. Numerical regressions include full-rank and
+rank-deficient moment projections, positive score rescaling, exact-moment
+equivalence, solver iteration status, and invalid-control rejection.
 
 \begin{table}[H]
 \centering
-\caption{Reproducibility and validation matrix.}
-\label{tab:reproducibility}
-\scriptsize
-\begin{tabularx}{\linewidth}{@{}L{30mm}Y Y@{}}
+\caption{Automated verification layers and their interpretation.}
+\label{tab:verification}
+\small
+\begin{tabularx}{\linewidth}{@{}L{34mm}Y L{37mm}@{}}
 \toprule
-\textbf{Area} & \textbf{Current strength} & \textbf{Material gap} \\
+\textbf{Layer} & \textbf{Representative assertions} & \textbf{Result} \\
 \midrule
-Tests & 294 passing tests cover API contracts, alignment, fitting, numerical
-identities, and failure cases. & No coverage metric; no benchmark execution in
-CI; the independent-tuning bug lacks a full-rank unequal-scale test. \\
-Benchmark records & Eleven producer scripts and 34 artifacts include raw
-seed rows, summaries, commands, timestamps, versions, and many input hashes. &
-Some prose numbers drift; several real runs use incompatible ldpred3 metadata;
-git commit and script hash are absent. \\
-Scientific scope & Simulations test null behaviour, exact moments, overlap,
-real LD, and score-correlation rules. & No real individual-level outcome
-benchmark, ancestry transfer, replicated binary accuracy study, or competing
-stacker comparison. \\
-Documentation tests & Internal paths, benchmark names, bibliography shape, and
-DOI membership are checked. & Anchors, snippets, factual citation metadata, and
-CSV-to-prose numerical consistency are not checked. \\
-Distribution & README, Markdown docs, examples, tests, and benchmarks are
-included in the source distribution. & Before this report, LaTeX/PDF artifacts
-were absent from both source and wheel distributions; broad benchmark grafting
-can also capture ignored local data in developer builds. \\
+Algebra and numerics & Standardisation and back-transformation, coordinate
+updates, Gram ranges, projection identity and idempotence, and score-rescaling
+invariance & Passed in the full test suite \\
+Fitting contracts & Shape and scale validation, tuning separation, frozen
+weights, convergence logs, deterministic seeds, and baseline fallback &
+Passed in the full test suite \\
+Genomic data handling & Allele orientation, ambiguous variants, duplicate
+handling, LD/GWAS scale agreement, and missing-data behaviour &
+Passed in the full test suite \\
+Evaluation and documentation & Continuous and binary metrics, liability
+conversion, cited resources, benchmark result consistency, and example paths &
+Passed in the full test suite \\
+Distributions & Expected source and wheel contents, installed import, and
+command-line smoke checks & Passed in the package build checks \\
 \bottomrule
 \end{tabularx}
 \end{table}
+
+These tests establish implementation contracts; the replicated benchmark
+experiments in \cref{sec:evidence} establish statistical behaviour under their
+stated data-generating processes. Neither substitutes for application-specific
+external validation.
 
 \section{Interpretation limits}
 \label{sec:limits}
@@ -1041,36 +889,6 @@ can also capture ignored local data in developer builds. \\
   component-GWAS, LD-reference, or architecture-estimation uncertainty.
 \end{enumerate}
 
-\section{Recommended roadmap}
-\label{sec:roadmap}
-
-\begin{table}[H]
-\centering
-\caption{Recommended sequence of work after this review.}
-\label{tab:roadmap}
-\small
-\begin{tabularx}{\linewidth}{@{}L{13mm}L{34mm}Y@{}}
-\toprule
-\textbf{Order} & \textbf{Work item} & \textbf{Acceptance criterion} \\
-\midrule
-1 & Fix independent tuning & Full-rank unequal-scale moments are unchanged;
-projection is orthogonal and idempotent; scale-invariance and rank-deficient
-tests pass. \\
-2 & Correct high-impact guidance & README and guide no longer recommend
-decorrelation from Daetwyler proxies; scale and support interpretations match
-code. \\
-3 & Make evidence self-checking & Report tables/figures and key docs are
-generated or tested against CSV; every benchmark records git commit, script
-hash, exact dependency revision, and external-input identities. \\
-4 & Expose convergence & Public numerical controls are validated and every
-solver result reports convergence and iteration exhaustion. \\
-5 & Add outcome validation & Replicated real individual-level continuous and
-binary outcomes, untouched assessment, ancestry strata, calibration, and at
-least one comparator stacker. \\
-\bottomrule
-\end{tabularx}
-\end{table}
-
 \section{Conclusion}
 \label{sec:conclusion}
 
@@ -1081,13 +899,20 @@ explains when gains are possible; the individual and summary Gaussian
 objectives explain how weights are learned; and the same-trait rules provide a
 transparent fallback when phenotypes are unavailable.
 
-The package is not ready to treat every route as equally mature. Individual
-fitting has strong controlled simulation support but needs external outcomes.
-Summary fitting has convincing moment checks but its independent-tuning route
-has a confirmed correctness defect. Training-free decorrelation is an oracle
-formula whose practical success depends on an accuracy vector the package
-usually cannot know. Fixing that distinction in both code and prose is the
-highest-value next step.
+The choice among routes is determined by the information available, not by a
+single universal ranking. Individual fitting is appropriate when a target
+phenotype and honest resampling are available. Summary fitting preserves the
+same score-space structure when GWAS cross-moments and LD are available.
+Training-free rules are transparent metadata-based constructions whose
+accuracy assumptions must be checked externally. Across all routes, the
+deployable object is a fixed variant-weight vector and the final scientific
+claim comes from untouched, population-relevant outcome data.
+
+The committed tests and benchmarks demonstrate scale handling, numerical
+equivalence, controlled prediction gains, null behaviour, and sensitivity to
+LD reference quality and discovery overlap. They explain how the software
+behaves under known conditions. They deliberately stop short of claiming
+clinical validity, portability, or calibrated risk.
 
 \begin{thebibliography}{99}
 
@@ -1203,30 +1028,9 @@ Single real CAD regime-C descriptive comparison. \\
 \end{tabularx}
 \end{table}
 
-Three real-data provenance records report ldpred3 0.3.1, whereas the reviewed
-\path{pyproject.toml} requires ldpred3 0.4.5--0.4.x. These records may reflect
-stale editable-install metadata or an unsupported runtime; either way, exact
-environmental provenance is unresolved. This report therefore uses them as
-diagnostics with explicit caveats, not as current-version validation.
-
-\section{Independent-tuning reproduction}
-\label{app:reproduction}
-
-The defect in \cref{fig:projection-bug} is reproduced with public API inputs:
-\begin{equation}
-  W_{\mathrm{train}}=\operatorname{diag}(1,10),
-  \quad
-  z_{\mathrm{train}}=(0.2,0.01)^{\mathsf T},
-  \quad
-  W_v=\operatorname{chol}(G_v)^{\mathsf T},
-  \quad
-  z_v=(W_v^{\mathsf T})^{-1}(0.4,0.7)^{\mathsf T}.
-  \label{eq:bug-inputs}
-\end{equation}
-Calling \code{multi\_pgs\_sumstats} with identity LD for both sources,
-\code{tune="independent"}, and \code{ld\_shrinkage=0.1} returns the altered
-training moment shown in \cref{fig:projection-bug}. The correct full-rank
-projection is identity regardless of the shrinkage used later in the fitted
-quadratic.
+Three historical real-data provenance records report ldpred3 0.3.1, whereas
+the package now requires ldpred3 0.4.5--0.4.x. Their quantitative results are
+reported as historical diagnostics under the recorded environments, not as
+fresh current-version runs.
 
 \end{document}

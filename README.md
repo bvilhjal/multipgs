@@ -192,9 +192,10 @@ The [guide](docs/guide.md) expands each point.
 
 ## Documentation
 
-- [Technical review](report/multipgs_review.pdf) — a versioned review of the
-  theory, implemented methods, evidence, and documentation; the editable
-  [LaTeX source](report/multipgs_review.tex) is included too
+- [Methods and validation report](report/multipgs_methods.pdf) — the theory,
+  three implemented routes, numbered figures and tables, and committed test
+  results; the editable [LaTeX source](report/multipgs_methods.tex) is included
+  too
 - [User guide](docs/guide.md) — inputs, workflow, options, and the ways this
   goes wrong
 - [Theory](docs/theory.md) — why combining scores works, what each fitting route

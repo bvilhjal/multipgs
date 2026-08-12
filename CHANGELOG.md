@@ -12,6 +12,20 @@ Correctness and documentation:
 - The training-free examples now use `method="expected_r2"` for Daetwyler
   accuracy proxies. `method="decorrelated"` is reserved for independently
   credible, consistently oriented per-score target correlations.
+- `multi_pgs_fit` validates its numerical controls, builds a separate lambda
+  grid for each alpha, and reports coordinate-descent and IRLS iteration
+  exhaustion in fold results and the fit log.
+- `expected_r2` is constrained to `[0, 1]`, and
+  `align_to_reference` now states explicitly when returned weights remain on
+  the raw allele-count scale.
+- The theory and guide now match fold-local standardisation, distinguish the
+  package's CMSA and nested heuristic from the published workflow, and keep
+  predictive selection separate from causal interpretation.
+- Benchmark summaries are checked against raw rows; future runs record source
+  identity; distribution checks cover the full benchmark evidence and exclude
+  ignored real-data inputs.
+- The packaged LaTeX/PDF artifact is now a methods and validation report,
+  focused on the project, its equations, and committed test results.
 
 The performance changes below have no intended change in results. Fitted
 coefficients, intercepts, cross-validated losses, selected penalties and
