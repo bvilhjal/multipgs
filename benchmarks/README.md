@@ -3,6 +3,11 @@
 Benchmarks are executable evidence, not decorative numbers. Run them from the
 repository root with the environment being reported.
 
+Peak-RSS benchmarks use `resource.getrusage` on POSIX and
+`GetProcessMemoryInfo` on Windows. Absolute RSS and timings include different
+runtime and operating-system overheads, so compare them only within a
+documented platform and run; provenance records that platform.
+
 ## Meta-PGS rules
 
 `meta_rules.py` reproduces the same-trait comparison in the algorithm notes
