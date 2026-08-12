@@ -20,6 +20,17 @@ Reproducibility and CI:
   install command and in CI. The version specifier `ldpred3>=0.4.5,<0.5` cannot
   distinguish them: both report 0.4.6.
 
+Clarity, with no change in results:
+
+- The binomial path's IRLS probabilities saturate their exponent before
+  `exp`, which previously overflowed to `inf` and emitted an overflow warning
+  once a working `eta` fell below about -709. Fitted values are bit-identical:
+  the clip bound sits inside the finite range of `exp`, and every `eta` past it
+  was already pinned to the same probability clip.
+- `meta_pgs` no longer wraps its constant-score comment in an empty
+  conditional, and `evaluate` documents that a liability-scale R² is converted
+  from `incremental_r2` when covariates are supplied and from `r2` otherwise.
+
 ## 0.3.1 - 2026-08-12
 
 Correctness and documentation:

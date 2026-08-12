@@ -28,7 +28,7 @@
     "sumstat_r2_max": "0.4982",
     "sumstat_r2_min": "0.4973"
   },
-  "input_digest_sha256": "b93629a307057169b93a8ef9161a3a45dace52596a9b07b051db081a6b45be05",
+  "input_digest_sha256": "0c4ffecb79dfe156e63d1021520bedd343566512cb468f96deb79174a9dd0537",
   "inputs": [
     "CHANGELOG.md",
     "MANIFEST.in",
@@ -140,7 +140,7 @@
     "real_meta_direct": "(sqrtN,0.16416)(expected,0.17729)"
   },
   "schema_version": 1,
-  "source_revision": "cecd349a487d",
+  "source_revision": "0a4749e6880d",
   "tests": {
     "count": 331,
     "ldpred3": "0.4.6",
