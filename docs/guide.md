@@ -206,7 +206,9 @@ fit = multi_pgs_fit(panel.scores, y, penalty_factor=pf,
 ```
 
 Read `penalty_from_accuracy`'s note first: it weights by each score's accuracy
-for *its own* trait, which bounds but does not measure its relevance to yours.
+for *its own* trait. That is a ranking heuristic, not a bound on relevance to
+the target, and can down-weight a low-powered score of a genetically identical
+trait.
 
 ## 4. Fitting
 

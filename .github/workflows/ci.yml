@@ -67,15 +67,19 @@ jobs:
                        "report/generate_evidence.py",
                        "report/generated_evidence.tex",
                        "report/multipgs_methods.tex",
-                       "report/multipgs_methods.pdf"):
+                       "report/multipgs_methods.pdf",
+                       "tests/test_api.py"):
               assert any(name.endswith("/" + path) for name in names), path
 
           # Every checked benchmark producer and result is distribution
           # evidence. Keep this dynamic so adding a result cannot silently
           # bypass the older hand-written representative list above.
+          # tests/ is the suite the methods report treats as committed
+          # evidence; the changelog has claimed it ships since 0.2.0.
           expected = (glob.glob("benchmarks/*.py")
                       + glob.glob("benchmarks/results/*.csv")
-                      + glob.glob("benchmarks/results/*.json"))
+                      + glob.glob("benchmarks/results/*.json")
+                      + glob.glob("tests/*.py"))
           for path in expected:
               path = path.replace("\\", "/")
               assert any(name.endswith("/" + path) for name in names), path

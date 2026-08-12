@@ -2,7 +2,13 @@
 
 ## Unreleased
 
-Nothing yet.
+- The guide now describes `penalty_from_accuracy` as a ranking heuristic, not
+  a bound on target-trait relevance, matching the implementation.
+- Missing Catalog ancestry is written `NA` in `EUR_PERCENT`, not `0`. A
+  recorded 0% share is still `0`.
+- Source distributions include `tests/`, as claimed since 0.2.0. CI asserts
+  the test tree is in the sdist.
+- The API map no longer pins "no `sumstats` command" to a version number.
 
 ## 0.3.1 - 2026-08-12
 

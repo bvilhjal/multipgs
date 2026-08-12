@@ -229,6 +229,7 @@ class ScoreRecord:
     ``n_eff`` is the discovery effective sample size (``nan`` when the Catalog
     records no samples); ``ancestry`` is the discovery ancestry distribution as
     percentages keyed by the Catalog's broad codes (``EUR``, ``EAS``, ...);
+    :meth:`ancestry_percent` is ``nan`` when that code is absent, not ``0``.
     ``cohorts`` is the set of named discovery cohorts. ``raw`` keeps the
     unmodified API record, because this dataclass deliberately does not try to
     represent every field the Catalog has.
@@ -322,7 +323,13 @@ class ScoreRecord:
         return max(self.ancestry.items(), key=lambda kv: kv[1])[0]
 
     def ancestry_percent(self, code="EUR"):
-        return float(self.ancestry.get(str(code), 0.0))
+        """Discovery share for ``code``, or ``nan`` if the Catalog omitted it.
+
+        Missing is not zero: a gate on ``EUR_PERCENT`` would treat an
+        unrecorded ancestry block as non-European.
+        """
+        value = self.ancestry.get(str(code))
+        return float("nan") if value is None else float(value)
 
     def __str__(self):
         n = "n_eff unknown" if not np.isfinite(self.n_eff) \

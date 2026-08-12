@@ -58,6 +58,7 @@ def test_distribution_policy_ships_contributor_and_user_docs():
     assert "include CONTRIBUTING.md" in manifest
     assert "recursive-include docs *.md" in manifest
     assert "recursive-include report *.md *.tex *.pdf *.json *.py" in manifest
+    assert "recursive-include tests *.py" in manifest
     for path in ("CONTRIBUTING.md", "docs/guide.md", "docs/api.md",
                  "report/evidence.json", "report/generate_evidence.py",
                  "report/generated_evidence.tex"):
@@ -71,6 +72,8 @@ def test_ci_smokes_installed_wheel_outside_checkout():
     assert 'smoke_dir="$(mktemp -d)"' in workflow
     assert "sysconfig.get_paths()['purelib']" in workflow
     assert 'python "$checkout/examples/minimal.py"' in workflow
+    assert '"tests/test_api.py"' in workflow
+    assert 'glob.glob("tests/*.py")' in workflow
 
 
 def test_ignore_policy_has_no_obsolete_figure_pipeline():

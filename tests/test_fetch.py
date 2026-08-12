@@ -115,9 +115,27 @@ def test_record_exposes_ancestry_and_harmonized_urls():
     record = fetch.ScoreRecord.from_api(_score("PGS000001"))
     assert record.top_ancestry == "EUR"
     assert record.ancestry_percent("EAS") == pytest.approx(4.2)
-    assert record.ancestry_percent("AFR") == 0.0
+    assert np.isnan(record.ancestry_percent("AFR"))
     assert record.harmonized_url("GRCh38").endswith("_hmPOS_GRCh38.txt.gz")
     assert record.harmonized_url("GRCh36") is None
+
+
+def test_a_score_with_no_ancestry_reports_nan_not_zero():
+    """Zero is a number a downstream EUR_PERCENT gate would compare against."""
+    payload = _score("PGS000001")
+    payload["ancestry_distribution"] = {}
+    record = fetch.ScoreRecord.from_api(payload)
+    assert record.top_ancestry == ""
+    assert np.isnan(record.ancestry_percent("EUR"))
+
+
+def test_recorded_zero_ancestry_share_is_zero_not_missing():
+    payload = _score("PGS000001")
+    payload["ancestry_distribution"] = {
+        "gwas": {"dist": {"EUR": 0.0, "EAS": 100.0}, "count": 1}}
+    record = fetch.ScoreRecord.from_api(payload)
+    assert record.ancestry_percent("EUR") == 0.0
+    assert record.ancestry_percent("EAS") == pytest.approx(100.0)
 
 
 # ---------------------------------------------------------------------------
@@ -390,6 +408,17 @@ def test_an_unknown_sample_size_is_written_NA_not_zero(tmp_path):
     fetch.write_score_metadata(records, path)
     body = open(path, encoding="utf-8").read()
     assert "\tNA\t" in body
+
+
+def test_missing_ancestry_is_written_NA_not_zero(tmp_path):
+    payload = _score("PGS000001")
+    payload["ancestry_distribution"] = {}
+    path = str(tmp_path / "meta.tsv")
+    fetch.write_score_metadata([fetch.ScoreRecord.from_api(payload)], path)
+    header, row = [ln.split("\t") for ln in
+                   open(path, encoding="utf-8").read().splitlines() if ln]
+    assert row[header.index("EUR_PERCENT")] == "NA"
+    assert row[header.index("ANCESTRY")] == ""
 
 
 def test_metadata_rejects_duplicates_and_unknown_columns(tmp_path):

@@ -63,7 +63,9 @@ def report_inputs(root=ROOT):
     if missing:
         names = ", ".join(str(path.relative_to(root)) for path in missing)
         raise FileNotFoundError(f"missing declared report input(s): {names}")
-    return tuple(sorted(path.relative_to(root) for path in paths))
+    # as_posix() keeps the order independent of pathlib/filesystem case-folding.
+    return tuple(sorted((path.relative_to(root) for path in paths),
+                        key=lambda path: path.as_posix()))
 
 
 def report_input_digest(root=ROOT, inputs=None):

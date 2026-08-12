@@ -191,4 +191,4 @@ understates the shrinkage for a large R².
 
 See `multipgs <command> --help`, or [guide.md](guide.md). `python -m multipgs`
 is the same entry point. Summary-statistic fitting and evaluation are currently
-Python API only; there is no `sumstats` command in 0.3.0.
+Python API only; there is no `sumstats` command.
