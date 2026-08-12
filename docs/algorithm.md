@@ -4,20 +4,27 @@
 
 ### Model
 
-With `S` the `n × K` matrix of polygenic scores, `C` the covariates and `y` the
-target phenotype, multi-PGS fits
+For each CMSA fold, its training rows define column means and standard
+deviations. Write `S_tilde` and `C_tilde` for scores and covariates standardized
+with those training-only values. The fold fits
 
 ```
-minimise  (1/2n) L(y, b0 + C·gamma + S·beta)
-          + lambda · sum_k pf_k · [ alpha·|beta_k| + (1-alpha)/2 · beta_k^2 ]
+minimise  (1/2n_train) L(y, a0 + C_tilde·eta + S_tilde·theta)
+          + lambda · sum_k pf_k · [ alpha·|theta_k| + (1-alpha)/2 · theta_k^2 ]
 ```
 
 over a decreasing sequence of `lambda`. `L` is squared error or the binomial
-deviance. The covariates carry `pf = 0`: they are fitted inside the same
-regression but never shrunk, so the scores are selected against what the
-covariates cannot already explain. That is not equivalent to residualising `y`
-on `C` first for the binomial case, and is only equivalent in the Gaussian case
-by Frisch–Waugh–Lovell — which the test suite checks explicitly.
+deviance. The penalty is on standardized-score coefficients `theta`; covariate
+coefficients `eta` are unpenalized. This is not equivalent to residualising `y`
+on covariates first for the binomial case, and is only equivalent in the
+Gaussian case by Frisch–Waugh–Lovell — which the test suite checks explicitly.
+
+After selection, each fold is back-transformed to raw units:
+`beta_k = theta_k/sd_train(S_k)`, similarly for covariates, and the raw
+intercept subtracts the training means. CMSA averages those raw coefficient
+vectors and intercepts. `beta_std` rescales the returned raw `beta` by the full
+training-panel SD for comparison; it is not the coefficient vector directly
+optimized in every fold.
 
 The combined score is `S·beta`. Covariates are deliberately excluded from it: an
 accuracy figure that includes age and sex is not a polygenic-score accuracy.
@@ -71,20 +78,26 @@ OLS-recalibrated `incremental_r2`;
 [theory.md §2](theory.md#optimism-and-the-nested-cross-validated-number)
 discusses the distinction.
 
-The penalized stack passes only when its mean outer-fold loss gain exceeds one
-standard error across outer folds. On a pass, the returned estimator is ordinary
-CMSA: every final fold-selected vector enters the average. On a failure,
-`multipgs` refits the full-data unpenalized baseline and records `null_model`
-([guide.md §4](guide.md#4-fitting) reads the result).
+The package uses a **conservative heuristic fallback rule**: it returns the
+penalized stack only when its mean outer-fold loss gain exceeds one standard
+error across outer folds. This is not a hypothesis test, has no calibrated
+type-I error, and produces no p-value. A fallback means only that this rule
+chose the baseline; it does not establish zero population signal. On a pass,
+the returned estimator is ordinary CMSA: every final fold-selected vector
+enters the average. On a fallback, `multipgs` refits the full-data unpenalized
+baseline and records `null_model` ([guide.md §4](guide.md#4-fitting) reads the
+result).
 
-None of this sees sample overlap between the target cohort and the discovery
-GWAS; that inflates every number here and is only excludable when the panel is
-built.
+None of this diagnoses sample overlap between the target cohort and the
+discovery GWAS: contamination shared by every fold is indistinguishable from
+generalization to these rows. Named-cohort metadata and external diagnostics
+can flag some patterns, but exclusion by design is stronger.
 
-The gate's operating characteristics are measured in
+The heuristic's observed operating characteristics are measured in
 [`benchmarks/null_gate.py`](../benchmarks/null_gate.py): over 30 seeds it
 returns the null model on pure noise in 77–87% of seeds, and under signal
-`cv_r2` is within a few thousandths of untouched held-out R².
+`cv_r2` is within a few thousandths of untouched held-out R². Those finite
+simulations describe these settings; they do not calibrate a test.
 
 ### The solver
 
@@ -290,68 +303,62 @@ The complete per-seed rows, summary, command, versions, and platform are in
 [`benchmarks/results`](../benchmarks/results); regenerate them with
 [`benchmarks/meta_rules.py`](../benchmarks/meta_rules.py).
 
-#### "Well-specified" is a much stronger condition than it sounds
+#### The checked real-panel run is a diagnostic, not validation
 
-The table above says decorrelation wins with a well-specified `ρ`, and the
-caveat below it says `sqrt(n_eff)` is not one. On a real panel **neither
-supplied accuracy is**, including `expected_r2`.
+The committed real-data artifact uses 24 PGS Catalog coronary-artery-disease
+scores, a bigsnpr HapMap3+ LD reference, and CARDIoGRAMplusC4D 2015 target
+moments ([`benchmarks/real_meta_rules.py`](../benchmarks/real_meta_rules.py)).
+It is explicitly **regime C**: the same target moments score every fixed rule,
+so the values below are plug-in diagnostics, not external accuracy estimates or
+evidence for a universal rule ranking. Named-cohort metadata also flags 16 of
+24 scores as sharing at least one declared cohort with the target GWAS; that is
+a lower-bound overlap warning, not a complete cohort audit.
 
-Twenty-four PGS Catalog coronary-artery-disease scores, aligned to the bigsnpr
-HapMap3+ reference and scored against CARDIoGRAMplusC4D 2015
-([`benchmarks/real_meta_rules.py`](../benchmarks/real_meta_rules.py)), against
-each score's *true* correlation with the target recovered from the evaluation
-moments:
+**Table 2. Plug-in R² in the committed regime-C real-panel diagnostic.**
 
-| `ρ` supplied | `corr(ρ, ρ_true)` | `C⁻¹ρ` | `ρ` alone |
-|---|---:|---:|---:|
-| true `cor(score, target)` | 1.00 | **0.542** | 0.273 |
-| `expected_r2` via `daetwyler_r2` | 0.22 | 0.003 | 0.169 |
-| `sqrt(n_eff)` | 0.11 | 0.0002 | 0.156 |
+| fixed rule | plug-in R² |
+|---|---:|
+| maximum-`n_eff` single score | 0.0862 |
+| equal weight | 0.1754 |
+| `sqrt_n_eff` | 0.1642 |
+| `expected_r2` | 0.1773 |
+| decorrelated `n_eff` | 0.00017 |
+| decorrelated `expected_r2` | 0.00226 |
 
-With an accurate `ρ` the rule is the best available, doubling what the same
-accuracies achieve without decorrelation — the formula is sound. With either
-supplied proxy it is roughly fifty times worse than not decorrelating.
+These are exactly the checked rows in
+[`real_meta_rules.csv`](../benchmarks/results/real_meta_rules.csv). The
+same-moment `best_single_oracle` row is deliberately omitted: selecting a score
+on the evaluation moments is regime C by construction. The artifact contains no
+external `ρ_true` and no checked ridge sweep, so it supports neither an oracle
+decorrelation claim nor a numerical ridge comparison.
 
-Two reasons the proxies fail here and not in simulation. The panel shares one
-trait, so `daetwyler_r2` makes accuracy a deterministic function of `n_eff`
-alone and carries almost no genuine between-score information. And `ρ_true`
-runs from −0.51 to +0.65: two of the twenty-four scores are *negatively*
-correlated with the target, which no accuracy proxy can express, since both are
-positive by construction. `C⁻¹` amplifies a sign error hardest.
+What the artifact does support is narrower and useful: in this ill-conditioned
+panel, inversion with either supplied proxy performed much worse than the
+corresponding direct positive-weight rule. `C⁻¹` can amplify misspecification in
+`ρ`; a stable estimate of `C` does not validate the supplied accuracy vector.
+The theoretical optimum remains `C⁻¹ρ` when its signed target-population `ρ`
+is correct. The API, however, constructs a nonnegative
+`sqrt(expected_r2)`, so callers must orient every score consistently and supply
+independently credible, transportable per-score magnitudes. Daetwyler and
+sample-size proxies do not meet that requirement merely by being available.
 
-`ridge` does not rescue this, and the sweep shows why. With accurate `ρ` a
-larger ridge monotonically destroys the advantage (0.542 → 0.323 from ridge
-1e-3 to 10); with proxy `ρ` it helps only by dragging the answer back toward
-`ρ` alone, which it never quite reaches. The best a ridge can do is undo the
-decorrelation. Pruning near-duplicate scores does not rescue it either: the
-problem is not one duplicate pair but that every score in a same-trait panel is
-similar, so `C`'s small-eigenvalue directions are differences that carry no
-signal.
-
-**Use `decorrelated` only when `ρ` is known accurately per score** — for
-instance from each component's own LDpred3-auto `r2_est`, available when the
-panel is built by `panel_from_sumstats` rather than downloaded as weights.
-Otherwise prefer `expected_r2`. **There is no in-sample check that will warn you.** `meta_pgs` logs
-`rho_alignment`, the cosine between the returned weights and the supplied
-accuracies, but only as description. It was tried as a detector and fails: on
-this panel the configuration scoring 0.00001 had alignment 0.67, while one
-scoring three hundred times better had 0.40. Negative-weight counts do not
-separate them either (8 against 3), and the condition number cannot, since it
-is a property of `C`, which is identical across all of them. It must be this
-way — those configurations differ only in `ρ`, and it is `ρ`'s accuracy that
-decides the outcome, which is precisely the quantity nobody has. The
-precondition has to be met by construction, not verified after the fact.
+`rho_alignment`, negative-weight counts, and the condition number describe the
+returned solution; none verifies the unknown target-correlation vector. There
+is no internal diagnostic that can turn an unvalidated proxy into a validated
+one.
 
 > An earlier version of this table reported the opposite ranking for the two
 > `C = I` rules. It was measuring a defect in `simulate_same_trait_panel`, which
-> set each score's accuracy to `sqrt(daetwyler_r2)` — the *phenotypic* r², i.e.
+> set each score's accuracy to `sqrt(daetwyler_r2)` — the *phenotypic*
+> correlation, i.e.
 > `h·R_k` — which is precisely the quantity `expected_r2` consumes, so that rule
 > was handed the true `ρ` by construction. Fixed, and the numbers above are from
 > the corrected simulation.
 
 `ridge` regularises `C` before inversion. Near-duplicate scores make it
 ill-conditioned, and an unregularised inverse answers with two enormous weights
-of opposite sign that cancel to noise.
+of opposite sign that cancel to noise. Ridge controls that numerical
+sensitivity; it does not make a misspecified `ρ` accurate.
 
 ## Screening and expected accuracy
 
@@ -360,7 +367,8 @@ of opposite sign that cancel to noise.
 ```
 M   = n_variants · p
 x   = n_eff · h2 / M
-R²  = h2 · x / (1 + x)
+R_G² = x / (1 + x)             genetic-value accuracy squared
+R_y² = h2 · R_G²              phenotypic score R² returned by daetwyler_r2
 ```
 
 the bound of Daetwyler et al. (2008) with `M` taken from the fitted

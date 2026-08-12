@@ -28,6 +28,7 @@ Fixed once and used throughout.
 | `x_k` | `N_k h_k² / M`, the power of GWAS `k` |
 | `C` | `K × K` correlation matrix of the standardized scores in the target |
 | `ρ` | `K`-vector, `ρ_k = cor(z_k, g_f)` |
+| `eps_k` | unit-variance residual error in score `k` after its genetic component |
 
 **Two quantities are both called "the accuracy of a PGS", and confusing them is
 the usual error here:**
@@ -44,29 +45,44 @@ not.
 
 ## 1. Why multi-trait information helps
 
-Three assumptions, stated so they can be checked rather than assumed away:
+Three assumptions, stated so they can be checked rather than wished into being:
 
-- **(A1) Mediation.** Score `k` reaches the target only through its own trait:
-  `z_k = R_k·g_k + sqrt(1-R_k²)·eps_k`, with `eps_k` the estimation error.
-- **(A2)** A genetic correlation matrix `r_G` over the `K+1` traits exists.
-- **(A3) Independent estimation errors**, `cor(eps_k, eps_l) = 0` for `k ≠ l` —
-  which fails exactly when two discovery GWAS share individuals.
+- **(A1) Residual-error model.** In the target population,
+  `z_k = R_k·g_k + sqrt(1-R_k²)·eps_k`, where `E(eps_k)=0`,
+  `var(eps_k)=1`, and `eps_k` is uncorrelated with every genetic value in the
+  model, including `g_f`. This last condition is the substantive mediation and
+  transport assumption; the algebraic decomposition with respect to `g_k`
+  alone does not imply it.
+- **(A2) Joint target-population architecture.** A genetic correlation matrix
+  `r_G` over the `K+1` traits exists in the population where the scores will be
+  used.
+- **(A3) Cross-score residual independence.**
+  `cor(eps_k, eps_l) = 0` for `k ≠ l`. Shared discovery individuals can violate
+  this, but so can shared estimation, reference, imputation, or QC artefacts;
+  disjoint discovery samples do not by themselves establish (A1) or transport.
 
-The entire cross-trait signal is then one product:
+Under (A1), the target relationship is one product. Without (A3), the score
+correlation retains an additional residual term:
 
 ```
 ρ_k = cor(z_k, g_f) = R_k · r_G(k,f)
-C_kl = R_k · R_l · r_G(k,l)   (k ≠ l),   C_kk = 1
+C_kl = R_k·R_l·r_G(k,l)
+       + sqrt(1-R_k²)·sqrt(1-R_l²)·cor(eps_k,eps_l)   (k ≠ l)
+C_kk = 1
 ```
+
+Assumption (A3) removes the second term and recovers the simple form.
 
 A foreign score's usefulness is its accuracy for its own trait times the genetic
 correlation. Both factors are at most 1, which is why `R_k` **bounds** a score's
 value to you without **measuring** it — the fact `multipgs.architecture` rests
 on, and the reason `penalty_from_accuracy` is a ranking heuristic.
 
-Note where each quantity lives: `C` is a property of the **target cohort**, `ρ`
-of the **discovery GWAS**. `meta_pgs` exploits exactly that split — it estimates
-`C` from the panel with no phenotype, and only `ρ` has to be supplied.
+All of `R_k`, `r_G`, `C`, and `ρ` are target-population quantities. The
+discovery-trained weights define each score, but they do not make `ρ` a
+property of the discovery GWAS alone. `meta_pgs` estimates `C` in the target
+panel without a phenotype and constructs a proxy for `ρ` from discovery
+metadata; using that proxy assumes the score direction and accuracy transport.
 
 ### The optimal combination
 
@@ -174,20 +190,36 @@ same-trait assumption, according to the fitting route.
 
 ### The objective
 
-With `S` the `n × K` score matrix, `C_x` the covariates and `y` the phenotype,
-`multi_pgs_fit` minimises
+For one CMSA fold, let `T` be its training rows. Each score and covariate is
+centered and scaled using **only** `T`:
 
 ```
-(1/2n) · L(y, b0 + C_x·γ + S·β)
-    + λ · Σ_k pf_k · [ α·|β_k| + (1-α)/2 · β_k² ]
+S_tilde,ik = (S_ik - mean_T(S_k)) / sd_T(S_k)
+X_tilde,ij = (C_x,ij - mean_T(C_x,j)) / sd_T(C_x,j)
+```
+
+Constant columns use scale 1 and become zero. On these fold-standardized
+columns, `multi_pgs_fit` minimises
+
+```
+(1/2|T|) · L(y_T, a0 + X_tilde_T·η + S_tilde_T·θ)
+    + λ · Σ_k pf_k · [ α·|θ_k| + (1-α)/2 · θ_k² ]
 ```
 
 `L` is squared error or the binomial deviance
 ([Friedman, Hastie & Tibshirani 2010](https://doi.org/10.18637/jss.v033.i01)).
-Covariates carry `pf = 0`: fitted inside the same regression, never shrunk, so
-the scores are selected against what the covariates cannot already explain.
-Albiñana et al. use the same device — covariates at penalty factor 0, scores at
-1.
+The penalty is therefore on comparable standardized-score coefficients
+`θ`, not on coefficients in arbitrary raw PGS units. Covariates are represented
+by the unpenalized `η` block, so the scores are selected against what the
+covariates cannot already explain. Albiñana et al. likewise used unpenalized
+covariates and penalized standardized scores.
+
+Before fold coefficients are averaged, each fold is returned to raw units:
+`β_k = θ_k/sd_T(S_k)`, `γ_j = η_j/sd_T(C_x,j)`, and the intercept subtracts
+the corresponding training means. CMSA averages these raw coefficients and
+intercepts. The reported `beta_std = beta·sd_full(S)` is a common full-training
+scale for comparing the returned weights; it is not the coefficient vector
+that every fold directly optimized.
 
 The combined score is `S·β`. Covariates are excluded from it deliberately: an
 accuracy figure that includes age and sex is not a polygenic-score accuracy.
@@ -279,7 +311,9 @@ estimator averages those vectors;
 
 This is `multipgs`'s choice. **Albiñana et al. fitted with `cv.glmnet` and
 assessed by fivefold cross-validation in iPSYCH.** What is taken from the paper
-is the estimator; the routine that picks the penalty is not.
+is the elastic-net stacking model; CMSA, fold-local standardization, and the
+nested fallback rule are package choices rather than the paper's full
+procedure.
 
 Two properties earn CMSA its place. No separate tuning cohort is consumed. And
 averaging is a variance reduction: with correlated scores and an L1 penalty,
@@ -294,6 +328,10 @@ Two consequences worth stating plainly:
 - The average's support is the **union** of the fold supports, so
   `fit.n_selected` is larger than any actually-fitted model's, and is not a
   count of "selected variables" in the lasso sense. It overstates density.
+- `fit.selected()` reports nonzero predictive coefficients ordered by their
+  standardized magnitude. It does not identify causal traits: correlated
+  scores can exchange or share weight, and the association is conditional on
+  this panel, phenotype coding, covariates, and training cohort.
 - With `α = 0` nothing is ever exactly zero, so `n_selected == K`, `selected()`
   returns everything, and `dfmax` never binds. The selection language only means
   anything for `α > 0`.
@@ -314,7 +352,7 @@ An ordinary CMSA validation fold cannot also assess the stack: its phenotype
 selected that fold's `(α, λ)`. Nor can the operating point simply be borrowed
 from another ordinary fold, because that fold's model was trained on the first
 fold's individuals. The whole selection procedure must be nested — the outer
-loop, the signal gate it feeds, and the `cv_r2` definition are in
+loop, the heuristic fallback it feeds, and the `cv_r2` definition are in
 [algorithm.md](algorithm.md#the-nested-gate).
 
 What `cv_r2` *is*: a **predictive loss gain** of the nested stack over the
@@ -323,6 +361,11 @@ as `incremental_r2`: the latter fits a calibration coefficient for the score
 against assessment outcomes, whereas nested prediction must not. The baseline
 contains covariates and every `unpenalized_score`, so forcing the target-trait
 score changes the question to "what did the penalized auxiliary scores add?"
+
+The one-standard-error fallback fed by this estimate is a conservative
+deployment heuristic, not a hypothesis test. It supplies no p-value or
+calibrated type-I error, and choosing the baseline does not establish that the
+population increment is zero.
 
 The outer estimators use fewer than `n` individuals and may therefore be more
 shrunken than the returned estimator
@@ -334,9 +377,10 @@ internal estimate.
 
 ## 3. Derived weights: no phenotype required
 
-When the `K` scores estimate the *same* genetic value, `ρ` follows from
-published metadata and `C` from the target genotypes, so §1's `w = C⁻¹ρ` is
-computable with no phenotype at all.
+When the `K` scores estimate the *same* genetic value, `C` can be estimated from
+target genotypes and `ρ` can be **approximated** from external accuracy metadata,
+so §1's `w = C⁻¹ρ` is computable with no phenotype. This is a transport
+model, not an identity supplied by the metadata.
 
 ### Under independent errors
 
@@ -384,6 +428,13 @@ In that benchmark, feeding it `sqrt(n_eff)` performs poorly: `C⁻¹` amplifies
 the misspecification of `ρ`. Treat this as a model-specific warning, not a
 universal ranking of the rules.
 
+The theoretical `ρ` is signed. The implementation instead constructs a
+nonnegative magnitude, `sqrt(expected_r2)`, so every component must first be
+oriented to the same positive target direction. It cannot represent a genuinely
+negative target correlation. `decorrelated` therefore requires independently
+credible, transportable per-score target-correlation magnitudes; a Daetwyler or
+sample-size proxy is not enough merely because `C` is well estimated.
+
 ### The same-trait assumption
 
 `r_G(k,l) ≈ 1` is *assumed*, not known. Nominally identical phenotype GWAS can
@@ -397,15 +448,18 @@ relevance instead, is the right tool.
 ### The Daetwyler bound
 
 For a score built on `M` independent causal variants from a GWAS of `N`
-individuals,
+individuals, distinguish accuracy for the genetic value from accuracy for the
+phenotype:
 
 ```
-R²  =  h² / (1 + M/(N h²))  =  h² · x/(1+x)     with  x = N h²/M
+R_G² = x/(1+x)                                  with  x = N h²/M
+R_y² = h²·R_G² = h² / (1 + M/(N h²)) = h²·x/(1+x)
 ```
 
-the two forms being algebraically identical. `multipgs` takes `M = n_variants·p`
-from the fitted polygenicity rather than assuming it, following Hansen et al.'s
-adaptation, so the bound follows each trait's own architecture.
+`multipgs.daetwyler_r2` returns `R_y²`, the phenotypic value; the selection-index
+derivations above use `R_G`. `multipgs` takes `M = n_variants·p` from the fitted
+polygenicity rather than assuming it, following Hansen et al.'s adaptation, so
+the bound follows each trait's own architecture.
 
 It is an **upper** bound, and the assumptions say why:
 
@@ -440,12 +494,12 @@ target cohort, *are* appropriate to it. The inputs they combine are not.
 
 For a binary trait, R² on the observed 0/1 scale depends on the case fraction
 sampled and is not comparable across studies. Under the liability threshold
-model, with `K` the population prevalence, `P` the sample case fraction,
-`t = Φ⁻¹(1-K)`, `z = φ(t)` and `i = z/K`:
+model, let `π` be the population prevalence, `P` the sample case fraction,
+`t = Φ⁻¹(1-π)`, `d = φ(t)` and `i = d/π`:
 
 ```
-C_LT = [K(1-K)]² / (z² · P(1-P))
-θ    = i·(P-K)/(1-K) · [ i·(P-K)/(1-K) - t ]
+C_LT = [π(1-π)]² / (d² · P(1-P))
+θ    = i·(P-π)/(1-π) · [ i·(P-π)/(1-π) - t ]
 R²_liability = C_LT·R²_obs / (1 + C_LT·θ·R²_obs)
 ```
 
@@ -466,11 +520,30 @@ Frisch–Waugh–Lovell equals the squared partial correlation times
 sex. `multipgs.incremental_r2` computes the increment; `evaluate` reports it
 automatically whenever covariates are supplied.
 
+This is not Albiñana et al.'s normalized adjusted R²,
+`(R²_full - R²_covar)/(1 - R²_covar)`. The two answer related but numerically
+different questions, so label the metric when comparing results.
+
 Ancestry principal components belong in that covariate set. Without them a score
 can predict ancestry rather than disease
 ([Wray et al. 2013](https://doi.org/10.1038/nrg3457), whose remedy is stated for
 the discovery analysis; including PCs in the *evaluation* model is standard
 practice for the same reason).
+
+### Direction, discrimination, and calibration
+
+`r2` is a **squared** Pearson correlation. It gives the same value to a score
+and its negative, so it cannot detect reversed alleles, phenotype coding, or
+score orientation. Report the signed correlation (or at least verify its sign)
+alongside R². For a binary outcome, a reversed score likewise produces AUC below
+0.5 rather than useful discrimination.
+
+Neither a weighted sum nor high R² implies calibrated absolute risk. Coefficient
+scale and intercept can change across ancestry, prevalence, ascertainment, and
+measurement settings. Estimate a calibration slope and intercept in appropriate
+held-out target data before treating a combined score as a probability or risk
+model; `.multi_pgs()` itself is a score, whereas `.predict()` is calibrated only
+to the cohort in which that fit was trained.
 
 ### Sample overlap
 
@@ -479,10 +552,11 @@ that score is partly fitted to the individuals it is being scored on. Inflation
 generally increases with the overlap fraction, but its magnitude also depends
 on discovery design, score construction, relatedness and effect-size
 estimation. Overlap is frequently invisible in public summary statistics
-([Wray et al. 2013](https://doi.org/10.1038/nrg3457)). No cross-validation
-*inside* the target cohort can detect it, because every fold shares the
-contamination — that argument is this package's, not a cited result. Overlap has
-to be excluded when the panel is built.
+([Wray et al. 2013](https://doi.org/10.1038/nrg3457)). Resampling *inside* the
+target cohort, including nested cross-validation, cannot distinguish bias that
+is common to every fold from genuine generalization. Named-cohort metadata and
+external genome-wide diagnostics can flag some overlap patterns, but neither
+proves absence; exclusion by design remains the defensible control.
 
 ### Reading an interval
 

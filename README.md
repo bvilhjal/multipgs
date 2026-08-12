@@ -22,13 +22,17 @@ harmonisation, and the LDpred model behind score construction.
 |---|---|---|
 | `multi_pgs_fit` | phenotypes in an individual-level training cohort | any traits; mostly irrelevant is fine |
 | `multi_pgs_sumstats` | target-trait GWAS statistics plus an external LD reference | any traits; mostly irrelevant is fine |
-| `meta_pgs` | effective sample size or fitted accuracy, with no target phenotype | the **same** trait from different GWAS |
+| `meta_pgs` | effective sample size or expected target-accuracy proxy, with no target phenotype | the **same** trait from different GWAS |
 
-`multi_pgs_fit` is the estimator of Albiñana et al.,
+`multi_pgs_fit` uses the elastic-net score-stacking model of Albiñana et al.,
 [*Multi-PGS enhances polygenic prediction by combining 937 polygenic
 scores*](https://doi.org/10.1038/s41467-023-40330-w) (Nat Commun 14, 4702,
-2023). Its penalty is selected by CMSA, which is this package's choice — the
-paper used `cv.glmnet` with fivefold cross-validation. The `sqrt_n_eff`
+2023), but it is not a reproduction of their complete procedure. This package
+standardizes within training folds, selects and averages coefficients by CMSA,
+and applies a separate nested heuristic fallback gate. The paper used
+`cv.glmnet` and fivefold cross-validation. Its reported adjusted R²,
+`(R²_full - R²_covar)/(1 - R²_covar)`, is also not this package's
+`incremental_r2 = R²_full - R²_covar`. The `sqrt_n_eff`
 training-free rule is in [`code/meta_prs.R` of the accompanying
 PGS-pipeline](https://github.com/olex2148/PGS-pipeline), while Hansen et al.,
 [*Mapping Genetic Architecture of Thousands of Complex Traits Using GWAS
@@ -79,7 +83,7 @@ panel = panel_from_catalog("pgs_catalog_scores/", "train_cohort")
 fit = multi_pgs_fit(panel.scores, y_train, covar=covariates,
                     score_ids=panel.score_ids, seed=1)
 print(fit.summary())
-print(fit.selected(top=10))          # which traits carried the signal
+print(fit.selected(top=10))          # largest nonzero standardized weights
 ```
 
 Then measure it in individuals who trained neither the scores nor the
@@ -136,6 +140,7 @@ panel's score correlations to discount shared information, but its matrix
 inverse amplifies errors in the supplied accuracies. Reserve it for
 independently credible per-score target correlations, with every component
 score oriented consistently; pass the squared correlations as `expected_r2`.
+The API cannot encode a negative target correlation.
 Sample-size and Daetwyler proxies do not meet that bar. The derivation is in
 [theory.md §3](docs/theory.md#3-derived-weights-no-phenotype-required) and the
 measurements in
@@ -157,9 +162,11 @@ no summary-statistic fitting command.
 ## Before trusting a number
 
 1. **Exclude sample overlap by construction.** If your cohort contributed to
-   the GWAS behind an input score, every accuracy here is inflated, and no
-   cross-validation inside the target cohort can detect it. Many PGS Catalog
-   scores are UK Biobank-derived — check each score's development samples.
+   the GWAS behind an input score, accuracy can be inflated. Target-cohort
+   resampling cannot reveal contamination shared by every fold. Named-cohort
+   metadata and external diagnostics may flag overlap, but absence of a flag is
+   not proof of independence. Many PGS Catalog scores are UK Biobank-derived —
+   check each score's development samples.
    ([why](docs/theory.md#sample-overlap))
 2. Put scoring files, LD reference, and target genotypes on the same genome
    build, and check the matched-variant and weight-mass counts in
@@ -168,13 +175,16 @@ no summary-statistic fitting command.
    across training and validation, inflating `cv_r2`.
 4. Report accuracy in individuals who trained neither the input scores nor the
    combination. `fit.cv_r2` nests all selection inside outer folds, but it is
-   an internal estimate and is blind to point 1.
+   an internal estimate, not a hypothesis test, and is blind to point 1.
 5. With covariates, report `incremental_r2` — an R² that includes age and sex
    is not a polygenic-score accuracy.
-6. For case/control traits, convert to the liability scale with a stated
+6. Check direction and calibration as well as R². Squared correlation is
+   unchanged by a sign reversal, and a combined score is not automatically a
+   calibrated risk prediction in a new cohort.
+7. For case/control traits, convert to the liability scale with a stated
    prevalence, or the number is not comparable to anyone else's.
    ([how](docs/theory.md#liability-scale))
-7. Match ancestry between discovery and target as closely as you can, and put
+8. Match ancestry between discovery and target as closely as you can, and put
    principal components in the covariates. Nothing here models ancestry.
    ([theory](docs/theory.md#ancestry))
 

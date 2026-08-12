@@ -16,15 +16,21 @@ from multipgs import (panel_from_catalog, multi_pgs_fit, multi_pgs_sumstats,
 |---|---|
 | `multi_pgs_fit` | learn a combination from a training phenotype (CMSA elastic net) |
 | `multi_pgs_sumstats` | learn a Gaussian combination from target GWAS statistics and external LD |
-| `meta_pgs` | combine same-trait scores with no phenotype, from `n_eff` or fitted accuracy |
+| `meta_pgs` | combine consistently oriented same-trait scores with no phenotype, from `n_eff` or an expected target-accuracy proxy |
 | `MultiPGSFit`, `SumstatFit`, `MetaPGS` | fitted combinations on the common raw-score coefficient contract |
-| `FoldFit` | what one CMSA fold selected, and how it did |
+| `FoldFit` | one CMSA fold's nonzero coefficients and validation loss |
 
 `MultiPGSFit.multi_pgs(scores)` is the combined score — what you evaluate.
 `.predict(scores, covar)` is the full linear predictor including covariates, and
 is a different thing; see [guide.md §5](guide.md#5-evaluating-and-the-ways-this-goes-wrong).
 `.cv_r2` is the nested outer-fold predictive gain over the explicit
-unpenalized baseline; it is not the OLS-recalibrated `incremental_r2`.
+unpenalized baseline; it is not the OLS-recalibrated `incremental_r2` and does
+not provide a hypothesis test. The one-standard-error fallback is a conservative
+heuristic with no p-value or calibrated type-I error.
+
+`MultiPGSFit.selected()` orders nonzero coefficients by `|beta_std|`. These are
+predictive weights, not causal trait effects; CMSA support is the union of fold
+supports and correlated scores can exchange weight.
 
 Pass a `ScorePanel` to `.multi_pgs()` rather than a bare matrix and the score
 ids are checked against the fit. A bare matrix is matched by **position**, and a
@@ -99,11 +105,18 @@ Odds-ratio weights are log-transformed on read; non-additive rows
 
 | Name | Purpose |
 |---|---|
-| `daetwyler_r2` | expected r² of a score for its own trait, from `h²`, `p`, `n_eff` |
+| `daetwyler_r2` | expected phenotypic r² of a score for its own trait, from `h²`, `p`, `n_eff` |
 | `Architecture` | per-score `h²`, polygenicity, inferred r², total/kept chains, `n_eff`, and optional fitted shrinkage |
 | `architectures_from_panel` | read those back out of an LDpred3-built panel |
 | `screen`, `ScreenResult` | represented model-level Hansen et al. gates, with per-score reasons |
 | `penalty_from_accuracy` | expected accuracy → elastic-net penalty factors |
+
+`meta_pgs(method="decorrelated")` constructs the nonnegative vector
+`sqrt(expected_r2)` before applying the inverse score-correlation matrix. Every
+score must therefore be oriented to the same positive target direction, and
+the supplied magnitudes must be independently credible in the target
+population. The API cannot encode a negative target correlation; sample-size
+or Daetwyler proxies are not automatically suitable for decorrelation.
 
 ## Evaluation
 
@@ -117,6 +130,12 @@ Odds-ratio weights are log-transformed on read; non-additive rows
 | `auc` | Mann–Whitney AUC, ties counted as ½ |
 | `nagelkerke_r2` | pseudo-R² over the covariate-only logistic model |
 | `liability_r2` | observed → liability scale (Lee et al. 2012, with the θ term) |
+
+`r2` is sign-blind because it squares Pearson correlation. Verify signed
+correlation (and AUC direction for binary outcomes) separately. None of these
+metrics makes a combined score an automatically calibrated absolute-risk
+prediction; calibration slope and intercept require suitable held-out target
+data.
 
 `liability_r2` includes the ascertainment correction; `ldpred3.h2_liability`
 applies only the leading factor, which is right for a heritability and

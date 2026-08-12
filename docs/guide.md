@@ -201,6 +201,14 @@ fit = multi_pgs_fit(panel.scores, y, covar=covar, score_ids=panel.score_ids,
 print(fit.summary())
 ```
 
+This uses Albiñana et al.'s elastic-net stacking model, not their complete
+fitting and evaluation procedure. Their analysis standardized PGS and used
+`cv.glmnet` with fivefold cross-validation. `multipgs` standardizes inside each
+training fold, uses CMSA to select and average fold models, and adds the nested
+heuristic fallback below. Their normalized adjusted R² is also not the package's
+unnormalized `incremental_r2`; [theory.md §4](theory.md#score-r²-versus-model-r²)
+gives both definitions.
+
 The options worth knowing:
 
 **Table 1. Fitting options that change the statistical contract.**
@@ -210,7 +218,7 @@ The options worth knowing:
 | `family` | `"binomial"` for case/control. Slower; after Gaussian sufficient statistics are formed, each path is independent of `n`, whereas binomial IRLS is not. |
 | `alpha` | `1.0` is lasso and follows the authors' released [`e_net.R`](https://github.com/ClaraAlbi/paper_multiPGS/blob/main/code/e_net.R). The published Methods says `alpha=0`; that conflicts with the code. A grid like `[1.0, 0.5, 0.1]` lets each fold choose. |
 | `n_folds` | 10 is the `bigstatsr` default. More folds train closer to the full sample but select on smaller, noisier validation folds; 5–10 is the ordinary range. |
-| `assessment_folds` | Outer folds for nested performance assessment and the incremental-signal gate. The default 5 is separate from the final CMSA's `n_folds`; increasing it costs additional inner fits. |
+| `assessment_folds` | Outer folds for nested performance assessment and the heuristic fallback gate. The default 5 is separate from the final CMSA's `n_folds`; increasing it costs additional inner fits. |
 | `unpenalized_scores` | Scores that belong in the baseline, usually the target trait's own score. Their coefficients remain fitted—not fixed at one—and they are retained if the penalized additions fail the gate. |
 | `penalty_factor` | Per-score shrinkage; see §3. |
 | `missing` | `"raise"` by default. `"mean"` learns imputation means inside each outer-training set for assessment, then from all rows for the final estimator. |
@@ -232,7 +240,9 @@ fit.n_folds_used             # all CMSA folds on a pass; zero on fallback
 ```
 
 Rank scores by `beta_std`, not `beta`: raw coefficients depend on whatever scale
-each input score happened to arrive on.
+each input score happened to arrive on. `selected()` reports nonzero predictive
+weights, not causal traits. CMSA support is the union of fold supports, and
+correlated scores can exchange or share weight.
 
 `cv_r2 = (SSE_baseline - SSE_inner_CMSA) / SST` over untouched outer folds. It
 is a predictive loss gain, not `incremental_r2`: the latter recalibrates the
@@ -240,11 +250,13 @@ supplied score by OLS in the assessment cohort. With `unpenalized_scores`, the b
 includes those scores, so `cv_r2` becomes the gain over the fitted target-trait
 score plus covariates rather than over covariates alone.
 
-The penalized stack is returned only when the mean outer-fold gain exceeds one
-standard error. Otherwise `fit.log["null_model"]` is present and the returned
-fit is the full-data unpenalized baseline. "Null" describes the *increment*:
-forced scores and covariate coefficients remain fitted, and `fit.beta` need not
-be all zero. `fit.summary()` spells this out.
+The package uses a conservative heuristic: the penalized stack is returned only
+when the mean outer-fold gain exceeds one standard error. It is not a hypothesis
+test, supplies no p-value or calibrated type-I error, and fallback does not
+establish zero population signal. On fallback, `fit.log["null_model"]` is
+present and the returned fit is the full-data unpenalized baseline. "Null"
+describes the *increment*: forced scores and covariate coefficients remain
+fitted, and `fit.beta` need not be all zero. `fit.summary()` spells this out.
 
 ### Fitting from summary statistics
 
@@ -376,6 +388,13 @@ overlap under favourable conditions, but exclusion by design is stronger
 contains age and sex describes age and sex. With covariates, `incremental_r2`
 is the quantity to report, and it is what `evaluate` adds automatically.
 
+**Check direction and calibration.** `r2` squares Pearson correlation, so a
+score with reversed direction has exactly the same R². Verify the signed
+correlation and, for binary outcomes, inspect whether AUC is below 0.5. A
+weighted sum is not automatically an absolute-risk model: estimate calibration
+slope and intercept in held-out target data before interpreting `.predict()` as
+portable risk. `.multi_pgs()` is a score, not a probability.
+
 **Convert case/control R² to the liability scale.** On the 0/1 scale it depends
 on how many cases were sampled and is not comparable to anyone else's number.
 Pass `prevalence=`; [theory.md §4](theory.md#liability-scale) gives the model.
@@ -446,7 +465,8 @@ a cohort also used separately — does not by itself justify
 accuracy vector. Use `method="expected_r2"` for `daetwyler_r2` proxies. Reserve
 `method="decorrelated"` for independently credible per-score target
 correlations, with every component score oriented consistently; pass the
-squared correlations as `expected_r2`. See
+squared correlations as `expected_r2`. The API takes nonnegative magnitudes and
+cannot encode a genuinely negative target correlation. See
 [algorithm.md](algorithm.md#choosing-a-meta-pgs-rule) for the measurements, and
 [theory.md §3](theory.md#3-derived-weights-no-phenotype-required) for why the
 cruder statistic has the better-shaped weights.
