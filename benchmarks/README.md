@@ -21,6 +21,26 @@ the simulator does not model overlapping people or discovery GWAS estimation.
 The committed results are a regression reference, not a claim about real
 cohorts. Re-run before changing a default or making a performance claim.
 
+### Reading the committed artifacts
+
+Each replicated benchmark commits raw rows, a derived summary, and JSON
+provenance. Future runs also record the repository commit, whether the relevant
+source tree was dirty, and the SHA-256 of the producer script. The historical
+artifacts predate that source-identity record and have deliberately not been
+rewritten.
+
+Run `python benchmarks/check_results.py` to recompute committed summary means
+from raw rows and verify the headline README values and provenance structure.
+
+Three historical real-data runs (`overlap_inflation`, `real_ld_simulation`, and
+`real_meta_rules`) report `ldpred3=0.3.1`, below multipgs's current supported
+range `ldpred3>=0.4.5,<0.5`. That may be the code actually imported or stale editable
+installation metadata; the old provenance does not contain enough information
+to distinguish them. Those rows remain useful as historical scientific
+diagnostics, but are not evidence that the current release was validated
+against its declared dependency range. Re-run them before making a release or
+compatibility claim.
+
 ## Stack scaling
 
 `stack_scaling.py` runs each Gaussian case in a fresh process, warms the
@@ -183,14 +203,14 @@ python benchmarks/real_ld_simulation.py \
 
 Two results deserve emphasis. The regime A number tracks the truth to a few
 thousandths at every reference size, so the label does what it claims. But the
-accuracy a user would *report* from their own imperfect reference does not: at
-`n_ref = 50` the fit itself degrades only modestly while the reported R² inflates
-by more than 0.12, which nothing in the output reveals. Reference quality is
-therefore far more dangerous to the reported number than to the fit.
-
-The Gram is `K x K`, so reference size only starts to matter as `K` grows
-toward `n_ref`: at `K = 8` a 500-individual reference is indistinguishable from
-the true `D`.
+accuracy a user would *report* from their own imperfect reference does not. In
+the committed `K=120` run, reducing `n_ref` from infinity to 50 lowers true
+multi-PGS R² from 0.18636 to 0.16842, while evaluation against that same small
+reference reports 0.21288: inflation of 0.04446 R², or 26.4% relative to truth.
+Reference quality is therefore more dangerous to the reported number than to
+the fitted predictor in this design. This five-point sweep does not establish a
+general reference-size threshold; that threshold depends on `K`, score
+collinearity, and the LD spectrum.
 
 ## Sample-overlap inflation, and whether LDSC can see it
 
@@ -284,10 +304,15 @@ the rest are read against.
 Nothing is downloaded during a run. The scoring files, their metadata table
 (`multipgs.write_score_metadata`), the LD reference and the target GWAS are all
 supplied, and the sha256 of the reference and the GWAS goes into the
-provenance. No results are committed, because every number depends on inputs
-this repository does not ship. `--chrom` and `--max-scores` exist for smoke
-tests; a one-chromosome run estimates the same correlations from a twentieth of
-the variants and its accuracies are not comparable with a genome-wide one.
+provenance. One result set is committed as a historical regression artifact,
+but its external inputs are not shipped. Its LD reference and GWAS are named
+and hashed; its score directory and metadata path are named, but the scoring
+files were not individually hashed, so the panel cannot be reconstructed
+byte-for-byte from the committed artifact alone. Future runs also hash the
+metadata and every candidate scoring file. `--chrom` and `--max-scores` exist
+for smoke tests; a one-chromosome run estimates the same correlations from a
+twentieth of the variants and its accuracies are not comparable with a
+genome-wide one.
 
 Four things this deliberately does not claim. It is **one draw** — one panel,
 one trait, one reference, one target GWAS — so it cannot rank the rules the way
@@ -311,6 +336,27 @@ are **declared assumptions**: Catalog scores carry no fitted architecture, so
 without them the two `expected_r2` rules do not run at all, and with them those
 two rows are conditional on the two numbers being right for the trait.
 
+**Table 5. Checked rule rows for the committed 24-score CAD run.** All rows use
+the same target GWAS and LD reference. The run is declared regime C; the oracle
+single additionally selects on those evaluation moments.
+
+| Rule | R² |
+|---|---:|
+| best single by maximum `n_eff` | 0.08616 |
+| equal weight | 0.17536 |
+| `sqrt_n_eff` | 0.16416 |
+| `expected_r2` | 0.17729 |
+| decorrelated `n_eff` | 0.00017 |
+| decorrelated `expected_r2` | 0.00226 |
+| best single selected on evaluation moments | 0.45670 |
+
+The checked artifact therefore shows `decorrelated_expected_r2` performing
+78.4 times worse than the same expected accuracies without decorrelation. This
+is one overlap-contaminated regime-C draw, not a population estimate or a
+general rule ranking. It does show why a positive, sample-size-derived accuracy
+proxy must not be treated as a known per-score correlation when inverting a
+near-singular score covariance.
+
 ### Estimating the architecture instead of declaring it
 
 `--h2` and `--m-causal` set every score's Daetwyler `expected_r2`, so a declared
@@ -323,32 +369,20 @@ can ever replace `--m-causal`. Auto is preferred unless its `h2` falls below
 `--h2-near-zero`, where a sampler with nothing to condition on degrades and the
 regression does not.
 
-On the 24-score CAD panel the declared values were wrong by roughly an order of
-magnitude each — h2 0.4 against 0.0512 [0.0477, 0.0547] from auto and 0.0866
-from LDSC, and 20,000 causal variants against about 2,000 — and `expected_r2`
-moved by 1.3%. That is structural: in a same-trait panel every score shares one
-architecture, so h2 and p only warp the common n_eff-to-accuracy mapping and the
-normalised weights barely move. Expect them to matter in a cross-trait panel,
-where each score carries its own.
+The historical committed run printed its LDSC and LDpred3-auto estimates and
+intervals to the console but did not persist them in CSV or JSON. Consequently,
+the precise architecture values from that run cannot be independently checked
+from this repository and should not be quoted as artifact-backed results.
+Future runs write the declared, estimated, and actually used architecture to
+both `real_meta_rules_summary.csv` and the provenance JSON, including the auto
+intervals, chain counts, predictive R², and its Daetwyler upper reference.
 
-The two estimators disagree by more than auto's credible interval covers, so
-neither should be quoted as the trait's heritability; both are recorded.
-
-`daetwyler_r2` at auto's *own* inferred h2 and p is reported next to auto's
-predictive r2, and the check runs in that direction: the closed form describes
-a predictor that knows which variants are causal and faces no LD, so it is an
-upper reference for the sampler. A sampled r2 above it is a fit to distrust,
-not a better score. On the CAD panel auto returned 0.0213 [0.0198, 0.0227]
-against a bound of 0.0413 — about half, which is what paying real LD and a
-finite reference costs, so the fit is self-consistent.
-
-That anchor is also worth reading against the rules. Auto says a score built
-from this 163k-effective GWAS is worth about R2 0.02 out of sample, while the
-best single Catalog score scores 0.086 against the same GWAS and the oracle
-single 0.457. The estimands differ — those scores were built from other GWAS —
-but no CAD score from data of this scale plausibly reaches 0.46 on the observed
-scale. Cohort metadata says these numbers are contaminated; the architecture
-says so too, from an independent direction.
+The interpretation remains structural: in a same-trait panel every score
+shares one architecture, so `h2` and `p` only warp the common
+`n_eff`-to-accuracy mapping and normalized weights may move little. They can
+matter much more in a cross-trait panel, where each score has its own
+architecture. LDSC and auto estimates are model-dependent diagnostics, not
+ground-truth trait heritability.
 
 ## Summary-statistic cost at real dimensions
 
@@ -367,11 +401,12 @@ python benchmarks/sumstat_cost.py \
     --cases 100x5000 300x5000 900x5000 300x200000 3000x30 3000x5
 ```
 
-That is the full-scale run: the whole 1,054,330-variant reference, about twenty
-minutes and up to roughly 5 GB resident. The reference is supplied, not
-shipped, and its sha256 goes in the provenance. With `--scores DIR` each case
-aligns its first `K` real PGS Catalog scoring files instead, which is the only
-configuration in which the `panel` stage measures anything about alignment.
+That command is the intended full-scale design over the whole
+1,054,330-variant reference; no result from it is committed. The reference is
+supplied, not shipped, and its sha256 goes in the provenance. With
+`--scores DIR` each case aligns its first `K` real PGS Catalog scoring files
+instead, which is the only configuration in which the `panel` stage measures
+anything about alignment.
 
 Wall time and absolute peak RSS are reported per stage — panel, sparse parse,
 `score_gram`, cross-moment, `_validate_moments`, and the path fit — because the

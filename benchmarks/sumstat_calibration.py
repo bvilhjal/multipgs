@@ -28,6 +28,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 import multipgs
+from benchmarks._provenance import benchmark_identity
 from multipgs import multi_pgs_sumstats, score_moments
 
 
@@ -199,6 +200,7 @@ def main(argv=None):
         writer.writerow(summary)
 
     provenance = {
+        "source": benchmark_identity(__file__),
         "generated_utc": datetime.now(timezone.utc).isoformat(),
         "elapsed_seconds": time.perf_counter() - started,
         "command": ([sys.executable, str(Path(__file__).resolve()), *sys.argv[1:]]

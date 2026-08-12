@@ -99,6 +99,7 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 import multipgs
+from benchmarks._provenance import benchmark_identity
 from multipgs import evaluate_sumstat, multi_pgs_sumstats
 from multipgs.sumstat import score_gram
 from real_ld_simulation import (_block_factor, _ld_times, _load, _sha256,
@@ -422,6 +423,7 @@ def main(argv=None):
         writer.writerows(summary_rows)
 
     provenance = {
+        "source": benchmark_identity(__file__),
         "generated_utc": datetime.now(timezone.utc).isoformat(),
         "elapsed_seconds": time.perf_counter() - started,
         "command": [sys.executable, str(Path(__file__).resolve()),

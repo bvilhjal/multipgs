@@ -31,6 +31,8 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+from benchmarks._provenance import benchmark_identity
+
 
 def _rss_mb():
     value = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
@@ -126,6 +128,7 @@ def main(argv=None):
 
     import multipgs
     provenance = {
+        "source": benchmark_identity(__file__),
         "generated_utc": datetime.now(timezone.utc).isoformat(),
         "elapsed_seconds": time.perf_counter() - started,
         "command": ([sys.executable, str(script), *sys.argv[1:]]

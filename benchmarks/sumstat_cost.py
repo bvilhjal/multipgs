@@ -203,6 +203,7 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 import multipgs
+from benchmarks._provenance import benchmark_identity
 from multipgs.sumstat import (_score_cross_moment, _score_gram_from_coo,
                               _validate_moments, _weight_columns)
 from stack_scaling import _rss_mb, _version
@@ -820,6 +821,7 @@ def main(argv=None):
         writer.writerows(summary)
 
     provenance = {
+        "source": benchmark_identity(__file__),
         "generated_utc": datetime.now(timezone.utc).isoformat(),
         "elapsed_seconds": time.perf_counter() - started,
         "command": [sys.executable, str(script),

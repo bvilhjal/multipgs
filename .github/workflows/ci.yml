@@ -34,7 +34,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - run: python -m pip install --upgrade build twine
+      - run: python -m pip install --upgrade build twine numpy
       - run: python -m build
       - run: python -m twine check dist/*
       - name: Check distribution content
@@ -56,14 +56,46 @@ jobs:
                        "benchmarks/results/sumstat_calibration.csv",
                        "benchmarks/results/sumstat_calibration_summary.csv",
                        "benchmarks/results/sumstat_calibration_provenance.json",
-                       "report/README.md", "report/multipgs_review.tex",
-                       "report/multipgs_review.pdf"):
+                       "report/README.md", "report/multipgs_methods.tex",
+                       "report/multipgs_methods.pdf"):
               assert any(name.endswith("/" + path) for name in names), path
+
+          # Every checked benchmark producer and result is distribution
+          # evidence. Keep this dynamic so adding a result cannot silently
+          # bypass the older hand-written representative list above.
+          expected = (glob.glob("benchmarks/*.py")
+                      + glob.glob("benchmarks/results/*.csv")
+                      + glob.glob("benchmarks/results/*.json"))
+          for path in expected:
+              path = path.replace("\\", "/")
+              assert any(name.endswith("/" + path) for name in names), path
+
+          # MANIFEST.in must not turn a developer's ignored real-data inputs or
+          # scratch runs into release payload. A clean CI checkout cannot test
+          # their presence, so also reject their path patterns explicitly.
+          forbidden_parts = {".work", ".runs", ".ld_cache", "__pycache__"}
+          for name in names:
+              relative = name.split("/", 1)[-1]
+              parts = set(relative.split("/"))
+              if relative.startswith("benchmarks/"):
+                  assert not (parts & forbidden_parts), relative
+                  assert not any(part.startswith((".scores", ".ldref"))
+                                 for part in parts), relative
+                  assert not relative.endswith((".log", ".npz", ".npy")), relative
 
           wheel, = glob.glob("dist/*.whl")
           with zipfile.ZipFile(wheel) as package:
               names = package.namelist()
           for path in ("share/doc/multipgs/README.md",
-                       "share/doc/multipgs/multipgs_review.tex",
-                       "share/doc/multipgs/multipgs_review.pdf"):
+                       "share/doc/multipgs/multipgs_methods.tex",
+                       "share/doc/multipgs/multipgs_methods.pdf"):
               assert any(name.endswith(path) for name in names), path
+          for path in ("multipgs/__init__.py", "multipgs/cli.py",
+                       "multipgs/sumstat.py"):
+              assert path in names, path
+      - name: Install and smoke-test the built wheel
+        shell: bash
+        run: |
+          python -m pip install --force-reinstall --no-deps dist/*.whl
+          python -c "import importlib.metadata, multipgs; assert importlib.metadata.version('multipgs') == multipgs.__version__"
+          multipgs --version

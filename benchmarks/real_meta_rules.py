@@ -161,6 +161,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 import multipgs
+from benchmarks._provenance import benchmark_identity
 from multipgs import (ScoreRecord, align_to_reference, cohort_overlap,
                       daetwyler_r2, evaluate_sumstat, meta_pgs, score_moments)
 
@@ -869,8 +870,11 @@ def main(argv=None):
     # rather than a per-chromosome one that would have to be read differently
     # under --chrom than without it.
     h2_used, h2_ldsc, auto = args.h2, None, None
+    h2_source = "declared" if args.h2 is not None else None
     p_used = (args.m_causal / meta["n_variants_total"]
               if args.m_causal is not None else None)
+    p_source = "declared" if args.m_causal is not None else None
+    auto_daetwyler_bound = None
     if args.h2_ldsc:
         from ldpred3 import ld_scores as _ld_scores
         h2_ldsc = _ldsc_h2_from_gwas(
@@ -887,6 +891,7 @@ def main(argv=None):
                   "recording both")
         else:
             h2_used = estimate
+            h2_source = "ldsc"
 
     if args.h2_auto:
         t_auto = time.perf_counter()
@@ -917,6 +922,7 @@ def main(argv=None):
         closed_form = float(daetwyler_r2(
             float(auto.h2_est), float(auto.p_est), float(args.gwas_n_eff),
             meta["n_variants_total"]))
+        auto_daetwyler_bound = closed_form
         print(f"predictive r2: LDpred3-auto {auto.r2_est:.4f} "
               f"[{auto.r2_ci[0]:.4f}, {auto.r2_ci[1]:.4f}] against the "
               f"daetwyler_r2 bound {closed_form:.4f} at auto's own h2 and p")
@@ -932,10 +938,44 @@ def main(argv=None):
         if auto.h2_est >= args.h2_near_zero:
             h2_used = float(auto.h2_est)
             p_used = float(auto.p_est)
+            h2_source = p_source = "ldpred3_auto"
         else:
             print(f"  h2 below --h2-near-zero {args.h2_near_zero}: keeping "
                   "the LD Score regression estimate, which has no sampler to "
                   "fail")
+
+    architecture = {
+        "declared": {"h2": args.h2, "m_causal": args.m_causal},
+        "used_for_expected_r2": {
+            "h2": h2_used,
+            "h2_source": h2_source,
+            "polygenicity": p_used,
+            "polygenicity_source": p_source,
+            "m_causal": (None if p_used is None else
+                         float(p_used * meta["n_variants_total"])),
+        },
+        "ldsc": (None if h2_ldsc is None else {
+            "h2": float(getattr(h2_ldsc, "h2", h2_ldsc)),
+            "h2_se": getattr(h2_ldsc, "h2_se", None),
+            "h2_ci": list(getattr(h2_ldsc, "h2_ci", ())),
+            "intercept": getattr(h2_ldsc, "intercept", None),
+            "intercept_se": getattr(h2_ldsc, "intercept_se", None),
+            "mean_chisq": getattr(h2_ldsc, "mean_chisq", None),
+            "ratio": getattr(h2_ldsc, "ratio", None),
+        }),
+        "ldpred3_auto": (None if auto is None else {
+            "h2": float(auto.h2_est),
+            "h2_ci": [float(x) for x in auto.h2_ci],
+            "polygenicity": float(auto.p_est),
+            "polygenicity_ci": [float(x) for x in auto.p_ci],
+            "m_causal": float(auto.p_est * meta["n_variants_total"]),
+            "predictive_r2": float(auto.r2_est),
+            "predictive_r2_ci": [float(x) for x in auto.r2_ci],
+            "daetwyler_r2_bound": auto_daetwyler_bound,
+            "n_chains": int(auto.n_chains),
+            "n_chains_kept": int(auto.n_chains_kept),
+        }),
+    }
 
     expected_r2 = None
     if h2_used is not None and p_used is not None:
@@ -1148,6 +1188,30 @@ def main(argv=None):
         "expected_r2_rules_run": expected_r2 is not None,
         "score_moments_seconds": moments_seconds,
     }
+    used_architecture = architecture["used_for_expected_r2"]
+    ldsc_architecture = architecture["ldsc"] or {}
+    auto_architecture = architecture["ldpred3_auto"] or {}
+    auto_h2_ci = auto_architecture.get("h2_ci") or [None, None]
+    summary.update({
+        "architecture_h2_used": used_architecture["h2"],
+        "architecture_h2_source": used_architecture["h2_source"],
+        "architecture_polygenicity_used": used_architecture["polygenicity"],
+        "architecture_polygenicity_source":
+            used_architecture["polygenicity_source"],
+        "architecture_m_causal_used": used_architecture["m_causal"],
+        "h2_ldsc": ldsc_architecture.get("h2"),
+        "h2_ldsc_se": ldsc_architecture.get("h2_se"),
+        "h2_auto": auto_architecture.get("h2"),
+        "h2_auto_ci_low": auto_h2_ci[0],
+        "h2_auto_ci_high": auto_h2_ci[1],
+        "polygenicity_auto": auto_architecture.get("polygenicity"),
+        "m_causal_auto": auto_architecture.get("m_causal"),
+        "predictive_r2_auto": auto_architecture.get("predictive_r2"),
+        "daetwyler_r2_bound_auto":
+            auto_architecture.get("daetwyler_r2_bound"),
+        "auto_n_chains_kept": auto_architecture.get("n_chains_kept"),
+        "auto_n_chains": auto_architecture.get("n_chains"),
+    })
     for row in rule_rows:
         summary[f"r2_{row['rule']}"] = row["r2"]
     if cohort_check == "contested":
@@ -1236,6 +1300,7 @@ def main(argv=None):
         writer.writerow(summary)
 
     provenance = {
+        "source": benchmark_identity(__file__),
         "generated_utc": datetime.now(timezone.utc).isoformat(),
         "elapsed_seconds": time.perf_counter() - started,
         "command": [sys.executable, str(Path(__file__).resolve()),
@@ -1254,10 +1319,16 @@ def main(argv=None):
                  "declared_cohorts": sorted(gwas_cohorts), **gwas_log},
         "panel": {"directory": str(args.scores),
                   "metadata": str(args.metadata),
+                  "metadata_sha256": _sha256(args.metadata),
+                  "scoring_files": [
+                      {"path": str(path), "sha256": _sha256(path)}
+                      for path in files
+                  ],
                   "score_ids": [str(s) for s in score_ids],
                   "trait_labels": traits,
                   "efo_trait_sets": sorted(list(s) for s in efo_sets),
                   **align_log},
+        "architecture": architecture,
         "parameters": {key: (str(value) if isinstance(value, Path) else value)
                        for key, value in vars(args).items()},
         "note": ("Meta-PGS weighting rules on a real same-trait panel, with "
@@ -1275,9 +1346,10 @@ def main(argv=None):
                  "reference: the decorrelated rules invert the correlation "
                  "implied by the same Gram matrix that forms every R2 "
                  "denominator, and every rule standardizes by its diagonal, so "
-                 "no rule here is independent of this one reference. h2 and "
-                 "m_causal are declared assumptions, not estimates: the "
-                 "expected_r2 rules are conditional on them. Scores with no "
+                 "no rule here is independent of this one reference. The "
+                 "architecture object records declared, estimated, and "
+                 "actually used h2 and polygenicity values; expected_r2 is "
+                 "conditional on used_for_expected_r2. Scores with no "
                  "variance under the reference are excluded from every "
                  "reported correlation rather than recorded as uncorrelated; "
                  "reference variants the GWAS does not carry enter c as z = 0, "
