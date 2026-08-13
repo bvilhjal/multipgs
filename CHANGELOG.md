@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- The packaged methods PDF is a research note: estimand,
+  selection-index theory, three information routes, and the
+  simulation evidence that survives its design, rather than a
+  project-validation brochure.
+
 ## 0.3.3 - 2026-08-13
 
 Correctness and release integrity:

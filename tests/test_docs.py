@@ -65,7 +65,7 @@ def test_docs_exist_and_are_linked_from_the_readme(name):
 
 
 def test_methods_report_is_complete_and_linked():
-    """The packaged methods report is a real deliverable, not an audit."""
+    """The packaged methods note is a research report, not an audit."""
     report = ROOT / "report"
     source = report / "multipgs_methods.tex"
     pdf = report / "multipgs_methods.pdf"
@@ -89,9 +89,13 @@ def test_methods_report_is_complete_and_linked():
         evidence_module.validate_pdf_binding(pdf, evidence)
 
     latex = source.read_text(encoding="utf-8")
-    assert "METHODS AND VALIDATION" in latex
-    assert r"\section{Implemented methods}" in latex
-    assert r"\section{Validation results}" in latex
+    assert r"\section{Introduction}" in latex
+    assert r"\section{Estimand}" in latex
+    assert r"\section{Selection index}" in latex
+    assert r"\section{Three information routes}" in latex
+    assert r"\section{Simulation evidence}" in latex
+    assert "METHODS AND VALIDATION" not in latex
+    assert "Project at a glance" not in latex
     assert "Technical review findings" not in latex
     assert "Recommended roadmap" not in latex
     bibliography = _dois(

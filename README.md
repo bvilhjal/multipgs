@@ -200,10 +200,10 @@ The [guide](docs/guide.md) expands each point.
 
 ## Documentation
 
-- [Methods and validation report](report/multipgs_methods.pdf) — the theory,
-  three implemented routes, numbered figures and tables, and committed test
-  results; the editable [LaTeX source](report/multipgs_methods.tex) is included
-  too
+- [Methods note](report/multipgs_methods.pdf) — estimand, selection-index
+  theory, three information routes, and the simulation evidence that survives
+  its design; the editable [LaTeX source](report/multipgs_methods.tex) is
+  included too
 - [User guide](docs/guide.md) — inputs, workflow, options, and the ways this
   goes wrong
 - [Theory](docs/theory.md) — why combining scores works, what each fitting route
