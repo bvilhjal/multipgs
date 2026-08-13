@@ -6,6 +6,9 @@
   selection-index theory, three information routes, and the
   simulation evidence that survives its design, rather than a
   project-validation brochure.
+- Docs and the methods note now distinguish this package from
+  MIXPRS: multi-trait (or metadata same-trait) score stacking
+  versus a same-trait ensemble of multi-population methods.
 
 ## 0.3.3 - 2026-08-13
 

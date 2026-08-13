@@ -28,6 +28,10 @@ Three fitting routes, for three information sets:
     decorrelated against each other). No training cohort, no tuning. It assumes
     the scores estimate one genetic value, which ``multi_pgs_fit`` does not.
 
+This is not MIXPRS (Xu et al., *Nat Genet* 2026). MIXPRS ensembles two
+same-trait multi-population *methods*. This package stacks already-built
+scores, typically of many traits.
+
 Getting the ``K`` scores is the other half of the problem.
 :mod:`multipgs.fetch` acquires PGS Catalog scoring files and their provenance;
 :mod:`multipgs.panel` then scores them in one pass over the target genotypes

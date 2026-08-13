@@ -15,7 +15,7 @@ from multipgs import (panel_from_catalog, multi_pgs_fit, multi_pgs_sumstats,
 | Name | Purpose |
 |---|---|
 | `multi_pgs_fit` | learn a combination from a training phenotype (CMSA elastic net) |
-| `multi_pgs_sumstats` | learn a Gaussian combination from target GWAS statistics and external LD |
+| `multi_pgs_sumstats` | learn a Gaussian combination of already-built scores from target GWAS statistics and external LD; not MIXPRS |
 | `meta_pgs` | combine consistently oriented same-trait scores with no phenotype, from `n_eff` or an expected target-accuracy proxy |
 | `MultiPGSFit`, `SumstatFit`, `MetaPGS` | fitted combinations on the common raw-score coefficient contract |
 | `FoldFit` | one CMSA fold's selected alpha/lambda, held-out and baseline losses, sparsity, use flag, and convergence counters |

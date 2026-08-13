@@ -223,8 +223,10 @@ Under PUMAS, both reported selection-path statistics average pseudo-split
 refits rather than scoring the returned full-data coefficient vector.
 `tune="pumas"` forms pseudo-training and pseudo-tuning moments from a
 joint-Gaussian/CLT plug-in covariance — a two-way pseudotuning device, not the
-recursive four-stage PUMAS-ensemble assessment — and requires the explicit
-`weights_independent_of_z=True` acknowledgement. `tune="none"` must be
+recursive four-stage PUMAS-ensemble assessment, and not MIXPRS's use of
+data fission to learn same-trait method-combination weights
+([Xu et al. 2026](https://doi.org/10.1038/s41588-026-02637-4)) — and requires
+the explicit `weights_independent_of_z=True` acknowledgement. `tune="none"` must be
 requested explicitly and is labelled in-sample reuse. The operational
 train/tune/test contract is in
 [guide.md §4](guide.md#fitting-from-summary-statistics).

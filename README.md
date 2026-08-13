@@ -40,6 +40,16 @@ Summary Statistics*](https://doi.org/10.21203/rs.3.rs-9415305/v1) (Research
 Square, 2026), supplies the model-level architecture-screening criteria. The paper itself
 does not document the meta-PGS rule.
 
+This is not MIXPRS
+([Xu et al. 2026](https://doi.org/10.1038/s41588-026-02637-4)). MIXPRS
+combines two *same-trait* multi-population methods (JointPRS-auto and SDPRX)
+with non-negative least squares after a data-fission split of one target GWAS.
+Use MIXPRS when the panel is method-by-ancestry versions of one trait. Use
+this package when the panel is many traits, or same-trait GWAS to be combined
+by sample-size or accuracy rules (`meta_pgs`). The shared summary-statistic
+quadratic and PUMAS-style split are Zhao et al.; they do not make the
+estimands the same. See [theory.md](docs/theory.md#three-objects-that-get-combined).
+
 ## Install
 
 Python 3.9–3.14. Numba is strongly recommended. ldpred3 is not on PyPI, so its
@@ -226,7 +236,8 @@ learned combination, Hansen et al. 2026 for the screening criteria,
 2019 for CMSA, Mak et al. 2017 for the SNP-level quadratic that inspired the
 score-space summary fit, Zhao et al. 2021 when its PUMAS-style pseudotuning is
 used, and
-[ldpred3](https://github.com/bvilhjal/ldpred3) for score construction. There is
+[ldpred3](https://github.com/bvilhjal/ldpred3) for score construction. Cite
+Xu et al. 2026 only if the analysis actually ran MIXPRS. There is
 no multipgs paper; do not invent one.
 
 ## License

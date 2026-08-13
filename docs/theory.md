@@ -170,7 +170,38 @@ one is available
 **All else equal, a well-powered focal GWAS leaves less room to gain.** That is
 a prediction of this model, not a limitation of the implementation.
 
-### Three architectures
+### Three objects that get combined
+
+The same linear-index algebra is used on three different panels. Confusing
+them is the usual category error.
+
+**Table. What is in the linear combination.**
+
+| Object being combined | Typical methods | What the weights mean |
+|---|---|---|
+| Variant-level summaries of several traits, *before* scoring | MTAG, wMT-SBLUP, Genomic SEM | A new effect vector; then one score |
+| Several constructions of the *same* trait (methods, ancestries, or GWAS) | metaGRS; PRSmix; PUMAS-ensemble; MIXPRS; **`meta_pgs`** | How much of each same-trait predictor to keep |
+| Scores of *many traits* | Krapohl; Albiñana; PRSmix+; **`multi_pgs_fit`**, **`multi_pgs_sumstats`** | Which auxiliary traits are predictively useful |
+
+MTAG reweights each trait's summary statistics by an estimated genetic
+covariance
+([Turley et al. 2018](https://doi.org/10.1038/s41588-017-0009-4)).
+That is family (a): combine before scoring.
+
+Same-trait ensembles are a different estimand. MIXPRS
+([Xu et al. 2026](https://doi.org/10.1038/s41588-026-02637-4)) combines
+JointPRS-auto and SDPRX for one trait across ancestries. Its weights are
+non-negative least squares on a data-fission split of the target GWAS; SNP
+pruning plus an identity residual is used so that a mismatched LD reference
+does not correlate the pseudo-training and pseudo-tuning residuals.
+PUMAS-ensemble
+([Zhao et al. 2024](https://doi.org/10.1186/s13059-024-03400-w))
+similarly ensembles several *single-population methods* of one trait.
+Neither paper is multi-PGS. MIXPRS lists PRS for related traits as future
+work; that is the problem this package addresses.
+
+`multipgs` implements the two right-hand columns of the older
+combine-summaries / learn-on-scores / derive-from-metadata table:
 
 | | combine summary statistics | learned weights on scores | derived weights on scores |
 |---|---|---|---|
@@ -179,12 +210,12 @@ a prediction of this model, not a limitation of the implementation.
 | needs `r_G` / `h²` up front | yes | no | no |
 | assumption bought with | a correct multivariate model | enough individuals, or aligned target-GWAS and LD moment estimates | the scores target one trait |
 
-MTAG combines *before* fitting, reweighting each trait's summary statistics by
-the estimated genetic covariance
-([Turley et al. 2018](https://doi.org/10.1038/s41588-017-0009-4)). `multipgs`
-implements the two right-hand columns: they need no `r_G` estimate, at the cost
-of a training phenotype, aligned summary-level moment estimates, or a
-same-trait assumption, according to the fitting route.
+They need no `r_G` estimate, at the cost of a training phenotype, aligned
+summary-level moment estimates, or a same-trait assumption, according to the
+fitting route. `multi_pgs_sumstats` is an elastic net over *already built*
+component scores. It is not MIXPRS: it does not refit JointPRS-auto or SDPRX,
+does not constrain weights to be non-negative, and uses PUMAS only to choose
+\(\lambda\), not to learn method-combination weights.
 
 ## 2. Learned weights: penalized regression over a panel
 

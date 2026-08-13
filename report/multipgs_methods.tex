@@ -95,7 +95,8 @@ ancestry portability, or real-world comparative superiority.
 The intended reader already uses polygenic scores, GWAS summary
 statistics, and the distinction between a discovery sample and a
 target cohort. These notes do not re-derive single-trait PGS
-construction. They fix the combination estimand, the
+construction. They fix the combination estimand --- many-trait
+score stacking, not a same-trait method ensemble --- the
 selection-index algebra, the three information routes, and which
 simulation claims survive their design.
 
@@ -114,21 +115,54 @@ of independent effects \cite{daetwyler2008,dudbridge2013}. Many
 traits of interest have smaller discovery GWAS than genetically
 correlated phenotypes. The usual response is to borrow strength.
 
-Two families of methods do this at different stages. Family~(a)
-combines \emph{before} scoring: a multivariate model reweights
-variant-level summaries, as in MTAG or wMT-SBLUP
+The same linear-index algebra is used on three different
+panels. Table~\ref{tab:neighbours} names them.
+
+Family~(a) combines \emph{before} scoring: a multivariate model
+reweights variant-level summaries, as in MTAG or wMT-SBLUP
 \cite{turley2018,maier2018}. Family~(b) builds one score per
-source and combines the scores. Early demonstrations used a
-handful of scores with weights learned in a target population
-\cite{marquez2017,krapohl2018}. MetaGRS deployed a same-trait
-stack as a single weight file \cite{inouye2018}. Albi\~nana et
-al.\ stacked 937 PGS Catalog scores by elastic-net regression
-\cite{albinana2023,lambert2021}. PRSmix/PRSmix+ later split
-same-trait combination from cross-trait combination
-\cite{truong2024}. Family~(c) derives the combination weights
-from metadata rather than from a target phenotype; wMT-SBLUP
-already does this at the predictor level
-\cite{maier2018,smith1936,hazel1943}.
+source and combines the scores. That family still splits. One
+branch ensembles several constructions of the \emph{same} trait
+--- methods, ancestries, or GWAS --- as in metaGRS, PRSmix,
+PUMAS-ensemble, and MIXPRS
+\cite{inouye2018,truong2024,zhao2024,xu2026}. The other branch
+stacks scores of \emph{many traits}, as in Krapohl, Albi\~nana,
+and PRSmix+ \cite{krapohl2018,albinana2023,truong2024,lambert2021}.
+Family~(c) derives the combination weights from metadata rather
+than from a target phenotype \cite{maier2018,smith1936,hazel1943}.
+
+MIXPRS combines JointPRS-auto and SDPRX for one trait across
+ancestries. Its weights are non-negative least squares on a
+data-fission split of the target GWAS; SNP pruning plus an
+identity residual is used so that a mismatched LD reference does
+not correlate the pseudo-training and pseudo-tuning residuals
+\cite{xu2026}. That is a same-trait method ensemble. It is not
+multi-PGS. The MIXPRS discussion lists PRS for related traits as
+future work; that is the problem this package addresses.
+
+\begin{table}[ht]
+\centering
+\caption{Neighbouring combination methods, distinguished by the
+  object in the linear index. \pkg{multipgs} implements the last
+  two rows.}
+\label{tab:neighbours}
+\small
+\begin{tabularx}{\linewidth}{@{}L{28mm}Y L{42mm}@{}}
+\toprule
+\textbf{Object} & \textbf{Examples} & \textbf{This package} \\
+\midrule
+Variant effects of several traits, before scoring &
+MTAG, wMT-SBLUP & Not implemented \\
+Same-trait methods or ancestries &
+MIXPRS, PUMAS-ensemble, metaGRS, PRSmix &
+\code{meta\_pgs} is the metadata-weight case only;
+MIXPRS itself is not implemented \\
+Scores of many traits &
+Albi\~nana, Krapohl, PRSmix+ &
+\code{multi\_pgs\_fit}, \code{multi\_pgs\_sumstats} \\
+\bottomrule
+\end{tabularx}
+\end{table}
 
 The published Multi-PGS analysis trained standardised scores with
 unpenalised covariates and reported fivefold out-of-sample
@@ -199,8 +233,10 @@ that model.
 
 \paragraph{What is not an estimand here.}
 Absolute risk, a calibrated probability, an ancestry-adjusted
-mean, or a causal decomposition of the panel. A high ranking
-metric is not any of those things.
+mean, or a causal decomposition of the panel. A
+method-by-ancestry ensemble of one trait, as in MIXPRS
+\cite{xu2026}, is a neighbouring estimand and is not implemented.
+A high ranking metric is not any of those things.
 
 \begin{table}[ht]
 \centering
@@ -1132,7 +1168,10 @@ build checks \\
   \item \textbf{No ancestry model.} Fitting weights in a target
   cohort does not repair discovery-score or LD-reference
   non-portability \cite{martin2019}. Absolute risk and score
-  means are particularly unsafe across ancestries.
+  means are particularly unsafe across ancestries. Combining
+  Catalog scores of many European-derived traits is not MIXPRS
+  and does not substitute for a multi-population construction
+  method \cite{xu2026}.
   \item \textbf{Direction matters.} Squared correlation hides
   sign reversal, and the training-free expected-\Rtwo{} routes
   assume consistent positive trait orientation.
@@ -1160,12 +1199,21 @@ individual and summary Gaussian objectives say how weights are
 learned. The same-trait rules are transparent constructions
 whose accuracy assumptions must be checked externally.
 
+That is not the MIXPRS problem. MIXPRS ensembles two
+multi-population methods of one trait after data fission
+\cite{xu2026}. This package stacks already-built scores,
+typically of many traits, or combines same-trait GWAS by
+metadata. The shared summary-statistic quadratic and PUMAS-style
+split \cite{zhao2021,zhao2024} do not identify the estimands.
+
 The choice among routes is an information problem, not a
 universal ranking. Individual fitting is appropriate when a
 target phenotype and honest resampling are available. Summary
 fitting preserves the same score-space structure when GWAS
 cross-moments and LD are available. Training-free rules remain
-hypotheses until an untouched outcome is scored.
+hypotheses until an untouched outcome is scored. For a
+same-trait method-by-ancestry ensemble, use MIXPRS rather than
+relabelling this package.
 
 The committed tests and benchmarks demonstrate scale handling,
 numerical equivalence, controlled prediction gains, null
@@ -1379,6 +1427,13 @@ summary statistics.
 \newblock \emph{Genome Biology}, 22:257, 2021.
 \newblock \doi{10.1186/s13059-021-02479-9}.
 
+\bibitem{zhao2024}
+Z.~Zhao et~al.
+\newblock Optimizing and benchmarking polygenic risk scores with
+{GWAS} summary statistics.
+\newblock \emph{Genome Biology}, 25:260, 2024.
+\newblock \doi{10.1186/s13059-024-03400-w}.
+
 \bibitem{albinana2023}
 C.~Albi\~nana et~al.
 \newblock Multi-{PGS} enhances polygenic prediction by combining
@@ -1392,6 +1447,14 @@ B.~Truong et~al.
 accuracy of complex traits and diseases.
 \newblock \emph{Cell Genomics}, 4(4):100523, 2024.
 \newblock \doi{10.1016/j.xgen.2024.100523}.
+
+\bibitem{xu2026}
+L.~Xu, Y.~Dong, X.~Zeng, Z.~Bian, G.~Zhou, L.~Guan, and
+H.~Zhao.
+\newblock {MIXPRS} enables multi-population and multi-method
+polygenic risk scores using summary statistics.
+\newblock \emph{Nature Genetics}, 58:1583--1594, 2026.
+\newblock \doi{10.1038/s41588-026-02637-4}.
 
 \bibitem{hansen2026}
 O.~Hansen et~al.

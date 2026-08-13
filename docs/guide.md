@@ -27,6 +27,14 @@ third untouched GWAS or cohort is needed to assess the selected model. With one
 GWAS, PUMAS-style pseudotuning is available under the assumptions in §4; it is
 not external assessment.
 
+This route stacks *already built* scores — typically many traits, possibly
+mostly irrelevant. It is not MIXPRS
+([Xu et al. 2026](https://doi.org/10.1038/s41588-026-02637-4)). MIXPRS
+rebuilds JointPRS-auto and SDPRX on a fissioned same-trait GWAS and learns
+non-negative method weights. If the scientific object is a
+method-by-ancestry ensemble of one trait, use MIXPRS. If it is a Catalog
+panel of auxiliary traits, stay here.
+
 ### Route C — same-trait training-free combination
 
 Use `meta_pgs` only when every consistently oriented score estimates the same
