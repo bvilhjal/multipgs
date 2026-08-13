@@ -12,9 +12,10 @@ biobank scale.
 
 **In, from GWAS summary statistics** — :func:`panel_from_sumstats`. Each trait
 is fitted with :func:`ldpred3.run_ldpred3_prs` and scored on the same target.
-The LD reference is built once and cached on disk, so trait 2 onwards pay only
-for the fit. This is the arm of the paper that turns public GWAS for other
-traits into scores; it is also how the target trait's own score is produced.
+When ``ld_cache`` is supplied, the LD reference is built once and cached on
+disk, so trait 2 onwards pay only for the fit. This is the arm of the paper that
+turns public GWAS for other traits into scores; it is also how the target
+trait's own score is produced.
 
 **Out** — :func:`combine_weights` takes a panel and a fitted
 :class:`~multipgs.stack.MultiPGSFit` and collapses ``K`` weight sets and their
@@ -274,6 +275,30 @@ class ScorePanel:
         if clash:
             raise ValueError("concat would collide on score id(s): "
                              + ", ".join(clash[:5]))
+        for side, panel in (("left", left), ("right", right)):
+            if panel.weights and len(panel.weights) != panel.n_scores:
+                raise ValueError(
+                    f"{side} panel has {len(panel.weights)} weight tables for "
+                    f"{panel.n_scores} score columns")
+            if panel.meta and len(panel.meta) != panel.n_scores:
+                raise ValueError(
+                    f"{side} panel has {len(panel.meta)} metadata entries for "
+                    f"{panel.n_scores} score columns")
+        if bool(left.weights) != bool(right.weights):
+            raise ValueError(
+                "cannot concat a panel carrying per-score weights with one "
+                "that carries none; column-to-weight identity would be lost")
+
+        # Empty metadata means "unknown for every column". Materialise those
+        # unknowns only when the other panel has metadata, so positional
+        # consumers can never attach the right panel's first record to a left
+        # panel score.
+        left_meta = (list(left.meta) if left.meta
+                     else ([{} for _ in range(left.n_scores)]
+                           if right.meta else []))
+        right_meta = (list(right.meta) if right.meta
+                      else ([{} for _ in range(right.n_scores)]
+                            if left.meta else []))
         return ScorePanel(
             scores=np.hstack([left.scores, right.scores]),
             sample_fid=left.sample_fid, sample_iid=left.sample_iid,
@@ -283,8 +308,7 @@ class ScorePanel:
                 np.asarray(right.standardized, dtype=bool)]),
             weights=(list(left.weights) + list(right.weights)
                      if left.weights or right.weights else []),
-            meta=(list(left.meta) + list(right.meta)
-                  if left.meta or right.meta else []),
+            meta=left_meta + right_meta,
             log={"source": "concat",
                  "n_scores": left.n_scores + right.n_scores,
                  "left": left.n_scores, "right": right.n_scores,
@@ -533,35 +557,55 @@ def _accumulate_scores(per_score, n_samples, n_total, plink, dosage, *,
                            variant_idx=cols)
             d = np.asarray(raw, dtype=float)
             miss = d < 0
-        use_target = standardize and frozen_ord is None
+        # A scale-free LDpred3 file means target standardisation, not raw
+        # dosage. Keep the all-target case on the shared BLAS path; mixed or
+        # frozen files need their own centres and are accumulated per score.
+        all_target = (frozen_ord is not None
+                      and all(item is None for item in frozen_ord))
+        use_target = standardize or all_target
         block_matrix, mean_b, sd_b = _prepare_block(d, miss, use_target)
         af[start:stop] = mean_b / 2.0
         sd[start:stop] = sd_b
-        if frozen_ord is None:
+        if frozen_ord is None or all_target:
             _accumulate_block(scores, block_matrix, mapped, start, stop)
         else:
-            _accumulate_frozen(scores, block_matrix, mapped, frozen_ord,
-                               start, stop)
+            _accumulate_frozen(scores, block_matrix, miss, mapped, frozen_ord,
+                               mean_b, sd_b, start, stop)
     return scores, union, af, sd
 
 
-def _accumulate_frozen(scores, dosage, mapped, frozen, start, stop):
-    """Apply per-score frozen ``(g - 2 AF_REF) / SD_REF`` weights to a block."""
+def _accumulate_frozen(scores, dosage, miss, mapped, frozen, target_mean,
+                       target_sd, start, stop):
+    """Apply each score's target or frozen standardisation to one block.
+
+    ``dosage`` has already been target-mean imputed for computing target
+    moments. Frozen scores must not retain that imputation: a missing call is
+    imputed to its frozen reference mean and therefore contributes exactly
+    zero after centring, as in :func:`ldpred3.score_from_weights`.
+    """
     for s, (pos, w) in enumerate(mapped):
         lo = int(np.searchsorted(pos, start))
         hi = int(np.searchsorted(pos, stop))
         if hi <= lo:
             continue
-        g = dosage[:, pos[lo:hi] - start]
+        local = pos[lo:hi] - start
+        g = dosage[:, local]
         scale = frozen[s]
         if scale is None:
-            scores[:, s] += g @ w[lo:hi]
-            continue
-        fa, fs = scale[0][lo:hi], scale[1][lo:hi]
+            mean = target_mean[local]
+            fs = target_sd[local]
+            z = g - mean
+        else:
+            fa, fs = scale[0][lo:hi], scale[1][lo:hi]
+            z = g - 2.0 * fa
+            local_miss = miss[:, local]
+            if local_miss.any():
+                # Frozen-mean imputation followed by centring is exactly zero.
+                z[local_miss] = 0.0
         good = fs > 1e-12
-        z = np.zeros_like(g)
         if np.any(good):
-            z[:, good] = (g[:, good] - 2.0 * fa[good]) / fs[good]
+            z[:, good] /= fs[good]
+        z[:, ~good] = 0.0
         scores[:, s] += z @ w[lo:hi]
 
 
@@ -660,15 +704,18 @@ def panel_from_sumstats(sumstats, plink, *, score_ids=None, ld_cache=None,
         ``subset_to_sumstats`` is left off.
     ld_prefix : str, optional
         External LD-reference PLINK prefix, forwarded to
-        :func:`ldpred3.run_ldpred3_prs`. Prefer this (or an existing
-        ``ld_cache``) over building LD from the target cohort.
+        :func:`ldpred3.run_ldpred3_prs`. On its own, the reference is read and
+        LD is rebuilt for every trait. Pair it with a writable ``ld_cache`` to
+        build the blocks once and reuse them.
     on_error : {"raise", "skip"}
     progress : callable, optional
         ``progress(i, n, score_id)`` before each fit.
     n_jobs : int, default 1
         Independent traits after the LD cache exists. The first successful fit
         always runs alone so it can write ``ld_cache``; the remainder run in a
-        thread pool of this size. ``1`` is sequential.
+        thread pool of this size. ``1`` is sequential. Parallel fitting from
+        ``ld_prefix`` requires ``ld_cache`` so workers do not independently
+        rebuild the same reference.
     weights_dir : str, optional
         Write each trait's ldpred3 weight file here (``<score_id>.weights``).
     preflight : bool, default False
@@ -718,6 +765,12 @@ def panel_from_sumstats(sumstats, plink, *, score_ids=None, ld_cache=None,
     if not items:
         raise ValueError("no summary-statistic files given")
 
+    if n_jobs > 1 and len(items) > 1 and ld_prefix is not None \
+            and ld_cache is None:
+        raise ValueError(
+            "n_jobs>1 with ld_prefix requires ld_cache=... so the first trait "
+            "builds one shared LD cache instead of every worker rebuilding LD")
+
     kwargs = dict(ldpred3_kwargs)
     if ld_prefix is not None:
         kwargs["ld_prefix"] = ld_prefix
@@ -728,8 +781,12 @@ def panel_from_sumstats(sumstats, plink, *, score_ids=None, ld_cache=None,
             "not the cohort you will score", stacklevel=2)
     if ld_cache is not None:
         kwargs.setdefault("subset_to_sumstats", False)
-        kwargs["ld_cache"] = ld_cache
-        if not os.path.exists(str(ld_cache)):
+        if os.path.exists(str(ld_cache)):
+            kwargs["ld_cache"] = ld_cache
+        else:
+            # LDpred3 reads ld_cache immediately; a path being created must be
+            # passed only as ld_out on the first successful fit. Promote it to
+            # ld_cache below before dispatching the remaining traits.
             kwargs["ld_out"] = ld_cache
     if n_jobs > 1 and int(kwargs.get("ncores", 1) or 1) > 1:
         warnings.warn(
@@ -797,7 +854,8 @@ def panel_from_sumstats(sumstats, plink, *, score_ids=None, ld_cache=None,
             return sid, path, trait, None, exc
 
     remaining = list(enumerate(items))
-    # The first successful trait writes the LD cache; later traits only read it.
+    # When requested, the first successful trait writes the LD cache; later
+    # traits only read it. Without ld_cache each fit builds its own LD.
     first = None
     while remaining:
         i, (sid, path, trait) = remaining.pop(0)
@@ -810,7 +868,8 @@ def panel_from_sumstats(sumstats, plink, *, score_ids=None, ld_cache=None,
                                    f"{exc}") from exc
             n_failed += 1
             continue
-        kwargs.pop("ld_out", None)
+        if kwargs.pop("ld_out", None) is not None:
+            kwargs["ld_cache"] = ld_cache
         first = (sid, path, res, trait)
         break
     if first is None:
@@ -855,6 +914,7 @@ def panel_from_sumstats(sumstats, plink, *, score_ids=None, ld_cache=None,
              "target": str(plink),
              "ld_cache": str(ld_cache) if ld_cache else None,
              "ld_prefix": str(ld_prefix) if ld_prefix else None,
+             "ld_reused": bool(ld_cache),
              "weights_dir": str(weights_dir) if weights_dir else None})
 
 
@@ -1050,7 +1110,8 @@ def panel_from_weights(paths, plink, *, sample_path=None, drop_ambiguous=True,
     ``ID CHR POS A1 A2 WEIGHT``, optionally ``AF_REF SD_REF``) are harmonised
     once and applied in a single genotype pass. Frozen ``AF_REF``/``SD_REF``
     are used when present, matching
-    :func:`ldpred3.score_from_weights` ``scaling="frozen"``.
+    :func:`ldpred3.score_from_weights` ``scaling="frozen"``. Files without
+    those columns use this target's AF/SD, matching ``scaling="target"``.
     """
     from ldpred3.genotype_io import read_bed, read_bim, read_fam, strip_ext
     from ldpred3.harmonize import harmonize
@@ -1164,12 +1225,41 @@ def panel_from_weights(paths, plink, *, sample_path=None, drop_ambiguous=True,
              "target": str(plink)})
 
 
-def check_weights(panel, fit, path, plink, *, min_corr=1.0 - 1e-8):
-    """Require that scoring ``path`` with frozen scaling reproduces the fit.
+def check_weights(panel, fit, path, plink, *, min_corr=1.0 - 1e-8,
+                  rtol=1e-6, atol=1e-8):
+    """Require frozen scoring to reproduce the fitted centred predictor.
 
-    Aligns individuals on ``FID:IID``. Returns ``{"corr", "n"}``.
+    Combined raw-allele scores can differ from the fitted predictor by one
+    intercept, so both vectors are centred after aligning ``FID:IID``. A high
+    correlation alone is insufficient: multiplying every deployed weight by
+    two has correlation one but is not the fitted model. This check therefore
+    also requires the centred residual to be no larger than
+    ``atol + rtol * max(abs(fitted - mean(fitted)))``.
+
+    Returns correlation, unit-slope diagnostics, the removable intercept,
+    centred RMSE / maximum error, tolerance, and the aligned sample count.
     """
     from ldpred3 import score_from_weights
+
+    validated = {}
+    for name, value in (("min_corr", min_corr), ("rtol", rtol),
+                        ("atol", atol)):
+        if isinstance(value, (bool, np.bool_)):
+            raise ValueError(f"{name} must be a finite numeric value")
+        try:
+            number = float(value)
+        except (TypeError, ValueError, OverflowError):
+            raise ValueError(f"{name} must be a finite numeric value") from None
+        if not np.isfinite(number):
+            raise ValueError(f"{name} must be a finite numeric value")
+        validated[name] = number
+    min_corr = validated["min_corr"]
+    rtol = validated["rtol"]
+    atol = validated["atol"]
+    if not -1.0 <= min_corr <= 1.0:
+        raise ValueError("min_corr must be in [-1, 1]")
+    if rtol < 0.0 or atol < 0.0:
+        raise ValueError("rtol and atol must be non-negative")
 
     scored = score_from_weights(path, plink, scaling="frozen")
     direct = np.asarray(fit.multi_pgs(panel), dtype=float)
@@ -1183,13 +1273,32 @@ def check_weights(panel, fit, path, plink, *, min_corr=1.0 - 1e-8):
     if not keep:
         raise ValueError("the panel and the scored cohort share no "
                          "individuals (matched on FID:IID)")
-    corr = float(np.corrcoef(direct[keep],
-                             np.asarray(scored.scores, dtype=float)[idx])[0, 1])
-    if not np.isfinite(corr) or corr < float(min_corr):
+    expected = direct[keep]
+    observed = np.asarray(scored.scores, dtype=float)[idx]
+    expected_centered = expected - expected.mean()
+    observed_centered = observed - observed.mean()
+    corr = float(np.corrcoef(expected_centered, observed_centered)[0, 1])
+    denom = float(expected_centered @ expected_centered)
+    slope = (float(expected_centered @ observed_centered) / denom
+             if denom > 0.0 else np.nan)
+    residual = observed_centered - expected_centered
+    max_abs_error = float(np.max(np.abs(residual)))
+    rmse = float(np.sqrt(np.mean(residual * residual)))
+    scale = float(np.max(np.abs(expected_centered)))
+    tolerance = atol + rtol * scale
+    intercept = float(observed.mean() - expected.mean())
+    if not np.isfinite(corr) or corr < min_corr:
         raise ValueError(
             f"frozen scoring of {path} correlates {corr:.8f} with the fitted "
-            f"combination (required >= {float(min_corr):.8f})")
-    return {"corr": corr, "n": len(keep)}
+            f"combination (required >= {min_corr:.8f})")
+    if not np.isfinite(max_abs_error) or max_abs_error > tolerance:
+        raise ValueError(
+            f"frozen scoring of {path} does not reproduce the fitted centred "
+            f"combination: slope={slope:.8g}, max centred error="
+            f"{max_abs_error:.8g} (allowed {tolerance:.8g})")
+    return {"corr": corr, "slope": slope, "intercept": intercept,
+            "rmse": rmse, "max_abs_error": max_abs_error,
+            "tolerance": tolerance, "n": len(keep)}
 
 
 # ---------------------------------------------------------------------------
@@ -1199,11 +1308,14 @@ def check_weights(panel, fit, path, plink, *, min_corr=1.0 - 1e-8):
 def combine_weights(panel, fit, *, path=None):
     """Collapse a panel and its stacking coefficients into one weight table.
 
-    The combined weight of variant ``v`` is ``sum_k beta_k * w_kv`` over the
-    scores containing it, after putting every ``w_kv`` on one common scale and
-    orienting every score to one reference allele. This is the deployable
-    artefact: a new cohort is scored from it directly, with no reference to the
-    ``K`` inputs and no need to rebuild the panel.
+    For each variant, every component is first written as
+    ``c_k (g - mu_k)`` on one allele orientation. The folded coefficient is
+    ``c = sum_k beta_k c_k`` and its frozen centre is
+    ``mu = sum_k beta_k c_k mu_k / c``. This retains different component
+    AF/SD references, including their missing-genotype behaviour, rather than
+    attaching the first component's scale to an untransformed weight sum. This
+    is the deployable artefact: a new cohort is scored from it directly, with
+    no reference to the ``K`` inputs and no need to rebuild the panel.
 
     The common scale is LDpred3's **standardized** one — weights apply to
     ``(g - 2f)/sd`` — because that is what :func:`ldpred3.score_from_weights`
@@ -1213,13 +1325,17 @@ def combine_weights(panel, fit, *, path=None):
         ldpred3.score_from_weights("multi.weights", "new_cohort",
                                    scaling="frozen")
 
-    Allele-count weights (everything from the PGS Catalog) are multiplied by the
-    panel cohort's per-variant dosage SD to get there, so the combined score
-    reproduces the training-time score up to an additive constant — irrelevant
-    to R², AUC and ranking, and absorbed by the intercept of any downstream
+    Allele-count weights (everything from the PGS Catalog) enter training as
+    ``w*g`` but are written as ``w*(g-mu)`` on the frozen scale. Their omitted
+    ``w*mu`` terms sum to one additive intercept, so the combined file
+    reproduces the centred training-time score exactly. That intercept is
+    irrelevant to R², AUC and ranking, and is absorbed by any downstream
     regression. ``scaling="frozen"`` is the mode to score with: it reuses the
-    ``AF_REF``/``SD_REF`` written here, so a cohort with different allele
-    frequencies is still scored on the scale the coefficients were fitted on.
+    effective ``AF_REF``/``SD_REF`` written here, so a cohort with different
+    allele frequencies is still scored on the scale the coefficients were
+    fitted on. A signed combination whose required effective AF falls outside
+    ``[0, 1]`` is genuinely not representable by that file format and is
+    rejected rather than silently changed.
 
     Parameters
     ----------
@@ -1281,20 +1397,25 @@ def combine_weights(panel, fit, *, path=None):
         b = beta[k]
         if b == 0.0:
             continue
+        if table is None:
+            raise ValueError(
+                f"score {panel_ids[k]!r} carries no weight table, so its "
+                "non-zero coefficient cannot be deployed")
         metadata, index = _weight_table_storage(table)
         w = np.asarray(table["weight"], dtype=float)
+        if w.ndim != 1 or not np.all(np.isfinite(w)):
+            raise ValueError(
+                f"score {panel_ids[k]!r} weights must be a finite 1-D array")
         sd = metadata.get("sd")
         sd = None if sd is None else np.asarray(sd, dtype=float)
         af = metadata.get("af")
         af = None if af is None else np.asarray(af, dtype=float)
-        if not standardized[k]:
-            if sd is None:
-                raise ValueError(
-                    f"score {panel_ids[k]!r} has allele-count weights but no "
-                    f"per-variant SD, so it cannot be put on the standardized "
-                    f"scale. Rebuild the panel with panel_from_catalog, which "
-                    f"records the target cohort's SD.")
-            w = w * (sd if index is None else sd[index])
+        if af is None or sd is None:
+            scale = "standardized" if standardized[k] else "allele-count"
+            raise ValueError(
+                f"score {panel_ids[k]!r} has {scale} weights but no complete "
+                "per-variant AF/SD, so its centring cannot be represented. "
+                "Rebuild the panel from genotypes to record that scale.")
         ids = np.asarray(metadata["id"], dtype=object)
         chrom = np.asarray(metadata["chrom"], dtype=object)
         pos = np.asarray(metadata["pos"])
@@ -1309,52 +1430,100 @@ def combine_weights(panel, fit, *, path=None):
             # one coordinate while still coalescing A/G with its G/A swap.
             pair = tuple(sorted((e1, e2)))
             key = (str(chrom[q]), int(pos[q]), pair[0], pair[1])
-            a_j = np.nan if af is None else float(af[q])
-            s_j = np.nan if sd is None else float(sd[q])
+            a_j = float(af[q])
+            s_j = float(sd[q])
+            if not np.isfinite(s_j) or s_j < 0.0:
+                raise ValueError(
+                    f"score {panel_ids[k]!r} has invalid SD for variant "
+                    f"{ids[q]!r}")
+            # A non-positive target/reference SD makes this variant constant.
+            # It contributes only an intercept even for a raw allele-count
+            # score, so its nominal weight must not reappear through another
+            # component's scale.
+            if s_j <= 1e-12:
+                continue
+            if not np.isfinite(a_j) or not 0.0 <= a_j <= 1.0:
+                raise ValueError(
+                    f"score {panel_ids[k]!r} has invalid AF for variant "
+                    f"{ids[q]!r}")
+
+            coef = b * w[j]
+            if standardized[k]:
+                coef /= s_j
+            mean_j = 2.0 * a_j
             entry = acc.get(key)
             if entry is None:
-                acc[key] = [str(ids[q]), e1, e2, b * w[j], a_j, s_j]
-                continue
-            if e1 == entry[1] and e2 == entry[2]:
-                entry[3] += b * w[j]
+                # Last two fields retain absolute summation scales so ordinary
+                # floating cancellation is distinguished from a genuinely
+                # tiny non-zero effect.
+                entry = [str(ids[q]), e1, e2, 0.0, 0.0, np.nan, 0.0, 0.0]
+                acc[key] = entry
             elif e1 == entry[2] and e2 == entry[1]:
-                # Counts the other allele: flip the weight, and the frequency
-                # with it, before adding.
-                entry[3] -= b * w[j]
-                a_j = np.nan if not np.isfinite(a_j) else 1.0 - a_j
-            if not np.isfinite(entry[4]) and np.isfinite(a_j):
-                entry[4] = a_j
-            if not np.isfinite(entry[5]) and np.isfinite(s_j):
+                # Reorient c(g-mu): g_other=2-g_ref and
+                # mu_other=2-mu_ref, hence both c's sign and mu's orientation
+                # change together.
+                coef = -coef
+                mean_j = 2.0 - mean_j
+            elif e1 != entry[1] or e2 != entry[2]:
+                raise ValueError(
+                    f"incompatible allele orientations at {key[0]}:{key[1]}")
+            entry[3] += coef
+            entry[4] += coef * mean_j
+            entry[6] += abs(coef)
+            entry[7] += abs(coef * mean_j)
+            if not np.isfinite(entry[5]) and s_j > 1e-12:
+                # SD only sets the numeric units of the output weight. The
+                # coefficient-weighted centre above carries the substantive
+                # cross-component scale information.
                 entry[5] = s_j
 
     if not acc:
         raise ValueError("every selected score contributed no non-zero weight; "
                          "the fit is null, so there is nothing to deploy")
     keys = sorted(acc, key=lambda kv: (str(kv[0]), kv[1], kv[2], kv[3]))
-    out = {
-        "id": np.array([acc[k][0] for k in keys], dtype=object),
-        "chrom": np.array([k[0] for k in keys], dtype=object),
-        "pos": np.array([k[1] for k in keys], dtype=np.int64),
-        "a1": np.array([acc[k][1] for k in keys], dtype=object),
-        "a2": np.array([acc[k][2] for k in keys], dtype=object),
-        "weight": np.array([acc[k][3] for k in keys], dtype=float),
-        "af": np.array([acc[k][4] for k in keys], dtype=float),
-        "sd": np.array([acc[k][5] for k in keys], dtype=float),
-    }
-    keep = out["weight"] != 0.0
-    if not np.any(keep):
+    rows = []
+    for key in keys:
+        entry = acc[key]
+        coef, centred_sum, output_sd = entry[3], entry[4], entry[5]
+        coef_zero = abs(coef) <= 1e-14 * entry[6]
+        centre_zero = abs(centred_sum) <= 1e-14 * entry[7]
+        if coef_zero:
+            if centre_zero:
+                continue
+            raise ValueError(
+                f"combined weights at {key[0]}:{key[1]} cancel in dosage "
+                "effect but not in frozen centre, so missing-genotype "
+                "behaviour cannot be represented by one weight row")
+        mean = centred_sum / coef
+        if mean < -1e-12 or mean > 2.0 + 1e-12:
+            raise ValueError(
+                f"the exact combined frozen centre at {key[0]}:{key[1]} "
+                f"implies AF={mean / 2.0:.8g}, outside [0, 1]; one LDpred3 "
+                "weight row cannot represent this signed combination")
+        if not np.isfinite(output_sd) or output_sd <= 1e-12:
+            raise ValueError(
+                f"combined variant {key[0]}:{key[1]} has no positive "
+                "reference SD and cannot be written on a standardized scale")
+        rows.append((key, entry, coef * output_sd,
+                     float(np.clip(mean / 2.0, 0.0, 1.0)), output_sd))
+    if not rows:
         raise ValueError("all combined variant weights cancel exactly; there "
                          "is no non-zero weight set to deploy")
-    out = {k: v[keep] for k, v in out.items()}
+    out = {
+        "id": np.array([entry[0] for _, entry, _, _, _ in rows], dtype=object),
+        "chrom": np.array([key[0] for key, _, _, _, _ in rows], dtype=object),
+        "pos": np.array([key[1] for key, _, _, _, _ in rows], dtype=np.int64),
+        "a1": np.array([entry[1] for _, entry, _, _, _ in rows], dtype=object),
+        "a2": np.array([entry[2] for _, entry, _, _, _ in rows], dtype=object),
+        "weight": np.array([weight for _, _, weight, _, _ in rows], dtype=float),
+        "af": np.array([af_j for _, _, _, af_j, _ in rows], dtype=float),
+        "sd": np.array([sd_j for _, _, _, _, sd_j in rows], dtype=float),
+    }
     if path is not None:
         from ldpred3.weights import write_weights
-        complete = bool(np.all(np.isfinite(out["af"]))
-                        and np.all(np.isfinite(out["sd"])))
         write_weights(path, id=out["id"], chrom=out["chrom"], pos=out["pos"],
                       effect_allele=out["a1"], other_allele=out["a2"],
-                      weight=out["weight"],
-                      af=out["af"] if complete else None,
-                      sd=out["sd"] if complete else None)
+                      weight=out["weight"], af=out["af"], sd=out["sd"])
     return out
 
 
@@ -1487,7 +1656,11 @@ def save_panel(panel, path):
 
 
 def load_panel(path):
-    """Load a panel written by :func:`save_panel`."""
+    """Load a panel written by :func:`save_panel`.
+
+    Panel files contain NumPy object arrays and therefore require pickle while
+    loading. Pickle can execute code: load only files from a source you trust.
+    """
     with np.load(path, allow_pickle=True) as z:
         fmt = int(z["format"][0]) if "format" in z else 0
         if fmt != _PANEL_FORMAT:

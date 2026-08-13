@@ -251,13 +251,16 @@ SNP-level lassosum: `||beta||_1` is not `||w @ beta||_1`, and the fitted SNP
 effects cannot leave the span of the supplied component scores.
 
 When `D` and `u` are computed from the same individuals, these are exact sample
-moments. With an external LD reference they are plug-in estimates in one raw
-score coordinate, not a single empirical covariance matrix: sampling noise can
-put `c` outside `range(G)` or make `c.T @ pinv(G) @ c > var(y)`. Those are
-diagnostics, not automatic proof of bad data. The solver still requires a
-positive-semidefinite `G` and a bounded penalized objective; a positive
-`ld_shrinkage` can make penalized singular directions well posed, but an
-unpenalized null direction with nonzero linear signal cannot be repaired.
+moments for unadjusted centred data, or after jointly residualizing genotypes
+and phenotype on the same covariate design. Conventional covariate-adjusted
+marginal GWAS coefficients do not alone imply that identity. With an external
+LD reference the moments are plug-in estimates in one raw score coordinate,
+not a single empirical covariance matrix: sampling noise can put `c` outside
+`range(G)` or make `c.T @ pinv(G) @ c > var(y)`. Those are diagnostics, not
+automatic proof of bad data. The solver still requires a positive-semidefinite
+`G` and a bounded penalized objective; a positive `ld_shrinkage` can make
+penalized singular directions well posed, but an unpenalized null direction
+with nonzero linear signal cannot be repaired.
 
 When one LD Gram supplies both the fit and its selection criterion
 (`tune="none"` or PUMAS), the component of `c` in `null(G)` is not estimable

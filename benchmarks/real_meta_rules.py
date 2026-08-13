@@ -192,6 +192,12 @@ RULE_FIELDS = ("rule", "regime", "r2", "beta_c", "mse", "n_nonzero_weights",
 
 def _version(name):
     try:
+        value = getattr(importlib.import_module(name), "__version__", None)
+        if value is not None:
+            return str(value)
+    except ImportError:
+        pass
+    try:
         return importlib.metadata.version(name)
     except importlib.metadata.PackageNotFoundError:
         return None

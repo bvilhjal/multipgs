@@ -193,7 +193,24 @@ def test_concat_joins_on_shared_individuals_and_rejects_id_clash(target):
         left.concat(panel.select([1, 2]))
 
 
-def test_panel_from_weights_matches_catalog_allele_count_scores(target, tmp_path):
+def test_concat_preserves_partial_metadata_identity_and_rejects_mixed_weights(
+        target):
+    panel = panel_from_catalog(target["scoring_files"], target["prefix"])
+    left, right = panel.select([0]), panel.select([1])
+    left.meta = []
+    both = left.concat(right)
+    assert both.meta[0] == {}
+    assert both.meta[1]["path"] == right.meta[0]["path"]
+    assert len(both.meta) == both.n_scores
+
+    plain = read_panel_roundtrip(panel).select([0])
+    with pytest.raises(ValueError, match="carrying per-score weights"):
+        plain.concat(right)
+
+
+def test_panel_from_weights_without_scale_matches_target_standardization(
+        target, tmp_path):
+    from ldpred3 import score_from_weights
     from ldpred3.weights import write_weights
 
     panel = panel_from_catalog(target["scoring_files"][:1], target["prefix"])
@@ -203,9 +220,23 @@ def test_panel_from_weights_matches_catalog_allele_count_scores(target, tmp_path
                   effect_allele=table["a1"], other_allele=table["a2"],
                   weight=table["weight"])
     scored = panel_from_weights(str(path), target["prefix"])
+    expected = score_from_weights(str(path), target["prefix"],
+                                  scaling="target")
     assert scored.n_scores == 1
     assert scored.standardized[0]
-    assert np.allclose(scored.scores[:, 0], panel.scores[:, 0], atol=1e-6)
+    assert np.allclose(scored.scores[:, 0], expected.scores, atol=1e-9)
+    assert np.all(np.isfinite(scored.weights[0]["af"]))
+    assert np.all(scored.weights[0]["sd"] > 0)
+
+    fit = SimpleNamespace(beta=np.array([1.3]), score_ids=scored.score_ids,
+                          multi_pgs=lambda p: 1.3 * p.scores[:, 0])
+    combined_path = tmp_path / "target-scaled.weights"
+    combine_weights(scored, fit, path=str(combined_path))
+    deployed = score_from_weights(str(combined_path), target["prefix"],
+                                  scaling="frozen")
+    direct = fit.multi_pgs(scored)
+    assert np.allclose(deployed.scores - deployed.scores.mean(),
+                       direct - direct.mean(), rtol=2e-7, atol=2e-7)
 
 
 def test_check_weights_accepts_a_faithful_combined_file(target, tmp_path):
@@ -218,7 +249,45 @@ def test_check_weights_accepts_a_faithful_combined_file(target, tmp_path):
     combine_weights(panel, fit, path=str(path))
     info = check_weights(panel, fit, str(path), target["prefix"])
     assert info["corr"] > 0.999999
+    assert info["slope"] == pytest.approx(1.0, rel=1e-6)
+    assert info["max_abs_error"] <= info["tolerance"]
     assert info["n"] == len(panel)
+
+
+def test_check_weights_rejects_a_rescaled_predictor(target, monkeypatch):
+    import ldpred3
+
+    panel = panel_from_catalog(target["scoring_files"], target["prefix"])
+    fit = SimpleNamespace(
+        beta=np.ones(panel.n_scores), score_ids=panel.score_ids,
+        multi_pgs=lambda p: np.asarray(p.scores) @ np.ones(p.n_scores))
+    direct = fit.multi_pgs(panel)
+    fake = SimpleNamespace(
+        scores=2.0 * direct, sample_fid=panel.sample_fid,
+        sample_iid=panel.sample_iid)
+    monkeypatch.setattr(ldpred3, "score_from_weights",
+                        lambda *args, **kwargs: fake)
+    with pytest.raises(ValueError, match="does not reproduce"):
+        check_weights(panel, fit, "scaled.weights", target["prefix"])
+
+
+@pytest.mark.parametrize(("kwargs", "message"), [
+    ({"min_corr": 1.01}, "min_corr must be in"),
+    ({"min_corr": np.nan}, "finite numeric"),
+    ({"min_corr": True}, "finite numeric"),
+    ({"rtol": -1.0}, "non-negative"),
+    ({"atol": np.inf}, "finite numeric"),
+    ({"atol": False}, "finite numeric"),
+])
+def test_check_weights_rejects_invalid_tolerances(kwargs, message):
+    panel = ScorePanel(
+        scores=np.ones((2, 1)), sample_fid=np.array(["F1", "F2"]),
+        sample_iid=np.array(["I1", "I2"]),
+        score_ids=np.array(["s"], dtype=object),
+        standardized=np.ones(1, dtype=bool))
+    fit = SimpleNamespace(beta=np.ones(1), score_ids=panel.score_ids)
+    with pytest.raises(ValueError, match=message):
+        check_weights(panel, fit, "unused.weights", "unused", **kwargs)
 
 
 def test_read_trait_table_converts_blank_n_eff(tmp_path):
@@ -382,6 +451,18 @@ def test_panel_from_sumstats_runs_later_traits_after_the_cache(monkeypatch,
     assert seen[0][0] == "one.tsv" and seen[0][1] is True
     later = {path: wrote_ld_out for path, wrote_ld_out, _ in seen[1:]}
     assert later == {"two.tsv": False, "three.tsv": False}
+    assert panel.log["ld_reused"] is True
+
+
+def test_parallel_sumstats_with_ld_prefix_requires_a_shared_cache(monkeypatch):
+    import ldpred3
+
+    monkeypatch.setattr(ldpred3, "run_ldpred3_prs",
+                        lambda *args, **kwargs: _ldpred3_result())
+    with pytest.raises(ValueError, match="requires ld_cache"):
+        panel_from_sumstats(
+            {"one": "one.tsv", "two": "two.tsv"}, "target",
+            ld_prefix="reference", n_jobs=2)
 
 
 def test_panel_from_sumstats_accepts_missing_inference_and_preserves_mapping(
@@ -470,10 +551,78 @@ def test_combine_weights_preserves_multiallelic_variants_at_one_position():
 
 
 def test_combine_weights_reports_exact_cancellation():
-    panel = _weight_panel([_weight_table("A", "G", 1.0),
-                           _weight_table("G", "A", 1.0)])
+    first = _weight_table("A", "G", 1.0)
+    second = _weight_table("G", "A", 1.0)
+    # Same physical reference after orienting G back to A.
+    second["af"] = 1.0 - first["af"]
+    panel = _weight_panel([first, second])
     fit = SimpleNamespace(beta=np.ones(2), score_ids=panel.score_ids)
     with pytest.raises(ValueError, match="cancel exactly"):
+        combine_weights(panel, fit)
+
+
+def test_frozen_weight_panels_and_mixed_scales_fold_exactly(target, tmp_path):
+    """Different AF/SD bases and missing calls survive one-file deployment."""
+    from ldpred3 import score_from_weights
+    from ldpred3.weights import write_weights
+
+    catalog = panel_from_catalog(target["scoring_files"][:1], target["prefix"])
+    table = catalog.weights[0]
+    base_af = np.asarray(table["af"], dtype=float)
+    base_sd = np.asarray(table["sd"], dtype=float)
+    base_w = np.asarray(table["weight"], dtype=float)
+    af1 = np.clip(0.8 * base_af + 0.05, 0.01, 0.99)
+    af2_target = np.clip(0.7 * base_af + 0.15, 0.01, 0.99)
+    sd1 = 0.8 * base_sd + 0.1
+    sd2 = 1.4 * base_sd + 0.2
+    one = tmp_path / "one.weights"
+    two = tmp_path / "two.weights"
+    write_weights(
+        one, id=table["id"], chrom=table["chrom"], pos=table["pos"],
+        effect_allele=table["a1"], other_allele=table["a2"],
+        weight=base_w, af=af1, sd=sd1)
+    # Store the second file on the opposite allele. Harmonisation must flip its
+    # weight and AF back before the two distinct frozen bases are folded.
+    write_weights(
+        two, id=table["id"], chrom=table["chrom"], pos=table["pos"],
+        effect_allele=table["a2"], other_allele=table["a1"],
+        weight=-0.6 * base_w, af=1.0 - af2_target, sd=sd2)
+
+    panel = panel_from_weights([str(one), str(two)], target["prefix"])
+    expected_one = score_from_weights(str(one), target["prefix"],
+                                      scaling="frozen")
+    expected_two = score_from_weights(str(two), target["prefix"],
+                                      scaling="frozen")
+    assert np.allclose(panel.scores[:, 0], expected_one.scores, atol=1e-9)
+    assert np.allclose(panel.scores[:, 1], expected_two.scores, atol=1e-9)
+
+    fit = SimpleNamespace(beta=np.array([0.7, 1.2]),
+                          score_ids=panel.score_ids,
+                          multi_pgs=lambda p: np.asarray(p.scores)
+                          @ np.array([0.7, 1.2]))
+    combined_path = tmp_path / "combined.weights"
+    out = combine_weights(panel, fit, path=str(combined_path))
+    deployed = score_from_weights(str(combined_path), target["prefix"],
+                                  scaling="frozen")
+    direct = fit.multi_pgs(panel)
+    assert np.allclose(deployed.scores - deployed.scores.mean(),
+                       direct - direct.mean(), rtol=2e-7, atol=2e-7)
+    assert np.all(np.isfinite(out["af"]))
+    assert np.all(out["sd"] > 0)
+    info = check_weights(panel, fit, str(combined_path), target["prefix"])
+    assert info["slope"] == pytest.approx(1.0, rel=1e-6)
+
+
+def test_combine_rejects_an_unrepresentable_signed_frozen_centre():
+    first = _weight_table("A", "G", 1.0)
+    second = _weight_table("A", "G", 1.0)
+    first["af"] = np.array([0.1])
+    second["af"] = np.array([0.9])
+    first["sd"] = second["sd"] = np.ones(1)
+    panel = _weight_panel([first, second])
+    fit = SimpleNamespace(beta=np.array([1.0, -0.5]),
+                          score_ids=panel.score_ids)
+    with pytest.raises(ValueError, match="outside \\[0, 1\\]"):
         combine_weights(panel, fit)
 
 

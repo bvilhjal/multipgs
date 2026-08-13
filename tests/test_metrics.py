@@ -93,6 +93,9 @@ def test_liability_r2_validates_its_inputs():
         liability_r2(np.nan, 0.1, 0.5)
     with pytest.raises(ValueError, match="finite"):
         liability_r2([0.1, np.inf], 0.1, 0.5)
+    for bad in (-0.01, 1.01):
+        with pytest.raises(ValueError, match=r"\[0, 1\]"):
+            liability_r2(bad, 0.1, 0.5)
 
 
 def test_evaluate_reports_the_right_metrics_per_family():
@@ -131,6 +134,20 @@ def test_evaluate_validates_shapes_and_family():
         evaluate(rng.normal(size=10), rng.normal(size=10), family="poisson")
     with pytest.raises(ValueError, match="at least 3"):
         evaluate(np.zeros(2), np.zeros(2))
+
+
+@pytest.mark.parametrize("n_boot", [-1, 1.5, np.nan, True])
+def test_evaluate_validates_bootstrap_count(n_boot):
+    y = np.arange(5.0)
+    with pytest.raises(ValueError, match="n_boot.*non-negative integer"):
+        evaluate(y, y, n_boot=n_boot)
+
+
+@pytest.mark.parametrize("level", [0.0, 1.0, -0.1, 1.1, np.nan])
+def test_evaluate_validates_interval_level(level):
+    y = np.arange(5.0)
+    with pytest.raises(ValueError, match=r"level.*\(0, 1\)"):
+        evaluate(y, y, n_boot=0, level=level)
 
 
 def test_public_metrics_reject_non_finite_observations_and_covariates():

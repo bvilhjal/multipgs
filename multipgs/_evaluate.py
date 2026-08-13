@@ -89,8 +89,10 @@ def evaluate_sumstat(beta, c_eval, gram_eval, *, var_y=1.0, regime=None,
     c_eval, gram_eval : array_like
         Score-space moments from the **evaluation** data: ``W^T z_eval`` and
         ``W^T D_eval W``, on the same score scaling ``beta`` is on.
-        The metric projects ``c_eval`` onto the scale-invariant positive range
-        of ``gram_eval`` and logs the discarded finite-reference null component.
+        The metric uses the observed scalar ``beta.T @ c_eval``. It also projects
+        the full ``c_eval`` onto the scale-invariant positive range of
+        ``gram_eval`` for provenance, but unused components cannot alter the
+        fixed-vector estimate.
     var_y : float
         Phenotype variance on the scale ``c_eval`` was formed on. The MSE is
         meaningless if this is wrong, and the R² is off by a constant factor.
@@ -166,13 +168,18 @@ def evaluate_sumstat(beta, c_eval, gram_eval, *, var_y=1.0, regime=None,
             "moments; declare A or B according to its actual role")
 
     # A fixed vector uses only one scalar direction. An unused noisy/null score
-    # or an indefinite unused subspace must not invalidate that direction.
+    # or an indefinite unused subspace must neither invalidate nor alter it.
     observed_beta_c = float(beta @ c_eval)
     c_identifiable, discarded_c_norm, discarded_c_fraction = (
         _project_c_to_gram_range(c_eval, gram_eval))
-    num, quad, quad_tol, gram_eval, gram_asymmetry = (
+    projected_beta_c = float(beta @ c_identifiable)
+    _, quad, quad_tol, gram_eval, gram_asymmetry = (
         _directional_score_moments(
-            beta, gram_eval, c_identifiable, var_y, "gram_eval"))
+            beta, gram_eval, np.zeros_like(c_eval), var_y, "gram_eval"))
+    # If the fixed score itself has zero variance under this LD reference, its
+    # noisy observed covariance is not an identifiable prediction. Retain that
+    # scalar in the audit log, but use the safe null prediction for MSE.
+    num = 0.0 if quad <= quad_tol else observed_beta_c
     r2 = (float("nan") if quad <= quad_tol
           else (num * num) / (quad * var_y))
     mse = var_y - 2.0 * num + quad
@@ -180,6 +187,9 @@ def evaluate_sumstat(beta, c_eval, gram_eval, *, var_y=1.0, regime=None,
     log = {"n_nonzero": int(np.sum(beta != 0.0)),
            "beta_c": num, "beta_G_beta": quad,
            "observed_beta_c": observed_beta_c,
+           "projected_beta_c": projected_beta_c,
+           "global_projection_shift_beta_c": (
+               observed_beta_c - projected_beta_c),
            "discarded_beta_c_null": observed_beta_c - num,
            "discarded_c_null_norm": discarded_c_norm,
            "discarded_c_null_fraction": discarded_c_fraction,
@@ -188,10 +198,18 @@ def evaluate_sumstat(beta, c_eval, gram_eval, *, var_y=1.0, regime=None,
     if regime == "C":
         log["warning"] = ("evaluated on the same summary statistics it was "
                           "fitted on; this is an upper bound, not a validation")
+    moment_warnings = []
+    if quad <= quad_tol and observed_beta_c != 0.0:
+        moment_warnings.append(
+            "the fixed score has zero variance under gram_eval but nonzero "
+            "observed covariance; its R2 is undefined and its covariance was "
+            "not used in MSE")
     if np.isfinite(r2) and r2 > 1.0:
-        log["moment_warning"] = (
+        moment_warnings.append(
             f"plug-in evaluation R2 is {r2:.6g}, above 1; external moments "
             "are noisy, but check scaling, alignment, var_y, and the LD source")
+    if moment_warnings:
+        log["moment_warning"] = "; ".join(moment_warnings)
     if mse < 0.0:
         log["mse_moment_warning"] = (
             f"plug-in MSE is {mse:.6g}, below zero; retain it only as a noisy "

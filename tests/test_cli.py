@@ -104,6 +104,34 @@ def test_panel_sumstats_without_ld_is_refused(cohort, tmp_path):
               "--plink", cohort["prefix"], "--out", str(tmp_path / "x.tsv")])
 
 
+@pytest.mark.parametrize("source", ["--sumstats", "--traits"])
+def test_panel_sumstats_forwards_bgen_sample_file(tmp_path, monkeypatch,
+                                                  source):
+    from multipgs.panel import ScorePanel
+
+    captured = {}
+
+    def fake_panel_from_sumstats(*args, **kwargs):
+        captured.update(kwargs)
+        return ScorePanel(
+            scores=np.zeros((1, 1)), sample_fid=np.array(["f"]),
+            sample_iid=np.array(["i"]), score_ids=np.array(["s"]),
+            standardized=np.ones(1, dtype=bool))
+
+    monkeypatch.setattr("multipgs.panel.panel_from_sumstats",
+                        fake_panel_from_sumstats)
+    cache = tmp_path / "ld-cache"
+    cache.touch()
+    sample = tmp_path / "target.sample"
+    sample.touch()
+    source_path = tmp_path / ("traits.tsv" if source == "--traits"
+                              else "sumstats.tsv")
+    assert main(["panel", source, str(source_path), "--plink", "target.bgen",
+                 "--sample", str(sample), "--ld-cache", str(cache), "--out",
+                 str(tmp_path / "panel.npz"), "--quiet"]) == 0
+    assert captured["sample_path"] == str(sample)
+
+
 def test_panel_accepts_a_directory(cohort, tmp_path, capsys):
     import os
     import shutil
@@ -252,6 +280,47 @@ def test_duplicate_individual_and_score_ids_are_rejected(tmp_path):
     with pytest.raises(SystemExit, match="duplicate value column"):
         main(["evaluate", "--scores", str(duplicate_score),
               "--pheno", "not-read.tsv", "--n-boot", "0"])
+
+
+@pytest.mark.parametrize("duplicate", ["sample", "score"])
+def test_fit_rejects_duplicate_ids_in_npz_panel(tmp_path, duplicate):
+    from multipgs.panel import ScorePanel, save_panel
+
+    if duplicate == "sample":
+        panel = ScorePanel(
+            scores=np.zeros((2, 1)), sample_fid=np.array(["f", "f"]),
+            sample_iid=np.array(["i", "i"]), score_ids=np.array(["s"]),
+            standardized=np.ones(1, dtype=bool))
+        message = "duplicate FID:IID"
+    else:
+        panel = ScorePanel(
+            scores=np.zeros((2, 2)), sample_fid=np.array(["f1", "f2"]),
+            sample_iid=np.array(["i1", "i2"]),
+            score_ids=np.array(["s", "s"]),
+            standardized=np.ones(2, dtype=bool))
+        message = "duplicate score id"
+    panel_path = tmp_path / f"duplicate-{duplicate}.npz"
+    save_panel(panel, panel_path)
+    with pytest.raises(SystemExit, match=message):
+        main(["fit", "--panel", str(panel_path), "--pheno", "not-read.tsv",
+              "--out", str(tmp_path / "fit.tsv")])
+
+
+def test_combine_rejects_extra_fit_score_ids(tmp_path):
+    from multipgs.panel import ScorePanel, save_panel
+
+    panel = ScorePanel(
+        scores=np.zeros((2, 2)), sample_fid=np.array(["f1", "f2"]),
+        sample_iid=np.array(["i1", "i2"]),
+        score_ids=np.array(["a", "b"]),
+        standardized=np.ones(2, dtype=bool))
+    panel_path = tmp_path / "panel.npz"
+    save_panel(panel, panel_path)
+    fit = tmp_path / "fit.tsv"
+    fit.write_text("SCORE\tBETA\na\t1\nb\t2\nextra\t3\n", encoding="utf-8")
+    with pytest.raises(SystemExit, match="unexpected.*extra"):
+        main(["combine", "--panel", str(panel_path), "--fit", str(fit),
+              "--out", str(tmp_path / "weights.tsv")])
 
 
 def test_binomial_fit_runs(cohort, tmp_path, capsys):

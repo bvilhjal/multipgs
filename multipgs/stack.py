@@ -380,7 +380,9 @@ def multi_pgs_fit(scores, y, *, covar=None, family="gaussian", alpha=1.0,
         fitted baseline if the penalized additions fail the nested gate; this
         does not guarantee that additions improve an independent cohort.
     dfmax : int, optional
-        Abandon a path once it holds more than this many non-zero scores.
+        Path-stopping threshold, not a hard coefficient cap. The first fitted
+        penalty with more than this many non-zero scores is retained, then the
+        remaining lower-penalty path is abandoned.
     score_ids, covar_ids : sequence, optional
         Names, for reporting. Default to ``score_0 ...`` and ``covar_0 ...``.
     missing : {"raise", "mean"}
@@ -665,4 +667,3 @@ def _resolve_columns(sel, ids, K):
         return np.array([lookup[str(v)] for v in np.atleast_1d(sel)], dtype=int)
     except KeyError as exc:
         raise ValueError(f"unknown score id {exc.args[0]!r}") from None
-

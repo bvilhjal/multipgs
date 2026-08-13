@@ -153,7 +153,9 @@ own = panel_from_weights("weights/", "cohort")
 `panel_from_sumstats` calls `ldpred3.run_ldpred3_prs`. Give it `ld_cache` (and
 preferably `ld_prefix`) so the first trait writes the blocks and the rest only
 read them; that also sets `subset_to_sumstats=False`. After the first
-successful write, `n_jobs` runs remaining traits in a thread pool.
+successful write, `n_jobs` runs remaining traits in a thread pool. With only
+`ld_prefix`, every trait rebuilds LD; `n_jobs>1` therefore requires an explicit
+shared `ld_cache`.
 
 `infer=True, auto_chains=50` is the Hansen screening path and is extra work.
 Omit both if you only need scores. Include the target trait's own score in the
@@ -216,7 +218,10 @@ fit = multi_pgs_fit(panel.scores, y, penalty_factor=pf,
 
 `ldsc_rg_screen` (optional `multipgs[bipred]`) estimates `r_G` of each
 auxiliary GWAS against a focal trait on a shared `ld_cache`. The LDSC χ² cap
-is applied to those regression rows only.
+is applied to those regression rows only. One validated cache load and one
+LD-score pass serve every auxiliary. The default requires 10,000 usable rows;
+`exclude_long_range_ld=True` applies bipred's GRCh37 mask, so another genome
+build needs its own preprocessing mask.
 
 Read `penalty_from_accuracy`'s note first: it weights by each score's accuracy
 for *its own* trait. That is a ranking heuristic, not a bound on relevance to
@@ -381,6 +386,10 @@ The contract:
   [algorithm.md](algorithm.md#summary-statistic-learned-combination) has the
   mechanics; [theory.md §2](theory.md#the-same-gaussian-objective-from-summary-statistics)
   the derivation.
+- **Require converged selection.** Unconverged scalar and PUMAS path points are
+  never eligible. Inspect `n_iteration_exhausted_fit`,
+  `n_iteration_exhausted_tuning`, and `n_rejected_nonconverged` in `fit.log`;
+  if every candidate exhausts the budget, increase `max_iter` or relax `tol`.
 
 With moments computed from the same individuals, this route and the
 individual-level fit agree to a coefficient correlation of 0.9996, and the
@@ -495,6 +504,16 @@ per-variant table, on the standardized scale ldpred3 applies. The new cohort is
 scored with no reference to the `K` inputs and no need to rebuild the panel.
 Both `MultiPGSFit` and `SumstatFit` expose raw-score coefficients as `beta`, so
 this deployment contract is the same for individual- and summary-level fits.
+
+Each component may have been frozen to a different reference. `combine_weights`
+therefore adds raw-dosage slopes `beta_k * weight_k / sd_k` and derives the
+coefficient-weighted frozen mean needed to preserve reference-mean imputation;
+simply summing standardized weights is wrong. Raw allele-count components leave
+one additive intercept, which the file need not encode. A signed combination
+whose exact effective allele frequency lies outside `[0,1]` is not representable
+by one valid LDpred3 row and is rejected. `check_weights` removes the global
+intercept and then requires unit slope and tiny residual error—correlation alone
+would let a predictor scaled by two pass.
 
 Use `scaling="frozen"`. It reuses the `AF_REF`/`SD_REF` written into the file,
 so a cohort with different allele frequencies is still scored on the scale the

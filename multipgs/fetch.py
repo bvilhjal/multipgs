@@ -71,7 +71,7 @@ BUILDS = ("GRCh37", "GRCh38")
 # short pause between them, and a cache so a re-run of the same panel costs
 # nothing. Page size is the API maximum; fewer, larger pages is both faster and
 # politer than many small ones.
-_PAGE_SIZE = 50
+_PAGE_SIZE = 250
 _ID_CHUNK = 50
 _PAUSE = 0.2
 
@@ -375,7 +375,7 @@ def _scores_by_id(pgs_ids, *, cache_dir, timeout, progress):
     found = {}
     for start in range(0, len(wanted), _ID_CHUNK):
         chunk = wanted[start:start + _ID_CHUNK]
-        results, _ = _paged("score/search", {"pgs_ids": ",".join(chunk)},
+        results, _ = _paged("score/all", {"filter_ids": ",".join(chunk)},
                             cache_dir=cache_dir, timeout=timeout)
         for payload in results:
             record = ScoreRecord.from_api(payload)

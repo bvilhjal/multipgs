@@ -58,7 +58,7 @@ python -m pip install -e "../bipred[fast]"   # optional r_G screen
 python -m pip install -e ".[fast,test]"
 ```
 
-If the second command reports that it cannot satisfy `ldpred3>=0.4.7,<0.5`, the
+If the third command reports that it cannot satisfy `ldpred3>=0.4.7,<0.5`, the
 editable ldpred3 install has stale recorded metadata — a checkout that moved
 past the version pip last saw. Re-running the first command refreshes it.
 

@@ -15,7 +15,9 @@ python -m pip install -e ".[fast,test,lint]"
 
 CI installs the exact ldpred3 revision in `.github/workflows/ci.yml`. Check
 compatibility with that revision before changing the declared dependency
-range.
+range. Because ldpred3 is private, repository CI also needs the
+`LDPRED3_READ_TOKEN` secret with read access to `bvilhjal/ldpred3`; the workflow
+fails with that name explicitly when it is absent.
 
 ## Routine verification
 
@@ -68,13 +70,16 @@ cd report
 python generate_evidence.py
 pdflatex -interaction=nonstopmode -halt-on-error multipgs_methods.tex
 pdflatex -interaction=nonstopmode -halt-on-error multipgs_methods.tex
+python generate_evidence.py --record-pdf
 cd ..
 python report/generate_evidence.py --check
 ```
 
 Inspect every page of `multipgs_methods.pdf` before committing both source and
-PDF. The final check is read-only and catches stale inputs or generated files;
-Appendix A names the benchmark artifacts behind quantitative statements.
+PDF. Tectonic may replace the two `pdflatex` calls. The final check is read-only
+and catches stale inputs, generated files, a PDF not bound to the current input
+digest, or a PDF whose SHA-256 does not match its sidecar; Appendix A names the
+benchmark artifacts behind quantitative statements.
 
 ## Distribution and release refresh
 

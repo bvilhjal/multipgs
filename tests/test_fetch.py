@@ -143,24 +143,28 @@ def test_recorded_zero_ancestry_share_is_zero_not_missing():
 # ---------------------------------------------------------------------------
 
 def test_search_by_id_returns_records_in_the_requested_order(api):
-    api.routes["score/search"] = _page([_score("PGS000765"),
-                                        _score("PGS000001")])
+    api.routes["score/all"] = _page([_score("PGS000765"),
+                                     _score("PGS000001")])
     records = fetch.search_scores(pgs_ids=["PGS000001", "PGS000765"])
     assert [r.pgs_id for r in records] == ["PGS000001", "PGS000765"]
+    assert "/score/all?" in api.calls[0]
+    assert "filter_ids=PGS000001%2CPGS000765" in api.calls[0]
+    assert "limit=250" in api.calls[0]
+    assert "pgs_ids=" not in api.calls[0]
 
 
 def test_a_score_the_catalog_does_not_have_is_an_error(api):
     """The trap: an unknown id comes back as an empty page, not a 404."""
-    api.routes["score/search"] = _page([_score("PGS000001")])
+    api.routes["score/all"] = _page([_score("PGS000001")])
     with pytest.raises(ValueError, match="did not return 1 of the 2"):
         fetch.search_scores(pgs_ids=["PGS000001", "PGS999999"])
 
 
 def test_search_follows_pagination(api):
     api.routes["offset=1"] = _page([_score("PGS000002")])
-    api.routes["score/search"] = _page([_score("PGS000001")],
-                                       next_url="https://x/rest/score/search"
-                                                "?offset=1")
+    api.routes["score/all"] = _page([_score("PGS000001")],
+                                    next_url="https://x/rest/score/all"
+                                             "?offset=1")
     records = fetch.search_scores(pgs_ids=["PGS000001", "PGS000002"])
     assert [r.pgs_id for r in records] == ["PGS000001", "PGS000002"]
 
@@ -170,8 +174,8 @@ def test_trait_search_can_include_child_traits(api):
         "id": "MONDO_0004989", "label": "breast carcinoma",
         "associated_pgs_ids": ["PGS000001"],
         "child_associated_pgs_ids": ["PGS000002"]}
-    api.routes["score/search"] = _page([_score("PGS000001"),
-                                        _score("PGS000002")])
+    api.routes["score/all"] = _page([_score("PGS000001"),
+                                     _score("PGS000002")])
 
     parent = fetch.search_scores(trait_id="MONDO_0004989")
     assert [r.pgs_id for r in parent] == ["PGS000001"]
@@ -194,7 +198,7 @@ def test_exactly_one_selector_is_required(api):
 
 
 def test_the_cache_makes_a_second_search_free(tmp_path, api):
-    api.routes["score/search"] = _page([_score("PGS000001")])
+    api.routes["score/all"] = _page([_score("PGS000001")])
     cache = str(tmp_path / "cache")
     first = fetch.search_scores(pgs_ids=["PGS000001"], cache_dir=cache)
     n_calls = len(api.calls)
@@ -499,8 +503,8 @@ def test_json_payloads_are_not_evaluated():
 
 
 def test_search_records_round_trip_through_the_cache(tmp_path, api):
-    api.routes["score/search"] = _page([_score("PGS000001",
-                                               samples=[_sample(22627)])])
+    api.routes["score/all"] = _page([_score("PGS000001",
+                                            samples=[_sample(22627)])])
     cache = str(tmp_path / "c")
     fetch.search_scores(pgs_ids=["PGS000001"], cache_dir=cache)
     files = list((tmp_path / "c").iterdir())

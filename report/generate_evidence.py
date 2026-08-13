@@ -32,19 +32,25 @@ ROOT = Path(__file__).resolve().parents[1]
 REPORT = ROOT / "report"
 EVIDENCE_PATH = REPORT / "evidence.json"
 GENERATED_TEX_PATH = REPORT / "generated_evidence.tex"
+PDF_PATH = REPORT / "multipgs_methods.pdf"
+PDF_DIGEST_PATH = REPORT / "multipgs_methods.pdf.sha256"
 SCHEMA_VERSION = 1
 
 _INPUT_GLOBS = (
     "multipgs/*.py",
     "docs/*.md",
+    "examples/*.py",
     "tests/*.py",
     "benchmarks/*.py",
     "benchmarks/results/*.csv",
     "benchmarks/results/*_provenance.json",
 )
 _INPUT_FILES = (
+    ".github/workflows/ci.yml",
+    ".gitignore",
     "README.md",
     "CHANGELOG.md",
+    "CONTRIBUTING.md",
     "pyproject.toml",
     "MANIFEST.in",
     "report/README.md",
@@ -80,6 +86,121 @@ def report_input_digest(root=ROOT, inputs=None):
         digest.update(data)
         digest.update(b"\0")
     return digest.hexdigest()
+
+
+def file_sha256(path):
+    """SHA-256 of one file, streamed so large reports do not double memory."""
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _pdf_literal(data, start):
+    """Decode one direct PDF literal string beginning at ``start``."""
+    if data[start:start + 1] != b"(":
+        raise ValueError("PDF metadata value is not a literal string")
+    out = bytearray()
+    depth = 1
+    i = start + 1
+    escapes = {ord("n"): 10, ord("r"): 13, ord("t"): 9,
+               ord("b"): 8, ord("f"): 12,
+               ord("("): 40, ord(")"): 41, ord("\\"): 92}
+    while i < len(data) and depth:
+        value = data[i]
+        i += 1
+        if value == ord("\\"):
+            if i >= len(data):
+                break
+            value = data[i]
+            i += 1
+            if ord("0") <= value <= ord("7"):
+                digits = bytes([value])
+                while (len(digits) < 3 and i < len(data)
+                       and ord("0") <= data[i] <= ord("7")):
+                    digits += bytes([data[i]])
+                    i += 1
+                out.append(int(digits, 8))
+            elif value in escapes:
+                out.append(escapes[value])
+            elif value == 13:
+                if i < len(data) and data[i] == 10:
+                    i += 1
+            elif value != 10:
+                out.append(value)
+        elif value == ord("("):
+            depth += 1
+            out.append(value)
+        elif value == ord(")"):
+            depth -= 1
+            if depth:
+                out.append(value)
+        else:
+            out.append(value)
+    if depth:
+        raise ValueError("unterminated PDF metadata literal")
+    raw = bytes(out)
+    if raw.startswith(b"\xfe\xff"):
+        return raw[2:].decode("utf-16-be")
+    if raw.startswith(b"\xff\xfe"):
+        return raw[2:].decode("utf-16-le")
+    return raw.decode("latin-1")
+
+
+def pdf_subject(path):
+    """Read PDF Subject metadata, supporting pdfTeX and Tectonic output."""
+    data = Path(path).read_bytes()
+    positions = [match.end() for match in re.finditer(rb"/Subject\s*", data)]
+    for start in reversed(positions):
+        if data[start:start + 1] == b"(":
+            return _pdf_literal(data, start)
+    try:
+        from pypdf import PdfReader
+    except ImportError as exc:
+        raise RuntimeError(
+            "the report PDF stores indirect/compressed metadata; install "
+            "pypdf to validate a Tectonic build") from exc
+    subject = (PdfReader(path, strict=True).metadata or {}).get("/Subject")
+    if not isinstance(subject, str) or not subject:
+        raise ValueError("report PDF has no Subject metadata")
+    return subject
+
+
+def pdf_binding(evidence):
+    """Machine-readable source identity embedded by the TeX template."""
+    return (f"multipgs-input-sha256={evidence['input_digest_sha256']};"
+            f"multipgs-version={evidence['package_version']}")
+
+
+def validate_pdf_binding(pdf, evidence):
+    """Require the compiled PDF itself to name the current evidence digest."""
+    observed = re.sub(r"\s+", "", pdf_subject(pdf))
+    expected = pdf_binding(evidence)
+    if observed != expected:
+        raise AssertionError(
+            "report/multipgs_methods.pdf was not compiled from the current "
+            "generated evidence; rebuild it before recording its digest")
+
+
+def write_pdf_digest(root=ROOT, evidence=None):
+    """Record a current, evidence-bound PDF digest after the final TeX pass."""
+    root = Path(root)
+    pdf = root / "report" / PDF_PATH.name
+    if not pdf.is_file():
+        raise FileNotFoundError("report/multipgs_methods.pdf is missing or invalid")
+    with pdf.open("rb") as handle:
+        header = handle.read(5)
+    if header != b"%PDF-":
+        raise FileNotFoundError("report/multipgs_methods.pdf is missing or invalid")
+    if evidence is None:
+        evidence = json.loads((root / "report" / "evidence.json").read_text(
+            encoding="utf-8"))
+    validate_pdf_binding(pdf, evidence)
+    value = file_sha256(pdf)
+    (root / "report" / PDF_DIGEST_PATH.name).write_text(
+        f"{value}  {pdf.name}\n", encoding="ascii")
+    return value
 
 
 def package_version(root=ROOT):
@@ -310,9 +431,14 @@ def test_environment(test_count):
 
 def run_tests(root=ROOT):
     """Run the full suite once and return its passed-test count."""
+    environment = os.environ.copy()
+    # Source evidence must be generated before TeX can compile the new PDF.
+    # During this one bootstrap suite only, test the source/evidence contract
+    # and defer the PDF-sidecar check until --record-pdf below.
+    environment["MULTIPGS_REPORT_BOOTSTRAP"] = "1"
     completed = subprocess.run(
         [sys.executable, "-m", "pytest", "-q"], cwd=root,
-        text=True, capture_output=True, check=False)
+        text=True, capture_output=True, check=False, env=environment)
     output = completed.stdout + completed.stderr
     if completed.returncode:
         sys.stderr.write(output)
@@ -447,7 +573,7 @@ def validate_report_source(evidence, root=ROOT):
             raise AssertionError(f"methods report plot is stale: {label}")
 
 
-def validate_committed_evidence(root=ROOT):
+def validate_committed_evidence(root=ROOT, *, check_pdf=True):
     """Read-only freshness check; deliberately does not execute pytest."""
     root = Path(root)
     evidence = json.loads((root / "report" / "evidence.json").read_text(
@@ -481,6 +607,21 @@ def validate_committed_evidence(root=ROOT):
     if generated != render_generated_tex(evidence):
         raise AssertionError("report/generated_evidence.tex is stale")
     validate_report_source(evidence, root)
+    if check_pdf and not os.environ.get("MULTIPGS_REPORT_BOOTSTRAP"):
+        pdf = root / "report" / PDF_PATH.name
+        digest_path = root / "report" / PDF_DIGEST_PATH.name
+        if not pdf.is_file() or not digest_path.is_file():
+            raise AssertionError(
+                "compiled report or its digest is missing; rebuild the PDF and "
+                "run report/generate_evidence.py --record-pdf")
+        fields = digest_path.read_text(encoding="ascii").strip().split()
+        if len(fields) != 2 or fields[1] != PDF_PATH.name:
+            raise AssertionError("report PDF digest file is malformed")
+        if fields[0] != file_sha256(pdf):
+            raise AssertionError(
+                "report/multipgs_methods.pdf is stale; rebuild it and run "
+                "report/generate_evidence.py --record-pdf")
+        validate_pdf_binding(pdf, evidence)
     return evidence
 
 
@@ -492,10 +633,22 @@ def main(argv=None):
     parser.add_argument(
         "--check", action="store_true",
         help="check committed evidence without running tests or writing files")
+    parser.add_argument(
+        "--record-pdf", action="store_true",
+        help="record the digest of the freshly compiled methods PDF")
     args = parser.parse_args(argv)
+    if args.check and args.record_pdf:
+        parser.error("--check and --record-pdf are mutually exclusive")
     if args.check:
         validate_committed_evidence(ROOT)
         print("report evidence is current")
+        return 0
+    if args.record_pdf:
+        validate_committed_evidence(ROOT, check_pdf=False)
+        digest = write_pdf_digest(ROOT, validate_committed_evidence(
+            ROOT, check_pdf=False))
+        validate_committed_evidence(ROOT)
+        print(f"recorded report PDF sha256: {digest}")
         return 0
     if args.test_count is not None and args.test_count <= 0:
         parser.error("--test-count must be positive")
@@ -523,9 +676,10 @@ def main(argv=None):
             raise
     evidence = build_evidence(count, ROOT)
     write_evidence(evidence, ROOT)
-    validate_committed_evidence(ROOT)
+    validate_committed_evidence(ROOT, check_pdf=False)
     print(f"wrote report evidence for {count} passing tests")
     print(f"input sha256: {evidence['input_digest_sha256']}")
+    print("rebuild the PDF, then run with --record-pdf")
     return 0
 
 

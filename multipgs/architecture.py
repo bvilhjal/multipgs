@@ -325,9 +325,11 @@ def screen(architectures, *, h2_range=(0.01, 1.0), min_chains_kept=20,
         ids.append(sid)
         # A Catalog score can carry a matched-variant count and a caller may
         # supply n_eff, but neither proves that an architecture model was fit.
-        has_arch = (np.isfinite(h2) or np.isfinite(p)
-                    or np.isfinite(r2_infer) or np.isfinite(shrinkage)
-                    or n_chains_kept > 0 or n_chains > 0)
+        has_model_arch = (np.isfinite(h2) or np.isfinite(p)
+                          or np.isfinite(r2_infer)
+                          or np.isfinite(shrinkage)
+                          or n_chains_kept > 0 or n_chains > 0)
+        has_arch = has_model_arch or np.isfinite(rg)
         unscreenable.append(not has_arch)
         if not has_arch:
             keep.append(bool(keep_unscreenable))
@@ -335,41 +337,42 @@ def screen(architectures, *, h2_range=(0.01, 1.0), min_chains_kept=20,
                 reasons[sid] = "no architecture available"
             continue
         fail = None
-        if lo is not None and not np.isfinite(h2):
-            fail = "heritability not estimated"
-        elif lo is not None and h2 < lo:
-            fail = f"heritability below {lo:g}"
-        elif hi is not None and h2 > hi:
-            fail = f"heritability above {hi:g}"
-        elif min_chains_kept is not None and n_chains_kept == 0:
-            fail = "converged chain count not available"
-        elif (min_chains_kept is not None
-              and n_chains_kept < min_chains_kept):
-            fail = f"fewer than {min_chains_kept} chains converged"
-        elif min_chains_total is not None and n_chains == 0:
-            fail = "total chain count not available"
-        elif min_chains_total is not None and n_chains < min_chains_total:
-            fail = f"fewer than {min_chains_total} total chains"
-        elif min_variants is not None and n_variants == 0:
-            fail = "post-QC variant count not available"
-        elif min_variants is not None and n_variants < min_variants:
-            fail = f"fewer than {min_variants:,} variants after QC"
-        elif min_n_eff is not None and not np.isfinite(n_eff):
-            fail = "effective sample size not available"
-        elif min_n_eff is not None and n_eff <= min_n_eff:
-            fail = (f"effective sample size not above "
-                    f"{min_n_eff:,.0f}")
-        elif min_shrinkage is not None and not np.isfinite(shrinkage):
-            fail = "shrinkage coefficient not available"
-        elif min_shrinkage is not None and shrinkage < min_shrinkage:
-            fail = f"shrinkage coefficient below {min_shrinkage:g}"
-        elif min_expected_r2 is not None:
+        if has_model_arch:
+            if lo is not None and not np.isfinite(h2):
+                fail = "heritability not estimated"
+            elif lo is not None and h2 < lo:
+                fail = f"heritability below {lo:g}"
+            elif hi is not None and h2 > hi:
+                fail = f"heritability above {hi:g}"
+            elif min_chains_kept is not None and n_chains_kept == 0:
+                fail = "converged chain count not available"
+            elif (min_chains_kept is not None
+                  and n_chains_kept < min_chains_kept):
+                fail = f"fewer than {min_chains_kept} chains converged"
+            elif min_chains_total is not None and n_chains == 0:
+                fail = "total chain count not available"
+            elif min_chains_total is not None and n_chains < min_chains_total:
+                fail = f"fewer than {min_chains_total} total chains"
+            elif min_variants is not None and n_variants == 0:
+                fail = "post-QC variant count not available"
+            elif min_variants is not None and n_variants < min_variants:
+                fail = f"fewer than {min_variants:,} variants after QC"
+            elif min_n_eff is not None and not np.isfinite(n_eff):
+                fail = "effective sample size not available"
+            elif min_n_eff is not None and n_eff <= min_n_eff:
+                fail = (f"effective sample size not above "
+                        f"{min_n_eff:,.0f}")
+            elif min_shrinkage is not None and not np.isfinite(shrinkage):
+                fail = "shrinkage coefficient not available"
+            elif min_shrinkage is not None and shrinkage < min_shrinkage:
+                fail = f"shrinkage coefficient below {min_shrinkage:g}"
+        if fail is None and min_expected_r2 is not None:
             exp = a.expected_r2()
             if not np.isfinite(exp) or exp < min_expected_r2:
                 fail = f"expected r2 below {min_expected_r2:g}"
-        elif min_abs_rg is not None and not np.isfinite(rg):
+        if fail is None and min_abs_rg is not None and not np.isfinite(rg):
             fail = "genetic correlation not available"
-        elif min_abs_rg is not None and abs(rg) < min_abs_rg:
+        elif fail is None and min_abs_rg is not None and abs(rg) < min_abs_rg:
             fail = f"|rg| below {min_abs_rg:g}"
         keep.append(fail is None)
         if fail is not None:
@@ -479,7 +482,9 @@ def penalty_from_relevance(expected_r2, rg, *, power=1.0, clip=4.0,
                            floor=1e-4):
     """Penalty factors from own-trait accuracy times ``r_G²``.
 
-    Uses :func:`penalty_from_accuracy` on ``r2_k * rg_k²``. Missing or
+    Uses :func:`penalty_from_accuracy` on ``r2_k * rg_k²``. Because finite-
+    sample LDSC estimates can fall outside the correlation parameter space,
+    finite ``rg`` is clipped to ``[-1, 1]`` before squaring. Missing or
     non-finite ``rg`` is treated as zero relevance (the most-penalised rank).
     This is still a ranking heuristic, not a bound on target-trait prediction.
     """
@@ -487,7 +492,8 @@ def penalty_from_relevance(expected_r2, rg, *, power=1.0, clip=4.0,
     g = np.asarray(rg, dtype=float).ravel()
     if r2.shape != g.shape:
         raise ValueError("expected_r2 and rg must have the same length")
-    rel = r2 * np.square(np.where(np.isfinite(g), g, 0.0))
+    bounded_g = np.clip(np.where(np.isfinite(g), g, 0.0), -1.0, 1.0)
+    rel = r2 * np.square(bounded_g)
     return penalty_from_accuracy(rel, power=power, clip=clip, floor=floor)
 
 

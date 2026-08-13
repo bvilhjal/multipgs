@@ -1,6 +1,37 @@
 # Changelog
 
-## Unreleased
+## 0.3.3 - 2026-08-13
+
+Correctness and release integrity:
+
+- LDpred3 weight panels now distinguish target-standardized files from frozen
+  files, impute missing frozen dosages to the frozen reference mean, and fold
+  components from different AF/SD references onto one declared deployment
+  basis. Deployment checks require unit slope and negligible centred error;
+  correlation alone no longer passes a rescaled predictor.
+- Architecture gates compose: enabling expected-R² screening no longer skips
+  the requested genetic-correlation gate, and an rG-only record is screenable.
+  Noisy finite LDSC estimates are clipped to the correlation parameter space
+  before relevance penalties are ranked.
+- Summary-statistic paths propagate coordinate-descent exhaustion instead of
+  silently selecting an unfinished solution. Fixed-vector evaluation uses the
+  observed fitted direction, external moment incoherence has an explicit
+  diagnostic policy, and sparse variant indices must be exact integers.
+- CLI combination requires the exact panel score-ID set, BGEN summary panels
+  receive `--sample`, and NPZ panels reject duplicate samples and score IDs.
+- Panel concatenation cannot detach metadata or weight tables from their score
+  columns. Bootstrap controls, liability-scale R² inputs, and trusted-only NPZ
+  loading are validated or stated explicitly.
+- Genetic-correlation screening reuses one validated LD-cache load across all
+  traits. Independent summary tuning reuses identical Gram work where safe,
+  and `max_iter` is once again a linear bound on coordinate sweeps.
+- The optional rG extra now requires `bipred>=0.3.8`, the first release that
+  provides the chi-square row mask used by `ldsc_rg_screen`.
+- CI uses an explicit credential for the private compatible LDpred3 revision.
+  The methods PDF embeds the current source digest and has a checked SHA-256
+  sidecar, so fresh TeX evidence can no longer mask a stale packaged PDF.
+
+## 0.3.2 - 2026-08-13
 
 - Full panels persist to `.npz` (`save_panel` / `load_panel` / `ScorePanel.save`)
   with weights, scale flags, inference and `n_eff`. `concat` joins two panels

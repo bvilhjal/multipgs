@@ -1,6 +1,9 @@
 """The documentation must not drift away from the code or the bibliography."""
 
 import importlib.util
+import hashlib
+import json
+import os
 import pathlib
 import re
 
@@ -10,6 +13,14 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 DOCS = sorted((ROOT / "docs").glob("*.md")) + [ROOT / "README.md",
                                                ROOT / "CHANGELOG.md"]
 DOI_RE = re.compile(r"https://doi\.org/(10\.[^\s)\]>`]+)")
+
+
+def _load_report_generator():
+    generator = ROOT / "report" / "generate_evidence.py"
+    spec = importlib.util.spec_from_file_location("report_evidence", generator)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _dois(text):
@@ -58,14 +69,24 @@ def test_methods_report_is_complete_and_linked():
     report = ROOT / "report"
     source = report / "multipgs_methods.tex"
     pdf = report / "multipgs_methods.pdf"
+    pdf_digest = report / "multipgs_methods.pdf.sha256"
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
     assert source.exists()
     assert pdf.exists()
+    assert pdf_digest.exists()
     assert "report/multipgs_methods.tex" in readme
     assert "report/multipgs_methods.pdf" in readme
     assert pdf.stat().st_size > 100_000
     assert pdf.read_bytes().startswith(b"%PDF-")
+    if not os.environ.get("MULTIPGS_REPORT_BOOTSTRAP"):
+        recorded, name = pdf_digest.read_text(encoding="ascii").split()
+        assert name == pdf.name
+        assert recorded == hashlib.sha256(pdf.read_bytes()).hexdigest()
+        evidence_module = _load_report_generator()
+        evidence = evidence_module.validate_committed_evidence(
+            ROOT, check_pdf=False)
+        evidence_module.validate_pdf_binding(pdf, evidence)
 
     latex = source.read_text(encoding="utf-8")
     assert "METHODS AND VALIDATION" in latex
@@ -82,12 +103,20 @@ def test_methods_report_is_complete_and_linked():
 
 
 def test_report_evidence_is_current_without_rerunning_the_suite():
-    generator = ROOT / "report" / "generate_evidence.py"
-    spec = importlib.util.spec_from_file_location("report_evidence", generator)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module = _load_report_generator()
     evidence = module.validate_committed_evidence(ROOT)
     assert evidence["tests"]["status"] == "passed"
+
+
+def test_methods_pdf_cannot_be_bound_to_different_evidence():
+    """Recording a digest must not bless a PDF built from stale TeX."""
+    module = _load_report_generator()
+    evidence = json.loads(
+        (ROOT / "report" / "evidence.json").read_text(encoding="utf-8"))
+    evidence["input_digest_sha256"] = "0" * 64
+    with pytest.raises(AssertionError, match="not compiled from the current"):
+        module.validate_pdf_binding(
+            ROOT / "report" / "multipgs_methods.pdf", evidence)
 
 
 def test_internal_doc_links_resolve():

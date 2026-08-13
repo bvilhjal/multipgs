@@ -60,11 +60,13 @@ def test_numba_and_numpy_kernels_agree():
     def run(sweep):
         beta, grad = _coord.unpenalized_fit(G, r, pf)
         out = np.zeros((lambdas.size, G.shape[0]))
+        converged = np.zeros(lambdas.size, dtype=bool)
+        sweeps = np.zeros(lambdas.size, dtype=np.int64)
         saved = _coord._sweep_gram
         try:
             _coord._sweep_gram = sweep
             _coord._path_gram(G, pf, beta, grad, lambdas, 1.0, 1e-12, 1000,
-                              G.shape[0], out)
+                              G.shape[0], out, converged, sweeps)
         finally:
             _coord._sweep_gram = saved
         return out
@@ -113,6 +115,20 @@ def test_dfmax_truncates_the_path():
                                                 lambdas=lambdas, dfmax=4)
     assert n_fitted < lambdas.size
     assert np.count_nonzero(coefs[n_fitted - 1]) > 4
+
+
+def test_dfmax_is_a_path_stop_not_a_hard_sparsity_cap():
+    """The first row crossing dfmax is retained for stable path semantics."""
+    _, _, G, r = _problem()
+    pf = np.ones(G.shape[0])
+    _, grad = _coord.unpenalized_fit(G, r, pf)
+    lambdas = _coord.lambda_grid(grad, pf, 1.0, n_lambda=60)
+    coefs, n_fitted = _coord.enet_path_gaussian(
+        G, r, pf=pf, alpha=1.0, lambdas=lambdas, dfmax=0)
+
+    assert n_fitted >= 2
+    assert np.count_nonzero(coefs[n_fitted - 1]) > 0
+    assert np.all(coefs[n_fitted:] == 0.0)
 
 
 def test_binomial_path_reduces_deviance_monotonically():
@@ -177,6 +193,29 @@ def test_gaussian_batch_matches_sequential_paths():
         assert np.array_equal(batched[i], coefs)
 
 
+def test_gaussian_max_iter_is_a_total_sweep_budget(monkeypatch):
+    calls = 0
+
+    def never_converges(*args):
+        nonlocal calls
+        calls += 1
+        return 1.0
+
+    monkeypatch.setattr(_coord, "_sweep_gram", never_converges)
+    G = np.eye(2)
+    out = np.zeros((1, 2))
+    converged = np.zeros(1, dtype=bool)
+    sweeps = np.zeros(1, dtype=np.int64)
+    fitted, exhausted = _coord._path_gram(
+        G, np.ones(2), np.zeros(2), np.ones(2), np.array([0.1]),
+        1.0, 1e-12, 3, 2, out, converged, sweeps)
+
+    assert fitted == 1 and exhausted == 1
+    assert calls == 3
+    assert sweeps[0] == 3
+    assert not converged[0]
+
+
 def test_shape_validation():
     G = np.eye(3)
     with pytest.raises(ValueError, match=r"G, r and pf"):
@@ -197,6 +236,23 @@ def test_gaussian_path_optionally_reports_iteration_exhaustion():
     assert coefs.shape == (1, 2) and n_fitted == 1
     assert info["converged"] is False
     assert info["n_iteration_exhausted"] == 1
+    assert np.array_equal(info["converged_path"], [False])
+    assert np.array_equal(info["n_sweeps_path"], [1])
+
+
+def test_gaussian_batch_reports_per_repeat_iteration_exhaustion():
+    G = np.array([[1.0, 0.8], [0.8, 1.0]])
+    R = np.array([[1.0, -0.5], [0.5, -1.0]])
+    coefs, n_fitted, info = _coord.enet_path_gaussian_batch(
+        G, R, pf=np.ones(2), alpha=1.0, lambdas=np.array([0.0]),
+        tol=1e-30, max_iter=1, return_info=True)
+
+    assert coefs.shape == (2, 1, 2)
+    assert np.array_equal(n_fitted, [1, 1])
+    assert info["converged"] is False
+    assert info["n_iteration_exhausted"] == 2
+    assert np.array_equal(info["n_iteration_exhausted_by_repeat"], [1, 1])
+    assert not np.any(info["converged_path"])
 
 
 def test_binomial_path_optionally_reports_iteration_exhaustion():

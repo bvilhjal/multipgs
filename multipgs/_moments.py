@@ -103,7 +103,7 @@ def _project_c_to_gram_range(c, gram, *, factor=None):
 
 
 def _selection_candidate_valid(beta, gram, r, var_y):
-    """Whether noisy plug-in moments can physically rank this path point."""
+    """Whether a path point has a defined directional plug-in objective."""
     valid, r2, mse = _selection_candidates_valid(
         np.asarray(beta, dtype=float)[None, :], gram, r, var_y)
     return bool(valid[0]), float(r2[0]), float(mse[0])
@@ -118,9 +118,13 @@ def _selection_candidates_valid(path, gram, r, var_y, *, prepared=None):
     one matrix product is the same arithmetic in a different order; at ``K=900``
     it is the difference between 642 ms and 4 ms per path.
 
-    A candidate whose moments are physically impossible is reported invalid
-    with ``nan`` statistics, exactly as the scalar form's caught ``ValueError``
-    did.
+    A candidate is invalid only when its own quadratic direction is materially
+    indefinite, or has zero variance but non-zero covariance.  Sampling noise
+    can make an otherwise defined plug-in R2 exceed one or its plug-in MSE fall
+    below zero.  Those population-bound violations remain rankable diagnostics;
+    rejecting them here used to turn a mildly noisy external moment into the
+    null model while :func:`_validate_moments` explicitly promised not to police
+    it.
     """
     path = np.atleast_2d(np.asarray(path, dtype=float))
     symmetric, _ = _symmetrized(gram) if prepared is None else prepared
@@ -141,8 +145,7 @@ def _selection_candidates_valid(path, gram, r, var_y, *, prepared=None):
     with np.errstate(divide="ignore", invalid="ignore"):
         r2 = np.where(quad <= quad_tol, np.nan, (num * num) / (quad * var_y))
     mse = var_y - 2.0 * num + quad
-    valid = ((~np.isfinite(r2) | (r2 <= 1.0 + 1e-8))
-             & (mse >= -1e-8 * var_y) & ~impossible)
+    valid = ~impossible
     r2 = np.where(impossible, np.nan, r2)
     mse = np.where(impossible, np.nan, mse)
     return valid, r2, mse
@@ -156,8 +159,10 @@ def pseudo_r2(beta, gram, r, *, var_y=1.0):
     ``beta`` (nothing is predicted, so the ratio is undefined rather than zero)
     and raises when the denominator is negative, which only a non-PSD LD
     approximation can produce and which would understate the error silently.
-    The numerator uses ``r`` projected onto the scale-invariant positive range
-    of ``gram``; finite-reference null noise is not identifiable prediction.
+    A fixed vector uses the observed scalar ``beta.T @ r`` directly. Components
+    of ``r`` attached to unused correlated scores therefore cannot change the
+    answer. If the selected score direction itself has numerical zero variance,
+    the R2 is undefined regardless of its noisy observed covariance.
     """
     beta = np.asarray(beta, dtype=float)
     gram = np.asarray(gram, dtype=float)
@@ -171,12 +176,15 @@ def pseudo_r2(beta, gram, r, *, var_y=1.0):
     var_y = float(var_y)
     if not np.isfinite(var_y) or var_y <= 0.0:
         raise ValueError("var_y must be finite and strictly positive")
-    r_identifiable, _, _ = _project_c_to_gram_range(r, gram)
-    num, den, den_tol, _, _ = _directional_score_moments(
-        beta, gram, r_identifiable, var_y, "gram")
+    observed_num = float(beta @ r)
+    # Validate the quadratic direction independently of the noisy covariance.
+    # Passing zero here lets a null direction return nan below rather than
+    # raising because an external c happens not to share the finite LD nullspace.
+    _, den, den_tol, _, _ = _directional_score_moments(
+        beta, gram, np.zeros_like(r), var_y, "gram")
     if den <= den_tol:
         return float("nan")
-    return (num * num) / (den * var_y)
+    return (observed_num * observed_num) / (den * var_y)
 
 
 def _pseudo_r2_unchecked(beta, gram, r, var_y):
@@ -214,7 +222,7 @@ def _pseudo_r2_batch(paths, gram, r, var_y):
 # Fit
 # ---------------------------------------------------------------------------
 
-def _validate_moments(c, gram, var_y, *, label):
+def _validate_moments(c, gram, var_y, *, label, prepared=None):
     """Validate ``G`` globally and retain, but do not police, noisy ``c``.
 
     External GWAS noise means ``c`` need not lie exactly in the range of a
@@ -248,7 +256,13 @@ def _validate_moments(c, gram, var_y, *, label):
     # factor back to raw units. An eigentolerance on raw G would incorrectly
     # call a perfectly valid score null merely because its weights were scaled
     # by (say) 1e-6.
-    spec = _correlation_factorization(gram)
+    if prepared is not None and "factorization" in prepared:
+        # The caller has proved that this is the same LD-basis Gram (typically
+        # training and independent tuning sharing one reference). Its spectral
+        # decomposition is independent of c and can be reused exactly.
+        spec = prepared["factorization"]
+    else:
+        spec = _correlation_factorization(gram)
     symmetric = spec["symmetric"]
     diagonal = spec["diagonal"]
     diagonal_scale = max(float(np.max(np.abs(diagonal))),
@@ -266,6 +280,8 @@ def _validate_moments(c, gram, var_y, *, label):
         spec = _correlation_factorization(
             np.where(np.eye(diagonal.size, dtype=bool), diagonal, symmetric))
         symmetric = spec["symmetric"]
+    if prepared is not None:
+        prepared["factorization"] = spec
     active = spec["active"]
     inactive = ~active
 
@@ -409,4 +425,3 @@ def _bounded_path_mask(context, r, pf, alpha, lambdas, delta):
     threshold = float(np.max(np.abs(gradient[penalized]) / pf[penalized]))
     safe = lambdas * alpha >= threshold * (1.0 - 1e-12)
     return safe, residual, free_residual
-

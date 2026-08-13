@@ -115,6 +115,22 @@ def test_expected_r2_gate_is_opt_in():
     assert screen([weak], min_expected_r2=0.5).n_kept == 0
 
 
+def test_expected_r2_and_rg_gates_both_apply():
+    low_rg = _arch(score_id="low_rg", rg=0.05)
+    result = screen([low_rg], min_expected_r2=0.01, min_abs_rg=0.2)
+    assert result.keep.tolist() == [False]
+    assert result.reasons["low_rg"] == "|rg| below 0.2"
+
+
+def test_rg_only_architecture_is_screenable():
+    archs = [Architecture(score_id="pass", rg=0.4),
+             Architecture(score_id="fail", rg=0.05)]
+    result = screen(archs, min_abs_rg=0.2, keep_unscreenable=False)
+    assert result.keep.tolist() == [True, False]
+    assert result.unscreenable.tolist() == [False, False]
+    assert result.reasons["fail"] == "|rg| below 0.2"
+
+
 def test_penalty_factors_have_geometric_mean_one_and_respect_the_clip():
     pf = penalty_from_accuracy([1.0, 1e-30, 1e-30], floor=1e-30)
     assert np.exp(np.mean(np.log(pf))) == pytest.approx(1.0)
@@ -204,6 +220,13 @@ def test_screen_min_abs_rg_is_opt_in():
 def test_penalty_from_relevance_penalises_uncorrelated_scores_more():
     pf = penalty_from_relevance([0.2, 0.2], [0.8, 0.0])
     assert pf[1] > pf[0]
+
+
+def test_penalty_from_relevance_clips_noisy_rg_to_parameter_space():
+    expected = [0.2, 0.2, 0.2, 0.2]
+    got = penalty_from_relevance(expected, [-1.3, -1.0, 1.0, 1.8])
+    reference = penalty_from_relevance(expected, [-1.0, -1.0, 1.0, 1.0])
+    assert np.allclose(got, reference)
 
 
 def test_architectures_from_panel_checks_n_eff_length():

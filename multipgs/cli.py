@@ -302,7 +302,7 @@ def _cmd_panel(args):
                 "to build it from an external LD reference")
         panel = panel_from_sumstats(
             args.sumstats, args.plink, ld_cache=args.ld_cache,
-            ld_prefix=args.ld_prefix,
+            ld_prefix=args.ld_prefix, sample_path=args.sample,
             on_error="skip" if args.skip_errors else "raise",
             progress=progress, n_jobs=args.n_jobs,
             weights_dir=args.weights_dir, preflight=not args.no_preflight,
@@ -322,11 +322,26 @@ def _load_scores(args):
     if args.panel:
         from .panel import read_panel
         panel = read_panel(args.panel)
-        keys = _object_vector(list(zip(
-            np.asarray(panel.sample_fid).astype(str),
-            np.asarray(panel.sample_iid).astype(str))))
-        return keys, np.asarray(panel.scores, dtype=float), [
-            str(s) for s in panel.score_ids]
+        fid = np.asarray(panel.sample_fid).astype(str)
+        iid = np.asarray(panel.sample_iid).astype(str)
+        pairs = list(zip(fid, iid))
+        duplicate_samples = []
+        seen, reported = set(), set()
+        for pair in pairs:
+            if pair in seen and pair not in reported:
+                duplicate_samples.append(pair)
+                reported.add(pair)
+            seen.add(pair)
+        if duplicate_samples:
+            shown = ", ".join(f"{f}:{i}" for f, i in duplicate_samples[:3])
+            raise SystemExit(f"--panel has duplicate FID:IID(s): {shown}")
+        score_ids = [str(s) for s in panel.score_ids]
+        duplicate_scores = _duplicates(score_ids)
+        if duplicate_scores:
+            raise SystemExit("--panel has duplicate score id(s): "
+                             + ", ".join(duplicate_scores[:3]))
+        keys = _object_vector(pairs)
+        return keys, np.asarray(panel.scores, dtype=float), score_ids
     return _read_table(args.scores, name="--scores")
 
 
@@ -414,9 +429,21 @@ def _cmd_combine(args):
     ids = [str(left) for left, _ in keys]
     lookup = {sid: i for i, sid in enumerate(ids)}
     want = [str(s) for s in panel.score_ids]
+    duplicate_panel_ids = _duplicates(want)
+    if duplicate_panel_ids:
+        raise SystemExit("--panel has duplicate score id(s): "
+                         + ", ".join(duplicate_panel_ids[:3]))
     missing = [sid for sid in want if sid not in lookup]
-    if missing:
-        raise SystemExit(f"--fit is missing score(s) {missing[:3]}")
+    wanted = set(want)
+    extra = [sid for sid in ids if sid not in wanted]
+    if missing or extra:
+        details = []
+        if missing:
+            details.append(f"missing {missing[:3]}")
+        if extra:
+            details.append(f"unexpected {extra[:3]}")
+        raise SystemExit("--fit score IDs do not exactly match --panel: "
+                         + "; ".join(details))
     beta = values[[lookup[sid] for sid in want], columns.index(beta_col)]
     fit = _CoefFit(want, beta)
     combine_weights(panel, fit, path=args.out)

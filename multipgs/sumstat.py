@@ -21,12 +21,15 @@ correlation matrix and ``z`` the target trait's standardized marginal effects,
     G = W_{ld}^\\top D W_{ld}, \\qquad c = W_{gwas}^\\top z.
 
 When LD and marginal effects come from the same individuals these equal
-``n^{-1} X^T X`` and ``n^{-1} X^T y`` exactly. With an external LD reference,
-``G`` is instead a plug-in covariance estimate. The K-by-K score covariance
-therefore comes from an **LD reference**, while the K-vector of score-phenotype
-covariances comes from a **GWAS of the target trait**. The two weight matrices
-may cover different variant sets and orders; only their K score columns and raw
-score definition must agree.
+``n^{-1} X^T X`` and ``n^{-1} X^T y`` exactly only for unadjusted centred data,
+or when genotype columns and phenotype were jointly residualized on exactly the
+same covariate design before both moments were formed. A conventionally
+covariate-adjusted marginal GWAS does not, by itself, imply this exact identity.
+With an external LD reference, ``G`` is instead a plug-in covariance estimate.
+The K-by-K score covariance therefore comes from an **LD reference**, while the
+K-vector of score-phenotype covariances comes from a **GWAS of the target
+trait**. The two weight matrices may cover different variant sets and orders;
+only their K score columns and raw score definition must agree.
 
 This is the multivariate form of the summary-statistic accuracy identity used
 by ``ppb`` (this author's cross-ancestry portability benchmark), which is the
@@ -106,8 +109,11 @@ LD-stabilisation parameter is kept; the tuning criterion is not.
 cannot later be mistaken for another.
 
 **What is still impossible from ordinary marginal summaries.** Exact logistic
-fitting, covariate adjustment, AUC, and any participant-level bootstrap. Those
-need individuals, and no amount of summary-statistic algebra recovers them.
+fitting, arbitrary covariate adjustment, AUC, and any participant-level
+bootstrap. The Gaussian moment identity remains exact after joint linear
+residualization, but ordinary adjusted GWAS output does not reveal enough to
+reconstruct a different adjustment. The other quantities need individuals, and
+no amount of summary-statistic algebra recovers them.
 
 **What must line up.** Each matrix must be aligned within its own source:
 ``W_gwas`` to ``z`` and ``W_ld`` to ``D``, with weights and effects counting the
@@ -347,6 +353,8 @@ class SumstatFit:
             lines.append(f"  {self.log['boundedness_warning']}")
         if self.log.get("selection_filter_warning"):
             lines.append(f"  {self.log['selection_filter_warning']}")
+        if self.log.get("convergence_warning"):
+            lines.append(f"  {self.log['convergence_warning']}")
         if self.log.get("selection_moment_warning"):
             lines.append(f"  {self.log['selection_moment_warning']}")
         return "\n".join(lines)
@@ -406,7 +414,11 @@ def multi_pgs_sumstats(weights_ld, z, ld, *, weights_gwas=None,
         rows of ``weights_gwas``. Use
         ``ldpred3.standardize_betas(beta, se, n_eff)``;
         passing raw per-allele betas is the single easiest way to get plausible
-        and wrong weights out of this function.
+        and wrong weights out of this function. Exact equivalence to an
+        individual-level Gaussian regression additionally requires unadjusted
+        moments, or genotypes and phenotype jointly residualized using the same
+        covariates; generic covariate-adjusted marginal GWAS coefficients need
+        not satisfy that identity.
     ld : sequence of (corr_block, idx), or ndarray
         LD reference **matched to the target ancestry**.
     score_ids : sequence of str, optional
@@ -528,8 +540,9 @@ def multi_pgs_sumstats(weights_ld, z, ld, *, weights_gwas=None,
 
     wz, n_weight_entries_gwas, m_gwas = _score_cross_moment(
         weights_gwas, z, k, "weights_gwas")
+    gram_moment_cache = {}
     gram_raw, gram_factor_raw, coherence = _validate_moments(
-        wz, gram_raw, var_y, label="fitting")
+        wz, gram_raw, var_y, label="fitting", prepared=gram_moment_cache)
     score_var = np.diag(gram_raw).copy()
 
     if score_ids is None:
@@ -626,15 +639,24 @@ def multi_pgs_sumstats(weights_ld, z, ld, *, weights_gwas=None,
         n_variants_ld_valid = _ld_variant_count(
             weights_ld_valid, ld_valid, n_variants_ld_valid,
             "n_variants_ld_valid")
-        parsed_ld_valid = _weight_columns(weights_ld_valid, n_variants_ld_valid)
+        reuse_validation_ld = (
+            weights_ld_valid is weights_ld and ld_valid is ld
+            and n_variants_ld_valid == n_variants_ld)
+        if reuse_validation_ld:
+            parsed_ld_valid = parsed_ld
+            gram_v = gram_raw
+        else:
+            parsed_ld_valid = _weight_columns(
+                weights_ld_valid, n_variants_ld_valid)
+            gram_v = _score_gram_from_coo(parsed_ld_valid, ld_valid)[0]
         _, _, vals_ld_valid, m_ld_valid, k_valid = parsed_ld_valid
-        gram_v = _score_gram_from_coo(parsed_ld_valid, ld_valid)[0]
         if k_valid != k:
             raise ValueError(
                 f"weights_ld_valid describes {k_valid} scores but weights_ld "
                 f"describes {k}; score identity and column order must agree")
         gram_v, _, validation_coherence = _validate_moments(
-            wz_v, gram_v, var_y, label="tuning")
+            wz_v, gram_v, var_y, label="tuning",
+            prepared=(gram_moment_cache if reuse_validation_ld else None))
         # The TRAINING scale, deliberately. beta comes off a path fitted in
         # training-standardized coordinates, so both halves of
         # (beta'r)^2 / (beta'G beta) must use those same coordinates.
@@ -644,7 +666,8 @@ def multi_pgs_sumstats(weights_ld, z, ld, *, weights_gwas=None,
         # destroys orthogonality between its columns.  Build the range basis
         # from the resulting tuning Gram itself; column-normalising that
         # transformed factor would make B B' a non-idempotent non-projection.
-        tuning_basis = _range_basis(sel_gram)[0]
+        tuning_basis = (boundedness["base_basis"][0]
+                        if reuse_validation_ld else _range_basis(sel_gram)[0])
         sel_r = tuning_basis @ (tuning_basis.T @ sel_r_observed)
         training_r_before_tuning_projection = r.copy()
         r = tuning_basis @ (tuning_basis.T @ r)
@@ -668,7 +691,7 @@ def multi_pgs_sumstats(weights_ld, z, ld, *, weights_gwas=None,
     # once here rather than once per candidate inside the path scoring.
     sel_prepared = None if sel_gram is None else _symmetrized(sel_gram)
 
-    def _score_path(path_d, gram_fit, delta_value):
+    def _score_path(path_d, gram_fit, delta_value, fit_converged):
         """Descriptive R2 and calibration-sensitive MSE for one fitted path.
 
         Both metrics use the UNSHRUNK Gram: delta is a fitting device
@@ -681,13 +704,16 @@ def multi_pgs_sumstats(weights_ld, z, ld, *, weights_gwas=None,
         if splits is None:
             valid, r2, mse = _selection_candidates_valid(
                 path_d, sel_gram, sel_r, var_y, prepared=sel_prepared)
-            mse = np.where(valid, mse, np.nan)
-            return r2, mse, int(np.sum(~valid))
+            selectable = valid & fit_converged
+            r2 = np.where(selectable, r2, np.nan)
+            mse = np.where(selectable, mse, np.nan)
+            return (r2, mse, int(np.sum(~valid)),
+                    int(np.sum(~fit_converged)), 0)
         n_rep = len(splits)
         n_lam = path_d.shape[0]
         r_trains = np.empty((n_rep, k), dtype=float)
         r_vals = np.empty((n_rep, k), dtype=float)
-        safe_every_repeat = np.ones(n_lam, dtype=bool)
+        bounded_every_repeat = np.ones(n_lam, dtype=bool)
         range_vectors = boundedness["base_basis"][0]
         for rep, (c_tr, c_val, _) in enumerate(splits):
             r_train_observed = c_tr * scale
@@ -696,47 +722,61 @@ def multi_pgs_sumstats(weights_ld, z, ld, *, weights_gwas=None,
             r_vals[rep] = range_vectors @ (range_vectors.T @ r_val_observed)
             safe_split, _, _ = _bounded_path_mask(
                 boundedness, r_trains[rep], pf, alpha, lambdas_d, delta_value)
-            safe_every_repeat &= safe_split[:n_lam]
+            bounded_every_repeat &= safe_split[:n_lam]
         # Boundedness is still a per-repeat prefix. Fit only the lambdas that
-        # every repeat can certify, in one compiled walk of the shared Gram.
+        # every repeat can certify and whose full-data fit converged, in one
+        # compiled walk of the shared Gram.
         per_repeat_r2 = np.full((n_rep, n_lam), np.nan)
         per_repeat_mse = np.full((n_rep, n_lam), np.nan)
-        safe_indices = np.flatnonzero(safe_every_repeat)
+        repeat_converged = np.ones(n_lam, dtype=bool)
+        safe_indices = np.flatnonzero(bounded_every_repeat & fit_converged)
+        n_tuning_exhausted = 0
         if safe_indices.size:
-            fitted_paths, n_fitted_rep = _coord.enet_path_gaussian_batch(
-                gram_fit, r_trains, pf=pf, alpha=alpha,
-                lambdas=lambdas_d[safe_indices], tol=tol, max_iter=max_iter)
+            fitted_paths, n_fitted_rep, batch_info = (
+                _coord.enet_path_gaussian_batch(
+                    gram_fit, r_trains, pf=pf, alpha=alpha,
+                    lambdas=lambdas_d[safe_indices], tol=tol,
+                    max_iter=max_iter, return_info=True))
+            n_tuning_exhausted = int(
+                batch_info["n_iteration_exhausted"])
             for rep in range(n_rep):
                 n_ok = min(int(n_fitted_rep[rep]), safe_indices.size)
                 if n_ok == 0:
-                    safe_every_repeat[:] = False
+                    repeat_converged[safe_indices] = False
                     continue
                 if n_ok < safe_indices.size:
-                    safe_every_repeat[safe_indices[n_ok:]] = False
+                    repeat_converged[safe_indices[n_ok:]] = False
                 use = safe_indices[:n_ok]
+                converged_rep = np.asarray(
+                    batch_info["converged_path"][rep, :n_ok], dtype=bool)
+                repeat_converged[use[~converged_rep]] = False
                 split_r2, quadratic = _pseudo_r2_batch(
                     fitted_paths[rep, :n_ok], gram, r_vals[rep], var_y)
-                per_repeat_r2[rep, use] = split_r2
-                per_repeat_mse[rep, use] = (
+                use_converged = use[converged_rep]
+                per_repeat_r2[rep, use_converged] = split_r2[converged_rep]
+                split_mse = (
                     var_y - 2.0 * (fitted_paths[rep, :n_ok] @ r_vals[rep])
                     + quadratic)
-        per_repeat_r2[:, ~safe_every_repeat] = np.nan
-        per_repeat_mse[:, ~safe_every_repeat] = np.nan
+                per_repeat_mse[rep, use_converged] = split_mse[converged_rep]
+        selectable = (bounded_every_repeat & fit_converged
+                      & repeat_converged)
+        per_repeat_r2[:, ~selectable] = np.nan
+        per_repeat_mse[:, ~selectable] = np.nan
         r2_mean = np.full(path_d.shape[0], np.nan)
         r2_count = np.sum(np.isfinite(per_repeat_r2), axis=0)
         np.divide(np.nansum(per_repeat_r2, axis=0), r2_count, out=r2_mean,
                   where=r2_count > 0)
         mse_mean = np.full(path_d.shape[0], np.nan)
-        mse_mean[safe_every_repeat] = np.mean(
-            per_repeat_mse[:, safe_every_repeat], axis=0)
-        physically_valid = (
-            safe_every_repeat
-            & (~np.isfinite(r2_mean) | (r2_mean <= 1.0 + 1e-8))
-            & (mse_mean >= -1e-8 * var_y))
-        r2_mean[~physically_valid] = np.nan
-        mse_mean[~physically_valid] = np.nan
+        mse_mean[selectable] = np.mean(
+            per_repeat_mse[:, selectable], axis=0)
+        r2_mean[~selectable] = np.nan
+        mse_mean[~selectable] = np.nan
+        nonconverged = (~fit_converged
+                        | (bounded_every_repeat & fit_converged
+                           & ~repeat_converged))
         return (r2_mean, mse_mean,
-                int(np.sum(~physically_valid)))
+                int(np.sum(~bounded_every_repeat)),
+                int(np.sum(nonconverged)), n_tuning_exhausted)
 
     best_value = np.inf
     best = None
@@ -751,6 +791,10 @@ def multi_pgs_sumstats(weights_ld, z, ld, *, weights_gwas=None,
         n_unsafe = int(np.sum(~bounded))
         if not np.any(bounded):
             delta_audit.append({"delta": float(delta), "n_fitted": 0,
+                                "n_converged": 0,
+                                "n_iteration_exhausted": 0,
+                                "n_tuning_iteration_exhausted": 0,
+                                "n_rejected_nonconverged": 0,
                                 "n_rejected_unbounded": n_unsafe,
                                 "n_rejected_selection_moments": 0,
                                 "null_c_norm": null_residual,
@@ -763,16 +807,25 @@ def multi_pgs_sumstats(weights_ld, z, ld, *, weights_gwas=None,
         # lower-lambda objectives never reach coordinate descent: an unbounded
         # path can otherwise stop at max_iter with finite-looking coefficients.
         lambdas_d = lambdas_d[bounded]
-        path_d, n_fitted = _coord.enet_path_gaussian(
+        path_d, n_fitted, fit_info = _coord.enet_path_gaussian(
             gram_d, r, pf=pf, alpha=alpha, lambdas=lambdas_d, tol=tol,
-            max_iter=max_iter)
+            max_iter=max_iter, return_info=True)
         path_d = path_d[:n_fitted]
         lambdas_d = lambdas_d[:n_fitted]
-        r2_d, mse_d, n_selection_invalid = _score_path(
-            path_d, gram_d, float(delta))
+        fit_converged = np.asarray(
+            fit_info["converged_path"][:n_fitted], dtype=bool)
+        (r2_d, mse_d, n_selection_invalid, n_nonconverged,
+         n_tuning_exhausted) = _score_path(
+            path_d, gram_d, float(delta), fit_converged)
         if np.all(np.isnan(mse_d)):
             delta_audit.append({"delta": float(delta),
                                 "n_fitted": int(n_fitted),
+                                "n_converged": int(np.sum(fit_converged)),
+                                "n_iteration_exhausted": int(
+                                    fit_info["n_iteration_exhausted"]),
+                                "n_tuning_iteration_exhausted":
+                                    n_tuning_exhausted,
+                                "n_rejected_nonconverged": n_nonconverged,
                                 "n_rejected_unbounded": n_unsafe,
                                 "n_rejected_selection_moments":
                                     n_selection_invalid,
@@ -785,6 +838,11 @@ def multi_pgs_sumstats(weights_ld, z, ld, *, weights_gwas=None,
         index = int(np.nanargmin(mse_d))
         delta_audit.append({
             "delta": float(delta), "n_fitted": int(n_fitted),
+            "n_converged": int(np.sum(fit_converged)),
+            "n_iteration_exhausted": int(
+                fit_info["n_iteration_exhausted"]),
+            "n_tuning_iteration_exhausted": n_tuning_exhausted,
+            "n_rejected_nonconverged": n_nonconverged,
             "n_rejected_unbounded": n_unsafe,
             "n_rejected_selection_moments": n_selection_invalid,
             "null_c_norm": null_residual,
@@ -797,6 +855,14 @@ def multi_pgs_sumstats(weights_ld, z, ld, *, weights_gwas=None,
             best = (float(delta), index, path_d, lambdas_d, r2_d, mse_d)
 
     if best is None:
+        n_exhausted = sum(
+            row["n_iteration_exhausted"]
+            + row["n_tuning_iteration_exhausted"] for row in delta_audit)
+        if n_exhausted:
+            raise RuntimeError(
+                "no converged path point was available for selection; increase "
+                "max_iter or relax tol. Unconverged coordinate-descent "
+                "solutions are never selected.")
         raise ValueError(
             "no bounded objective was available on any requested path. Add a "
             "positive ld_shrinkage, remove an incompatible unpenalized score, "
@@ -819,6 +885,13 @@ def multi_pgs_sumstats(weights_ld, z, ld, *, weights_gwas=None,
            "n_rejected_selection_moments": int(sum(
                row["n_rejected_selection_moments"]
                for row in delta_audit)),
+           "n_iteration_exhausted_fit": int(sum(
+               row["n_iteration_exhausted"] for row in delta_audit)),
+           "n_iteration_exhausted_tuning": int(sum(
+               row["n_tuning_iteration_exhausted"]
+               for row in delta_audit)),
+           "n_rejected_nonconverged": int(sum(
+               row["n_rejected_nonconverged"] for row in delta_audit)),
            "unpenalized_scores": int(np.count_nonzero(pf <= 0.0))}
     log.update(coherence)
     if log["n_rejected_unbounded"]:
@@ -830,6 +903,11 @@ def multi_pgs_sumstats(weights_ld, z, ld, *, weights_gwas=None,
             f"{log['n_rejected_selection_moments']} path point(s) were "
             "excluded because the plug-in selection moments were physically "
             "impossible")
+    if log["n_rejected_nonconverged"]:
+        log["convergence_warning"] = (
+            f"{log['n_rejected_nonconverged']} path point(s) were excluded "
+            "because coordinate descent exhausted max_iter; increase max_iter "
+            "or relax tol if this affects the useful part of the path")
     if tune == "pumas":
         log.update({"regime": "B", "selection_role": "tuning",
                     "n_repeats": len(splits),
@@ -854,7 +932,8 @@ def multi_pgs_sumstats(weights_ld, z, ld, *, weights_gwas=None,
                     "training_discarded_by_tuning_ld_c_norm":
                         tuning_discarded_training_norm,
                     "training_discarded_by_tuning_ld_c_fraction":
-                        tuning_discarded_training_fraction})
+                        tuning_discarded_training_fraction,
+                    "tuning_ld_reused": bool(reuse_validation_ld)})
         log.update({f"tuning_{key}": value
                     for key, value in validation_coherence.items()})
     else:
@@ -892,4 +971,3 @@ def multi_pgs_sumstats(weights_ld, z, ld, *, weights_gwas=None,
         selection_mse_path=mse_path, c_raw=wz.copy(), log=log,
         weights_ld_digest=_weight_digest(
             rows_ld, cols_ld, vals_ld, m_ld, k), n_variants_ld=m_ld)
-

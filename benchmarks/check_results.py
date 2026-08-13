@@ -82,7 +82,8 @@ def _check_provenance():
         source = data.get("source")
         if source is not None:
             source_required = {"repository_commit", "source_dirty",
-                               "dirty_scope", "script", "script_sha256"}
+                               "dirty_scope", "source_sha256", "script",
+                               "script_sha256"}
             missing = source_required - source.keys()
             if missing:
                 raise AssertionError(

@@ -1,7 +1,9 @@
 include CHANGELOG.md
 include CONTRIBUTING.md
+include .gitignore
+include .github/workflows/ci.yml
 recursive-include docs *.md
-recursive-include report *.md *.tex *.pdf *.json *.py
+recursive-include report *.md *.tex *.pdf *.sha256 *.json *.py
 recursive-include examples *.py
 recursive-include tests *.py
 include benchmarks/README.md

@@ -1,15 +1,39 @@
 {
-  "generated_utc": "2026-08-11T17:14:36.229434+00:00",
-  "elapsed_seconds": 7.623217792017385,
+  "source": {
+    "repository_commit": "49d8e71f0006042a61225e41caf6092d7c7b23a2",
+    "source_dirty": true,
+    "dirty_scope": [
+      "benchmarks/_provenance.py",
+      "benchmarks/check_results.py",
+      "benchmarks/fit_accuracy.py",
+      "benchmarks/meta_rules.py",
+      "benchmarks/null_gate.py",
+      "benchmarks/overlap_inflation.py",
+      "benchmarks/real_ld_gram.py",
+      "benchmarks/real_ld_simulation.py",
+      "benchmarks/real_meta_rules.py",
+      "benchmarks/stack_scaling.py",
+      "benchmarks/sumstat_calibration.py",
+      "benchmarks/sumstat_cost.py",
+      "benchmarks/sumstat_vs_individual.py",
+      "multipgs",
+      "pyproject.toml"
+    ],
+    "source_sha256": "93ee2f7e866861238737e6ff7e76f5de308c5ed4261c43b263301cb748323101",
+    "script": "benchmarks/sumstat_vs_individual.py",
+    "script_sha256": "7e97c984755e70ef7f675cb6527285f39a42223eb0b1e9130bb1a80dc5b72d03"
+  },
+  "generated_utc": "2026-08-13T18:35:24.599648+00:00",
+  "elapsed_seconds": 104.14811637499952,
   "command": [
-    "/Users/au507860/anaconda3/bin/python3",
-    "/Users/au507860/REPOS/multipgs/benchmarks/sumstat_vs_individual.py"
+    "/Users/au507860/anaconda3/bin/python",
+    "/Users/au507860/Documents/ChatGPT/multipgs/benchmarks/sumstat_vs_individual.py"
   ],
   "platform": "macOS-26.5.2-arm64-arm-64bit",
   "python": "3.10.20",
-  "multipgs": "0.3.0",
+  "multipgs": "0.3.3",
   "numpy": "1.26.4",
-  "ldpred3": "0.4.6",
+  "ldpred3": "0.4.7",
   "numba": "0.66.0",
   "parameters": {
     "seeds": 30,
@@ -21,7 +45,7 @@
     "fit_assessment_folds": 3,
     "fit_n_lambda": 40,
     "n_lambda": 60,
-    "output_dir": "/Users/au507860/REPOS/multipgs/benchmarks/results"
+    "output_dir": "/Users/au507860/Documents/ChatGPT/multipgs/benchmarks/results"
   },
   "note": "The moments are computed from the same individuals the individual-level fit trains on, so agreement measures selection-routing differences (nested CMSA vs a tuning GWAS), not approximation error of the sufficient statistics. The tuning arm quantifies the cost of pseudotuning and in-sample tuning relative to an independent tuning GWAS; cohort C stays untouched by fitting, tuning and selection."
 }

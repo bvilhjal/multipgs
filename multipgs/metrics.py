@@ -204,6 +204,8 @@ def liability_r2(r2_observed, prevalence, prop_cases):
     r2o = np.asarray(r2_observed, dtype=float)
     if not np.all(np.isfinite(r2o)):
         raise ValueError("r2_observed must contain only finite values")
+    if np.any((r2o < 0.0) | (r2o > 1.0)):
+        raise ValueError("r2_observed must be in [0, 1]")
     out = c * r2o / (1.0 + c * theta * r2o)
     return float(out) if out.ndim == 0 else out
 
@@ -276,6 +278,20 @@ def evaluate(y, pred, *, covar=None, family="gaussian", prevalence=None,
     y, pred = _clean(y, pred)
     if family not in ("gaussian", "binomial"):
         raise ValueError("family must be 'gaussian' or 'binomial'")
+    if isinstance(n_boot, (bool, np.bool_)):
+        raise ValueError("n_boot must be a non-negative integer")
+    try:
+        n_boot_int = int(n_boot)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError("n_boot must be a non-negative integer") from None
+    if n_boot_int < 0 or n_boot_int != n_boot:
+        raise ValueError("n_boot must be a non-negative integer")
+    try:
+        level = float(level)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError("level must be a finite number in (0, 1)") from None
+    if not np.isfinite(level) or not 0.0 < level < 1.0:
+        raise ValueError("level must be a finite number in (0, 1)")
     covar_arr = _clean_covar(covar, y.size)
 
     def compute(idx):
@@ -297,10 +313,10 @@ def evaluate(y, pred, *, covar=None, family="gaussian", prevalence=None,
     metrics = compute(all_idx)
 
     ci = {}
-    if n_boot:
+    if n_boot_int:
         rng = np.random.default_rng(seed)
         draws = {k: [] for k in metrics}
-        for _ in range(int(n_boot)):
+        for _ in range(n_boot_int):
             idx = rng.integers(0, y.size, y.size)
             if family == "binomial" and len(np.unique(y[idx])) < 2:
                 continue          # a resample with no cases has no AUC

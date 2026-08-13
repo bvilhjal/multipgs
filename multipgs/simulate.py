@@ -43,8 +43,11 @@ def simulate_panel(*, n=2000, n_scores=50, n_causal=5, h2=0.4, n_factors=4,
     offset — a combiner that quietly assumes standardized inputs will fail
     here, which is the point.
 
-    ``h2`` is the fraction of phenotypic variance (of the liability, for
-    ``family="binomial"``) explained by the ``n_causal`` scores that matter.
+    ``h2`` is the fraction of the *conditional/residual* phenotype variance
+    (of the residual liability for ``family="binomial"``) explained by the
+    ``n_causal`` scores that matter. Random covariate effects are added after
+    that unit-variance residual is formed, so their variance is not included
+    in the denominator.
     """
     rng = np.random.default_rng(seed)
     n, n_scores, n_causal = int(n), int(n_scores), int(n_causal)

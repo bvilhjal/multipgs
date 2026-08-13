@@ -29,10 +29,19 @@ cohorts. Re-run before changing a default or making a performance claim.
 ### Reading the committed artifacts
 
 Each replicated benchmark commits raw rows, a derived summary, and JSON
-provenance. Future runs also record the repository commit, whether the relevant
-source tree was dirty, and the SHA-256 of the producer script. The historical
-artifacts predate that source-identity record and have deliberately not been
-rewritten.
+provenance. New runs record the repository commit, whether the relevant source
+tree was dirty, the SHA-256 of the producer script, and one stable digest over
+all package and benchmark Python sources plus `pyproject.toml`. The latter
+identifies the exact code even for an intentional pre-commit validation run.
+Historical artifacts without that identity remain labelled as such rather
+than being cosmetically rewritten.
+
+The 0.3.3 release reruns `fit_accuracy`, `meta_rules`, `null_gate`,
+`stack_scaling`, `sumstat_calibration`, `sumstat_vs_individual`, the bounded
+`sumstat_cost` smoke run, and `real_ld_gram` under ldpred3 0.4.7. Their source
+digests bind them to the code that produced them. The three external-data
+artifacts described below remain historical because their private inputs were
+not available for a tractable current-version rerun.
 
 Run `python benchmarks/check_results.py` to recompute committed summary means
 from raw rows and verify the headline README values and provenance structure.
@@ -85,7 +94,7 @@ pseudotuning as empirically calibrated in a new setting.
 
 | Quantity | Mean |
 |---|---:|
-| Gram identity, maximum absolute error | 1.32e-14 |
+| Gram identity, maximum absolute error | 7.77e-15 |
 | Cross-moment identity, maximum absolute error | 2.79e-15 |
 | Null tuning MSE | 0.999952 |
 | Null untouched-assessment MSE | 1.000048 |
@@ -258,10 +267,10 @@ python benchmarks/sumstat_vs_individual.py
 
 | Quantity | Mean |
 |---|---:|
-| `beta_std` correlation, individual vs summary fit | 0.9996 |
+| `beta_std` correlation, individual vs summary fit | 0.9999 |
 | Held-out R², individual-level CMSA | 0.4981 |
-| Held-out R², summary fit tuned independently | 0.4979 |
-| Held-out R², summary fit with PUMAS pseudotuning | 0.4982 |
+| Held-out R², summary fit tuned independently | 0.4981 |
+| Held-out R², summary fit with PUMAS pseudotuning | 0.4983 |
 | Held-out R², summary fit tuned in-sample | 0.4973 |
 
 With exact moments the two routes agree up to selection-routing differences

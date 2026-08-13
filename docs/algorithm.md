@@ -136,9 +136,11 @@ convergence flag is a numerical warning, not a scientific model diagnostic.
 ### Cost
 
 With `A = assessment_folds`, the full-data Gaussian parent is formed once.
-Outer-training and inner-training Grams are obtained by subtracting the
-held-out rows, so nested assessment is `O(n D²)` in matrix products rather
-than `O(A n D²)`. The numerical origin is a function of `X` only
+Outer-training and inner-training Grams are obtained by subtracting held-out
+rows rather than recomputing every inner-training Gram. Each row nevertheless
+enters held-out Gram products once per outer fold, so nested assessment remains
+`O(A n D²)` in matrix products, with a smaller constant than the naive nested
+implementation. The numerical origin is a function of `X` only
 (`origin_y = 0`). Phenotype moments on an outer-training set are formed on
 those rows, so a large outer-assessment `y` cannot cancel into training `r`.
 Fold-local mean imputation still rebuilds statistics, because it changes `X`.
@@ -195,10 +197,13 @@ refits that share a Gram are one compiled batch over repeats rather than a
 Python loop of independent paths. Rank, projection and the cleaned covariance
 come from one correlation-scale eigendecomposition per Gram.
 
-With `D` and `z` from the same individuals these moments are exact; with
-external LD they are plug-in estimates, and noisy `c` need not satisfy the
-population Schur bound against the finite-reference `G`. Such discrepancies are
-logged as diagnostics — [theory.md
+With `D` and `z` from the same individuals these moments are exact for an
+unadjusted centred analysis, or when genotypes and phenotype were jointly
+residualized on the same covariate design. An ordinary covariate-adjusted
+marginal GWAS does not by itself provide that identity. With external LD the
+moments are plug-in estimates, and noisy `c` need not satisfy the population
+Schur bound against the finite-reference `G`. Such discrepancies are logged as
+diagnostics — [theory.md
 §2](theory.md#the-same-gaussian-objective-from-summary-statistics) explains why
 they arise. Materially indefinite `G` still fails, each fitted quadratic must be
 bounded, and positive `ld_shrinkage` repairs only penalized singular directions.
@@ -224,6 +229,13 @@ requested explicitly and is labelled in-sample reuse. The operational
 train/tune/test contract is in
 [guide.md §4](guide.md#fitting-from-summary-statistics).
 
+Every scalar and PUMAS path records coordinate-descent exhaustion. Unconverged
+points are excluded from selection; if none remains the fit fails with an
+instruction to increase `max_iter` or relax `tol`. Read
+`fit.log["n_iteration_exhausted_fit"]`,
+`fit.log["n_iteration_exhausted_tuning"]`, and
+`fit.log["n_rejected_nonconverged"]` before interpreting a selected path.
+
 The executable calibration checks the moment identity on discrete dosages,
 the null tuning-versus-assessment MSE gap, and Gaussian-versus-binary error of
 the PUMAS covariance plug-in. Raw seeds, summaries, and provenance live in
@@ -232,10 +244,12 @@ the PUMAS covariance plug-in. Raw seeds, summaries, and provenance live in
 
 ## Score construction
 
-`panel_from_sumstats` builds the LD cache on the first successful trait. Later
-independent traits can run concurrently (`n_jobs`); the default `1` is
-sequential. Tests that replace `ldpred3.run_ldpred3_prs` with a Python iterator
-should leave `n_jobs=1`.
+When `ld_cache` is supplied, `panel_from_sumstats` builds it on the first
+successful trait. Later independent traits can then run concurrently
+(`n_jobs`); the default `1` is sequential. Supplying only `ld_prefix` rebuilds
+LD for every trait, so parallel use requires an explicit shared `ld_cache`.
+Tests that replace `ldpred3.run_ldpred3_prs` with a Python iterator should leave
+`n_jobs=1`.
 
 `panel_from_catalog` reads the target genotypes **once**. Every scoring file is
 harmonised against the variant table up front, the union of matched variants is
@@ -255,11 +269,16 @@ Weight scales are tracked rather than assumed. PGS Catalog weights count alleles
 The panel records which convention each score used, together with the target
 cohort's per-variant allele frequency and dosage SD.
 
-`combine_weights` puts everything on the standardized scale — allele-count
-weights are multiplied by the recorded SD — because that is the scale
-`ldpred3.score_from_weights` applies, so the file it writes can be handed
-straight back to ldpred3. A test asserts the round trip reproduces the fitted
-combination to a correlation of 1 within 1e-8.
+`combine_weights` writes each component as `c_jk(g_j - μ_jk)`, where
+`c_jk=w_jk/sd_jk` for a standardized score and `c_jk=w_jk` for a raw score.
+For `C_j=Σ_k β_k c_jk` and `M_j=Σ_k β_k c_jk μ_jk`, the one-row frozen
+representation has `μ_j*=M_j/C_j` and written weight `C_j sd_j*` for any chosen
+positive output SD. Raw scores use the target mean and retain one removable
+intercept. This construction preserves both observed dosages and reference-mean
+missing imputation. A signed combination with `C_j=0, M_j!=0` or
+`μ_j*` outside `[0,2]` cannot be represented by one valid LDpred3 row and is
+rejected. `check_weights` verifies unit slope and negligible centred residuals,
+rather than accepting correlation alone.
 
 ## The training-free combination
 

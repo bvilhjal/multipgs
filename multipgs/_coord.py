@@ -198,8 +198,16 @@ else:
 # Gaussian path
 # ---------------------------------------------------------------------------
 
-def _path_gram(G, pf, beta, grad, lambdas, alpha, tol, max_iter, dfmax, out):
-    """Warm-started path. Return fitted and iteration-exhausted counts."""
+def _path_gram(G, pf, beta, grad, lambdas, alpha, tol, max_iter, dfmax, out,
+               converged_path, sweeps_path):
+    """Warm-started path. Return fitted and iteration-exhausted counts.
+
+    ``max_iter`` is a budget of coordinate sweeps *per penalty*.  The active-set
+    acceleration shares that budget with the full KKT-checking sweeps.  Keeping
+    one counter matters: nesting two loops each bounded by ``max_iter`` used to
+    permit ``max_iter * (max_iter + 1)`` sweeps while the public API promised at
+    most ``max_iter``.
+    """
     K = G.shape[0]
     allidx = np.arange(K)
     act = np.empty(K, dtype=np.int64)
@@ -210,8 +218,12 @@ def _path_gram(G, pf, beta, grad, lambdas, alpha, tol, max_iter, dfmax, out):
         l1 = lambdas[li] * alpha
         l2 = lambdas[li] * (1.0 - alpha)
         converged = False
-        for _outer in range(max_iter):
-            if _sweep_gram(G, beta, grad, pf, l1, l2, allidx, K) < tol:
+        sweeps = 0
+        while sweeps < max_iter:
+            full_step = _sweep_gram(
+                G, beta, grad, pf, l1, l2, allidx, K)
+            sweeps += 1
+            if full_step < tol:
                 converged = True
                 break
             n_act = 0
@@ -219,9 +231,14 @@ def _path_gram(G, pf, beta, grad, lambdas, alpha, tol, max_iter, dfmax, out):
                 if beta[j] != 0.0 or pf[j] <= 0.0:
                     act[n_act] = j
                     n_act += 1
-            for _inner in range(max_iter):
-                if _sweep_gram(G, beta, grad, pf, l1, l2, act, n_act) < tol:
+            while sweeps < max_iter:
+                active_step = _sweep_gram(
+                    G, beta, grad, pf, l1, l2, act, n_act)
+                sweeps += 1
+                if active_step < tol:
                     break
+        converged_path[li] = converged
+        sweeps_path[li] = sweeps
         if not converged:
             exhausted += 1
         nnz = 0
@@ -242,7 +259,8 @@ _path_gram_jit = _jit_nogil(_path_gram) if HAVE_NUMBA else _path_gram
 
 
 def _path_gram_batch(G, pf, betas, grads, lambdas, alpha, tol, max_iter,
-                     dfmax, out, fitted, exhausted):
+                     dfmax, out, fitted, exhausted, converged_path,
+                     sweeps_path):
     """Independent warm-started paths that share one Gram.
 
     Repeats write disjoint ``betas[r]``, ``grads[r]`` and ``out[r]`` slices.
@@ -252,7 +270,7 @@ def _path_gram_batch(G, pf, betas, grads, lambdas, alpha, tol, max_iter,
     for r in prange(n_rep):
         fitted[r], exhausted[r] = _path_gram_jit(
             G, pf, betas[r], grads[r], lambdas, alpha, tol, max_iter,
-            dfmax, out[r])
+            dfmax, out[r], converged_path[r], sweeps_path[r])
 
 
 if HAVE_NUMBA:  # pragma: no cover - selected at import
@@ -342,9 +360,12 @@ def enet_path_gaussian(G, r, *, pf, alpha, lambdas, beta_init=None,
 
     ``G`` is :math:`X^\\top X / n` (symmetric; unit diagonal for standardized
     columns) and ``r`` is :math:`X^\\top y / n` for a centred ``y``. Returns
-    ``(coefs, n_fitted)``; rows of ``coefs`` at or past ``n_fitted`` were not
-    fitted (``dfmax`` truncation). With ``return_info=True``, append a mapping
-    that reports whether any fitted penalty exhausted ``max_iter``.
+    ``(coefs, n_fitted)``. ``max_iter`` is the maximum total number of full and
+    active-set coordinate sweeps at each penalty. ``dfmax`` is a path-stopping
+    threshold, not a hard sparsity cap: the first fitted row exceeding it is
+    included as row ``n_fitted - 1`` and later rows are not fitted. With
+    ``return_info=True``, append a mapping containing per-penalty convergence
+    and sweep counts as well as aggregate exhaustion counts.
     """
     G = np.ascontiguousarray(G, dtype=np.float64)
     r = np.ascontiguousarray(r, dtype=np.float64)
@@ -359,28 +380,35 @@ def enet_path_gaussian(G, r, *, pf, alpha, lambdas, beta_init=None,
         beta = np.array(beta_init, dtype=np.float64)
         grad = np.array(grad_init, dtype=np.float64)
     out = np.zeros((lambdas.shape[0], K), dtype=np.float64)
+    converged_path = np.zeros(lambdas.shape[0], dtype=np.bool_)
+    sweeps_path = np.zeros(lambdas.shape[0], dtype=np.int64)
     dfmax = K if dfmax is None else int(dfmax)
     n_fitted, n_exhausted = _path_gram_jit(
         G, pf, beta, grad, lambdas, float(alpha), float(tol), int(max_iter),
-        dfmax, out)
+        dfmax, out, converged_path, sweeps_path)
     result = (out, int(n_fitted))
     if not return_info:
         return result
+    fitted_mask = np.arange(lambdas.shape[0]) < n_fitted
     info = {"converged": int(n_exhausted) == 0,
             "n_iteration_exhausted": int(n_exhausted),
             "n_coordinate_descent_exhausted": int(n_exhausted),
-            "n_irls_exhausted": 0}
+            "n_irls_exhausted": 0,
+            "converged_path": converged_path,
+            "iteration_exhausted_path": fitted_mask & ~converged_path,
+            "n_sweeps_path": sweeps_path}
     return result + (info,)
 
 
 def enet_path_gaussian_batch(G, R, *, pf, alpha, lambdas, tol=1e-7,
-                             max_iter=1000, dfmax=None):
+                             max_iter=1000, dfmax=None, return_info=False):
     """``enet_path_gaussian`` for many right-hand sides that share ``G``.
 
     ``R`` is ``(n_rep, K)``. Returns ``(coefs, n_fitted)`` with ``coefs`` of
     shape ``(n_rep, n_lambda, K)`` and ``n_fitted`` of length ``n_rep``.
     Used by PUMAS, which refits the same Gram against every pseudo-training
-    covariance.
+    covariance. With ``return_info=True``, append aggregate, per-repeat, and
+    per-penalty convergence diagnostics.
     """
     G = np.ascontiguousarray(G, dtype=np.float64)
     R = np.ascontiguousarray(R, dtype=np.float64)
@@ -392,8 +420,19 @@ def enet_path_gaussian_batch(G, R, *, pf, alpha, lambdas, tol=1e-7,
     if G.shape != (K, K) or pf.shape != (K,):
         raise ValueError("G, R and pf must be (K, K), (n_rep, K) and (K,)")
     if n_rep == 0:
-        return np.zeros((0, lambdas.shape[0], K), dtype=np.float64), \
-            np.zeros(0, dtype=np.int64)
+        result = (np.zeros((0, lambdas.shape[0], K), dtype=np.float64),
+                  np.zeros(0, dtype=np.int64))
+        if not return_info:
+            return result
+        empty_path = np.zeros((0, lambdas.shape[0]), dtype=np.bool_)
+        info = {"converged": True, "n_iteration_exhausted": 0,
+                "n_coordinate_descent_exhausted": 0,
+                "n_irls_exhausted": 0,
+                "n_iteration_exhausted_by_repeat": np.zeros(0, dtype=np.int64),
+                "converged_path": empty_path,
+                "iteration_exhausted_path": empty_path.copy(),
+                "n_sweeps_path": np.zeros_like(empty_path, dtype=np.int64)}
+        return result + (info,)
     dfmax = K if dfmax is None else int(dfmax)
     betas = np.empty((n_rep, K), dtype=np.float64)
     grads = np.empty((n_rep, K), dtype=np.float64)
@@ -402,10 +441,28 @@ def enet_path_gaussian_batch(G, R, *, pf, alpha, lambdas, tol=1e-7,
     out = np.zeros((n_rep, lambdas.shape[0], K), dtype=np.float64)
     fitted = np.empty(n_rep, dtype=np.int64)
     exhausted = np.empty(n_rep, dtype=np.int64)
+    converged_path = np.zeros(
+        (n_rep, lambdas.shape[0]), dtype=np.bool_)
+    sweeps_path = np.zeros((n_rep, lambdas.shape[0]), dtype=np.int64)
     _path_gram_batch_jit(
         G, pf, betas, grads, lambdas, float(alpha), float(tol),
-        int(max_iter), dfmax, out, fitted, exhausted)
-    return out, fitted
+        int(max_iter), dfmax, out, fitted, exhausted, converged_path,
+        sweeps_path)
+    result = (out, fitted)
+    if not return_info:
+        return result
+    fitted_mask = np.arange(lambdas.shape[0])[None, :] < fitted[:, None]
+    exhausted_path = fitted_mask & ~converged_path
+    n_exhausted = int(np.sum(exhausted))
+    info = {"converged": n_exhausted == 0,
+            "n_iteration_exhausted": n_exhausted,
+            "n_coordinate_descent_exhausted": n_exhausted,
+            "n_irls_exhausted": 0,
+            "n_iteration_exhausted_by_repeat": exhausted.copy(),
+            "converged_path": converged_path,
+            "iteration_exhausted_path": exhausted_path,
+            "n_sweeps_path": sweeps_path}
+    return result + (info,)
 
 
 # ---------------------------------------------------------------------------

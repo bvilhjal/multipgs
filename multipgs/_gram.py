@@ -6,6 +6,38 @@ import numpy as np
 
 from ._validate import _positive_integer
 
+
+def _integer_indices(values, label):
+    """Return integer-valued indices without truncating malformed input."""
+    raw = np.asarray(values)
+    if raw.dtype.kind == "b" or raw.dtype.kind not in "iuf":
+        raise ValueError(f"{label} must contain integer variant indices")
+    flat = raw.ravel()
+    if raw.dtype.kind == "f":
+        limit = np.iinfo(np.int64).max
+        if (not np.all(np.isfinite(flat))
+                or np.any(flat != np.floor(flat))
+                or np.any(flat < -limit - 1) or np.any(flat > limit)):
+            raise ValueError(f"{label} must contain integer variant indices")
+    elif raw.dtype.kind == "u" and np.any(flat > np.iinfo(np.int64).max):
+        raise ValueError(f"{label} contains an index outside int64 range")
+    return flat.astype(np.int64, copy=False)
+
+
+def _nonnegative_integer(value, label):
+    """Validate a count before converting it to an integer."""
+    if isinstance(value, (bool, np.bool_)):
+        raise ValueError(f"{label} must be a non-negative integer")
+    raw = np.asarray(value)
+    if raw.ndim != 0 or raw.dtype.kind not in "iuf" or raw.dtype.kind == "b":
+        raise ValueError(f"{label} must be a non-negative integer")
+    number = float(raw)
+    if (not np.isfinite(number) or number < 0.0 or not number.is_integer()
+            or number > np.iinfo(np.int64).max):
+        raise ValueError(f"{label} must be a non-negative integer")
+    return int(number)
+
+
 def _as_blocks(ld, n_variants):
     """Normalize an LD argument to ``(corr_block, idx)`` pairs.
 
@@ -32,7 +64,7 @@ def _as_blocks(ld, n_variants):
                     "ldpred3.load_ld_blocks return, got "
                     f"{type(block).__name__}")
             corr, idx = block
-            idx = np.asarray(idx, dtype=np.int64).ravel()
+            idx = _integer_indices(idx, f"LD block {b} indices")
             if idx.size == 0:
                 continue
             seen = True
@@ -76,15 +108,7 @@ def _weight_columns(weights, n_variants=None):
             raise ValueError("dense weights contain non-finite values")
         m, k = weights.shape
         if n_variants is not None:
-            if isinstance(n_variants, (bool, np.bool_)):
-                raise ValueError("n_variants must be a non-negative integer")
-            try:
-                requested = int(n_variants)
-            except (TypeError, ValueError, OverflowError):
-                raise ValueError(
-                    "n_variants must be a non-negative integer") from None
-            if requested < 0 or requested != n_variants:
-                raise ValueError("n_variants must be a non-negative integer")
+            requested = _nonnegative_integer(n_variants, "n_variants")
             if requested != m:
                 raise ValueError(
                     f"n_variants={requested} but dense weights have {m} rows")
@@ -101,7 +125,7 @@ def _weight_columns(weights, n_variants=None):
         if not (isinstance(pair, tuple) and len(pair) == 2):
             raise ValueError(f"score {k} must be an (index, weight) pair, got "
                              f"{type(pair).__name__}")
-        idx = np.asarray(pair[0], dtype=np.int64).ravel()
+        idx = _integer_indices(pair[0], f"score {k} indices")
         val = np.asarray(pair[1], dtype=float).ravel()
         if idx.shape != val.shape:
             raise ValueError(f"score {k} has {idx.size} indices and {val.size} "
@@ -124,9 +148,8 @@ def _weight_columns(weights, n_variants=None):
         col_parts.append(np.full(idx.size, k, dtype=np.int64))
         val_parts.append(val)
 
-    m = int(largest + 1) if n_variants is None else int(n_variants)
-    if m < 0:
-        raise ValueError("n_variants must be non-negative")
+    m = (int(largest + 1) if n_variants is None else
+         _nonnegative_integer(n_variants, "n_variants"))
     if m <= largest:
         raise ValueError(f"a weight indexes variant {largest} but the reference "
                          f"has {m}")
@@ -286,7 +309,7 @@ def _ld_variant_count(weights_ld, ld, explicit, label):
             raise ValueError(f"{label} LD matrix must be square")
         return int(ld.shape[0])
     if isinstance(ld, (list, tuple)) and ld:
-        last = np.asarray(ld[-1][1], dtype=np.int64).ravel()
+        last = _integer_indices(ld[-1][1], f"{label} LD block indices")
         if last.size:
             return int(last[-1]) + 1
     return None
@@ -317,7 +340,10 @@ def score_moments(weights_ld, z, ld, *, weights_gwas=None,
     ``weights_ld`` represent the same raw component scores, but each is
     multiplied by the empirical genotype SD of its own dataset:
     ``c = W_gwas.T @ z`` and ``G = W_ld.T @ D @ W_ld``. They may cover different
-    variant sets; only their score columns must agree.
+    variant sets; only their score columns must agree. Equality with
+    individual-level Gaussian regression moments is exact for unadjusted data,
+    or when genotypes and phenotype were jointly residualized on the identical
+    covariate design—not for arbitrary adjusted marginal GWAS coefficients.
     """
     if weights_gwas is None:
         raise ValueError(

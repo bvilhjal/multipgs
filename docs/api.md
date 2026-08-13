@@ -67,6 +67,11 @@ Gram's range (`fit.r` is fitted, `fit.c_raw` observed) — is in
 in [theory.md §2](theory.md#2-learned-weights-penalized-regression-over-a-panel)
 and the implementation in [algorithm.md](algorithm.md#summary-statistic-learned-combination).
 
+For a fixed coefficient vector, `pseudo_r2` and `evaluate_sumstat` use the
+observed scalar `beta.T @ c`; changing an unused score cannot change the
+estimate. `SumstatFit.log` records fit- and tuning-path iteration exhaustion
+and the number of unconverged candidates excluded from selection.
+
 `align_to_reference` converts raw Catalog weights only when empirical `sd=` is
 supplied or `hwe_genotype_sd=True` is requested. Otherwise its output remains
 on the allele-count scale and `log["standardized"]` is false; it is suitable for
@@ -80,13 +85,13 @@ on the allele-count scale and `log["standardized"]` is false; it is suitable for
 |---|---|
 | `panel_from_catalog` | score PGS Catalog files against a target, in one genotype pass |
 | `panel_from_sumstats` | fit each GWAS with LDpred3 and score it on the target; `n_jobs` parallelizes traits after the LD cache exists; `traits=` supplies per-GWAS `n_eff` / method / alpha |
-| `panel_from_weights` | score a directory of ldpred3 weight files in one genotype pass (frozen `AF_REF`/`SD_REF` when present) |
+| `panel_from_weights` | score ldpred3 files in one genotype pass: target-standardized when reference scale is absent, frozen when `AF_REF`/`SD_REF` is present |
 | `ScorePanel` | the `n × K` matrix, its per-variant weights and provenance |
 | `ScorePanel.concat` | place two panels side by side on shared `FID:IID` |
 | `combine_weights` | collapse a panel plus a fit into one deployable weight file |
-| `check_weights` | require frozen scoring of that file to reproduce the fitted combination |
+| `check_weights` | require frozen scoring to reproduce the fitted combination up to its unencoded intercept, with unit slope and negligible centred residuals |
 | `read_panel`, `write_panel` | plain-text score matrices (`FID IID <scores...>`) |
-| `save_panel`, `load_panel` | full panel including weights, scale flags and metadata (`.npz`) |
+| `save_panel`, `load_panel` | full panel including weights, scale flags and metadata (`.npz`); load only files from trusted sources because the format contains NumPy object arrays |
 | `attach_metadata` | merge a Catalog `metadata.tsv` (including `N_EFF`) into `panel.meta` |
 | `read_trait_table` | read the per-GWAS table used by `panel_from_sumstats(traits=)` |
 
@@ -133,7 +138,7 @@ Odds-ratio weights are log-transformed on read; non-additive rows
 | `penalty_from_accuracy` | expected accuracy → elastic-net penalty factors |
 | `penalty_from_relevance` | `r2_k · r_G(k,f)²` → elastic-net penalty factors |
 | `align_sumstats_to_cache` | GWAS → standardized `beta_hat` in `ld_cache` order (needs bipred only for the screen below) |
-| `ldsc_rg_screen`, `RgScreen` | `bipred.ldsc_rg` of a focal GWAS vs auxiliaries; χ² cap on LDSC rows only |
+| `ldsc_rg_screen`, `RgScreen` | one-cache `bipred.ldsc_rg` of a focal GWAS vs auxiliaries; default 10,000-row floor, χ² cap on regression rows, and optional GRCh37 long-range-LD exclusion |
 
 `meta_pgs(method="sqrt_n_eff")` requires same-trait, consistently oriented
 scores and discovery effective sample sizes. `method="expected_r2"` instead

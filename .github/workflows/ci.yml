@@ -13,11 +13,20 @@ jobs:
         python-version: ["3.9", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
+      - name: Require private ldpred3 access
+        env:
+          LDPRED3_READ_TOKEN: ${{ secrets.LDPRED3_READ_TOKEN }}
+        run: |
+          if [ -z "$LDPRED3_READ_TOKEN" ]; then
+            echo "::error title=Missing ldpred3 token::Configure the repository secret LDPRED3_READ_TOKEN with read access to bvilhjal/ldpred3."
+            exit 1
+          fi
       - uses: actions/checkout@v4
         with:
           repository: bvilhjal/ldpred3
-          ref: dcde5737f720642105c0e1c79878219304fa3012
+          ref: ea9ab389c109b6ceccbaa990fe91ca34fb3498c0
           path: ldpred3
+          token: ${{ secrets.LDPRED3_READ_TOKEN }}
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
@@ -34,12 +43,21 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - run: python -m pip install --upgrade build twine numpy
+      - run: python -m pip install --upgrade build twine numpy "pypdf>=5"
+      - name: Require private ldpred3 access
+        env:
+          LDPRED3_READ_TOKEN: ${{ secrets.LDPRED3_READ_TOKEN }}
+        run: |
+          if [ -z "$LDPRED3_READ_TOKEN" ]; then
+            echo "::error title=Missing ldpred3 token::Configure the repository secret LDPRED3_READ_TOKEN with read access to bvilhjal/ldpred3."
+            exit 1
+          fi
       - uses: actions/checkout@v4
         with:
           repository: bvilhjal/ldpred3
-          ref: dcde5737f720642105c0e1c79878219304fa3012
+          ref: ea9ab389c109b6ceccbaa990fe91ca34fb3498c0
           path: ldpred3
+          token: ${{ secrets.LDPRED3_READ_TOKEN }}
       - run: python report/generate_evidence.py --check
       - run: python -m build
       - run: python -m twine check dist/*
@@ -53,7 +71,8 @@ jobs:
           archive, = glob.glob("dist/*.tar.gz")
           with tarfile.open(archive) as source:
               names = source.getnames()
-          for path in ("CHANGELOG.md", "CONTRIBUTING.md", "docs/guide.md",
+          for path in (".gitignore", ".github/workflows/ci.yml",
+                       "CHANGELOG.md", "CONTRIBUTING.md", "docs/guide.md",
                        "docs/api.md", "examples/minimal.py",
                        "benchmarks/README.md", "benchmarks/meta_rules.py",
                        "benchmarks/results/meta_rules.csv",
@@ -68,6 +87,7 @@ jobs:
                        "report/generated_evidence.tex",
                        "report/multipgs_methods.tex",
                        "report/multipgs_methods.pdf",
+                       "report/multipgs_methods.pdf.sha256",
                        "tests/test_api.py"):
               assert any(name.endswith("/" + path) for name in names), path
 
@@ -107,6 +127,7 @@ jobs:
                        "share/doc/multipgs/generated_evidence.tex",
                        "share/doc/multipgs/multipgs_methods.tex",
                        "share/doc/multipgs/multipgs_methods.pdf",
+                       "share/doc/multipgs/multipgs_methods.pdf.sha256",
                        "share/doc/multipgs/docs/guide.md",
                        "share/doc/multipgs/docs/api.md"):
               assert any(name.endswith(path) for name in names), path

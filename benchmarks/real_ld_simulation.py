@@ -107,6 +107,12 @@ FIELDS = (
 
 def _version(name):
     try:
+        value = getattr(importlib.import_module(name), "__version__", None)
+        if value is not None:
+            return str(value)
+    except ImportError:
+        pass
+    try:
         return importlib.metadata.version(name)
     except importlib.metadata.PackageNotFoundError:
         return None

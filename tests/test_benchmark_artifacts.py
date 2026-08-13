@@ -56,8 +56,10 @@ def test_distribution_policy_ships_contributor_and_user_docs():
     manifest = (ROOT / "MANIFEST.in").read_text(encoding="utf-8")
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert "include CONTRIBUTING.md" in manifest
+    assert "include .gitignore" in manifest
+    assert "include .github/workflows/ci.yml" in manifest
     assert "recursive-include docs *.md" in manifest
-    assert "recursive-include report *.md *.tex *.pdf *.json *.py" in manifest
+    assert "recursive-include report *.md *.tex *.pdf *.sha256 *.json *.py" in manifest
     assert "recursive-include tests *.py" in manifest
     for path in ("CONTRIBUTING.md", "docs/guide.md", "docs/api.md",
                  "report/evidence.json", "report/generate_evidence.py",

@@ -48,8 +48,8 @@ fast = [
     "numba>=0.59; python_version < '3.14'",
     "numba>=0.66; python_version >= '3.14'",
 ]
-bipred = ["bipred>=0.3.7"]
-test = ["pytest>=7", "scikit-learn>=1.0"]
+bipred = ["bipred>=0.3.8"]
+test = ["pytest>=7", "scikit-learn>=1.0", "pypdf>=5"]
 lint = ["ruff>=0.5"]
 
 [tool.setuptools]
@@ -64,6 +64,7 @@ packages = ["multipgs"]
     "report/generated_evidence.tex",
     "report/multipgs_methods.tex",
     "report/multipgs_methods.pdf",
+    "report/multipgs_methods.pdf.sha256",
 ]
 "share/doc/multipgs/docs" = [
     "docs/algorithm.md",

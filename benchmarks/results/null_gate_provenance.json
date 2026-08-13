@@ -1,15 +1,39 @@
 {
-  "generated_utc": "2026-08-11T17:14:27.849252+00:00",
-  "elapsed_seconds": 7.8155964159814175,
+  "source": {
+    "repository_commit": "49d8e71f0006042a61225e41caf6092d7c7b23a2",
+    "source_dirty": true,
+    "dirty_scope": [
+      "benchmarks/_provenance.py",
+      "benchmarks/check_results.py",
+      "benchmarks/fit_accuracy.py",
+      "benchmarks/meta_rules.py",
+      "benchmarks/null_gate.py",
+      "benchmarks/overlap_inflation.py",
+      "benchmarks/real_ld_gram.py",
+      "benchmarks/real_ld_simulation.py",
+      "benchmarks/real_meta_rules.py",
+      "benchmarks/stack_scaling.py",
+      "benchmarks/sumstat_calibration.py",
+      "benchmarks/sumstat_cost.py",
+      "benchmarks/sumstat_vs_individual.py",
+      "multipgs",
+      "pyproject.toml"
+    ],
+    "source_sha256": "93ee2f7e866861238737e6ff7e76f5de308c5ed4261c43b263301cb748323101",
+    "script": "benchmarks/null_gate.py",
+    "script_sha256": "8ce6423efa4869ae4c7dc2f8be10fbcc387f094f517bf52168d938f0ad4241b8"
+  },
+  "generated_utc": "2026-08-13T18:35:25.644103+00:00",
+  "elapsed_seconds": 105.16351458302233,
   "command": [
-    "/Users/au507860/anaconda3/bin/python3",
-    "/Users/au507860/REPOS/multipgs/benchmarks/null_gate.py"
+    "/Users/au507860/anaconda3/bin/python",
+    "/Users/au507860/Documents/ChatGPT/multipgs/benchmarks/null_gate.py"
   ],
   "platform": "macOS-26.5.2-arm64-arm-64bit",
   "python": "3.10.20",
-  "multipgs": "0.3.0",
+  "multipgs": "0.3.3",
   "numpy": "1.26.4",
-  "ldpred3": "0.4.6",
+  "ldpred3": "0.4.7",
   "numba": "0.66.0",
   "parameters": {
     "seeds": 30,
@@ -23,7 +47,7 @@
     "folds": 5,
     "assessment_folds": 3,
     "n_lambda": 40,
-    "output_dir": "/Users/au507860/REPOS/multipgs/benchmarks/results"
+    "output_dir": "/Users/au507860/Documents/ChatGPT/multipgs/benchmarks/results"
   },
   "note": "In the null arm no score carries signal, so the null_model return rate is the gate's false-pass control (one minus that rate is the false-pass rate). The signal-arm cv_r2 minus held-out R\u00b2 is the bias of the internal nested-CV estimate \u2014 documented as possibly conservative \u2014 not a generalization guarantee."
 }

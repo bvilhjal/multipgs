@@ -57,6 +57,26 @@ def test_sparse_and_dense_weights_agree():
     assert np.allclose(dense, sparse)
 
 
+@pytest.mark.parametrize("bad", [np.array([0.9]), np.array([np.nan]), ["0"]])
+def test_sparse_variant_indices_are_validated_before_integer_cast(bad):
+    with pytest.raises(ValueError, match="integer variant indices"):
+        score_gram([(bad, np.array([1.0]))], np.eye(1), n_variants=1)
+
+
+@pytest.mark.parametrize("bad", [2.9, np.nan, True, "2"])
+def test_sparse_n_variants_is_validated_before_integer_cast(bad):
+    with pytest.raises(ValueError, match="non-negative integer"):
+        score_gram([(np.array([0]), np.array([1.0]))], np.eye(2),
+                   n_variants=bad)
+
+
+def test_ld_block_indices_are_validated_before_integer_cast():
+    with pytest.raises(ValueError, match="integer variant indices"):
+        score_gram(
+            [(np.array([0]), np.array([1.0]))],
+            [(np.eye(1), np.array([0.5]))], n_variants=1)
+
+
 def test_duplicate_sparse_entries_are_coalesced_consistently():
     weights = [(np.array([0, 0]), np.array([1.0, 2.0]))]
     gram, var = score_gram(weights, np.eye(1), n_variants=1)
@@ -107,7 +127,7 @@ def test_sparse_blocks_multiply_only_the_active_score_columns(monkeypatch):
 
 
 def test_it_reproduces_the_individual_level_fit_exactly():
-    """Same LD, same data: this is not an approximation of the stacked fit."""
+    """Same unadjusted centred data gives the exact stacked Gaussian fit."""
     x, w, scores, y, ld, z = _setup(seed=3)
     n, k = x.shape[0], w.shape[1]
     sd = scores.std(0)

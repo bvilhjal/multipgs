@@ -1,15 +1,41 @@
 {
-  "generated_utc": "2026-08-11T17:14:19.483460+00:00",
-  "elapsed_seconds": 5.300910916994326,
+  "source": {
+    "repository_commit": "49d8e71f0006042a61225e41caf6092d7c7b23a2",
+    "source_dirty": true,
+    "dirty_scope": [
+      "benchmarks/_provenance.py",
+      "benchmarks/check_results.py",
+      "benchmarks/fit_accuracy.py",
+      "benchmarks/meta_rules.py",
+      "benchmarks/null_gate.py",
+      "benchmarks/overlap_inflation.py",
+      "benchmarks/real_ld_gram.py",
+      "benchmarks/real_ld_simulation.py",
+      "benchmarks/real_meta_rules.py",
+      "benchmarks/stack_scaling.py",
+      "benchmarks/sumstat_calibration.py",
+      "benchmarks/sumstat_cost.py",
+      "benchmarks/sumstat_vs_individual.py",
+      "multipgs",
+      "pyproject.toml"
+    ],
+    "source_sha256": "93ee2f7e866861238737e6ff7e76f5de308c5ed4261c43b263301cb748323101",
+    "script": "benchmarks/fit_accuracy.py",
+    "script_sha256": "b94b20d33f3e0693f35d39ad111b951a13b033b3b80ffaaa9593f6a7e24c5ccb"
+  },
+  "generated_utc": "2026-08-13T18:34:47.655533+00:00",
+  "elapsed_seconds": 67.17639733297983,
   "command": [
-    "/Users/au507860/anaconda3/bin/python3",
-    "/Users/au507860/REPOS/multipgs/benchmarks/fit_accuracy.py"
+    "/Users/au507860/anaconda3/bin/python",
+    "/Users/au507860/Documents/ChatGPT/multipgs/benchmarks/fit_accuracy.py",
+    "--jobs",
+    "1"
   ],
   "platform": "macOS-26.5.2-arm64-arm-64bit",
   "python": "3.10.20",
-  "multipgs": "0.3.0",
+  "multipgs": "0.3.3",
   "numpy": "1.26.4",
-  "ldpred3": "0.4.6",
+  "ldpred3": "0.4.7",
   "numba": "0.66.0",
   "parameters": {
     "seeds": 30,
@@ -29,8 +55,8 @@
     "folds": 5,
     "assessment_folds": 3,
     "n_lambda": 40,
-    "jobs": 8,
-    "output_dir": "/Users/au507860/REPOS/multipgs/benchmarks/results"
+    "jobs": 1,
+    "output_dir": "/Users/au507860/Documents/ChatGPT/multipgs/benchmarks/results"
   },
   "note": "All R\u00b2 values are for the score alone \u2014 covariates are fitted but excluded from the evaluated prediction, per the package's accuracy definition \u2014 so the genetic-value oracle sits below h2 whenever covariates carry phenotypic variance. cv_r2 is the nested-CV estimate on the training split only; uplift is multi_r2 minus best_single_r2 per replicate. null_model_mean is the rate at which the nested gate withheld the penalized model."
 }

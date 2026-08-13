@@ -343,6 +343,30 @@ def test_full_rank_independent_tuning_preserves_unequal_scale_moments():
             0.0, abs=1e-14)
 
 
+def test_independent_tuning_reuses_an_identical_ld_basis(monkeypatch):
+    import multipgs.sumstat as sumstat
+
+    calls = 0
+    score_gram_from_coo = sumstat._score_gram_from_coo
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return score_gram_from_coo(*args, **kwargs)
+
+    monkeypatch.setattr(sumstat, "_score_gram_from_coo", counted)
+    weights = np.eye(3)
+    ld = np.eye(3)
+    fit = multi_pgs_sumstats(
+        weights, np.array([0.2, 0.1, 0.05]), ld, weights_gwas=weights,
+        z_valid=np.array([0.18, 0.08, 0.02]), ld_valid=ld,
+        weights_gwas_valid=weights, weights_ld_valid=weights,
+        tune="independent", n_lambda=12)
+
+    assert calls == 1
+    assert fit.log["tuning_ld_reused"] is True
+
+
 def test_independent_tuning_is_invariant_to_positive_score_rescaling():
     weights_train = np.diag([1.0, 10.0])
     z_train = np.array([0.2, 0.01])
@@ -416,6 +440,20 @@ def test_fixed_vector_checks_only_the_direction_beta_uses():
     assert unresolved.log["discarded_beta_c_null"] == pytest.approx(0.2)
 
 
+def test_fixed_vector_does_not_depend_on_unused_correlated_c_components():
+    beta = np.array([1.0, 0.0])
+    gram = np.ones((2, 2))
+    low_unused = evaluate_sumstat(
+        beta, np.array([0.1, 0.1]), gram, regime="A")
+    high_unused = evaluate_sumstat(
+        beta, np.array([0.1, 0.9]), gram, regime="A")
+
+    assert low_unused.r2 == high_unused.r2 == pytest.approx(0.01)
+    assert low_unused.mse == high_unused.mse == pytest.approx(1.8)
+    assert low_unused.log["beta_c"] == high_unused.log["beta_c"] == 0.1
+    assert high_unused.log["global_projection_shift_beta_c"] != 0.0
+
+
 def test_rank_deficient_null_noise_is_projected_before_same_gram_fitting():
     rng = np.random.default_rng(2026)
     x = rng.normal(size=(20, 40))
@@ -446,6 +484,39 @@ def test_pumas_projects_full_and_pseudo_split_null_signal():
     assert np.allclose(fit.beta, 0.0)
     assert fit.selection_mse == pytest.approx(1.0, abs=0.01)
     assert fit.log["discarded_ld_null_c_fraction"] == pytest.approx(1.0)
+
+
+def test_unconverged_summary_path_points_are_not_selected():
+    k = 8
+    gram = np.full((k, k), 0.95)
+    np.fill_diagonal(gram, 1.0)
+    weights = np.linalg.cholesky(gram).T
+    c = np.linspace(-0.12, 0.12, k)
+    z = np.linalg.solve(weights.T, c)
+
+    fit = multi_pgs_sumstats(
+        weights, z, np.eye(k), weights_gwas=weights, tune="none",
+        ld_shrinkage=0.01, n_lambda=12, tol=1e-30, max_iter=1)
+
+    assert fit.log["n_iteration_exhausted_fit"] > 0
+    assert fit.log["n_rejected_nonconverged"] > 0
+    assert "exhausted max_iter" in fit.log["convergence_warning"]
+    assert not np.isnan(fit.selection_mse)
+    assert not np.isnan(fit.selection_mse_path[fit.lambda_index])
+
+
+def test_noisy_population_bound_violation_remains_rankable():
+    weights = np.ones((1, 1))
+    fit = multi_pgs_sumstats(
+        weights, np.array([1.01]), np.eye(1), weights_gwas=weights,
+        tune="none", n_lambda=20)
+
+    assert fit.beta[0] > 0.0
+    assert fit.pseudo_r2 > 1.0
+    assert fit.selection_mse < 0.0
+    assert fit.log["n_rejected_selection_moments"] == 0
+    assert "diagnostics rather than population constraints" in (
+        fit.log["selection_moment_warning"])
 
 
 @pytest.mark.parametrize("bad", [0.0, -0.1, 1.1, np.nan, np.inf])

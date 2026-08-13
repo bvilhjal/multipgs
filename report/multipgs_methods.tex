@@ -71,6 +71,7 @@
 \newcolumntype{Y}{>{\raggedright\arraybackslash}X}
 \newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
 \input{generated_evidence.tex}
+\hypersetup{pdfsubject={multipgs-input-sha256=\ReportInputDigest;multipgs-version=\ReportPackageVersion}}
 
 \begin{document}
 
@@ -96,7 +97,7 @@
 \begin{tabularx}{\linewidth}{@{}L{38mm}Y@{}}
 \toprule
 \textbf{Package} & \pkg{multipgs} version \ReportPackageVersion \\
-\textbf{Report date} & 12 August 2026 \\
+\textbf{Report date} & 13 August 2026 \\
 \textbf{Scope} & Selection-index theory, three combination routes,
 deployment, evaluation, automated tests, and committed benchmark results \\
 \textbf{Evidence base} & Unit and contract tests, replicated synthetic
@@ -503,6 +504,13 @@ the span of the supplied scores. At \(\alpha=1\), the lasso selects entire
 component scores; it is inspired by the SNP-level lassosum quadratic
 \cite{mak2017}, but is not SNP-level lassosum.
 
+Equations~\eqref{eq:score-moments}--\eqref{eq:standardized-moments} are exact
+sample moments for unadjusted centred data, or when genotypes and phenotype
+were jointly residualised on the same covariate design. Ordinary
+covariate-adjusted marginal GWAS coefficients do not alone establish that
+identity. With external LD, \(G\) and \(c\) are source-specific plug-in
+estimates rather than one empirical covariance matrix.
+
 For a fixed coefficient vector, summary tuning evaluates
 \begin{equation}
   \operatorname{MSE}(\theta)
@@ -520,6 +528,8 @@ still needed for assessment. PUMAS-style pseudo-splitting uses a
 joint-Gaussian/CLT covariance approximation \cite{zhao2021}. In the committed
 calibration, relative covariance error is \ReportPumasGaussianErrorPct\% for
 Gaussian and \ReportPumasBinaryErrorPct\% for binary simulations.
+Every scalar and pseudo-split path carries coordinate-descent status;
+iteration-exhausted candidates are excluded rather than silently selected.
 
 \subsection{Training-free same-trait combination}
 
@@ -557,12 +567,22 @@ ldpred3. Identifier order, genome build, effect orientation, and
 source-specific dosage standard deviation are part of the statistical
 contract, not file-format trivia.
 
-Combining component variant weights \(w_{jk}\) with raw-score coefficients
-\(\beta_k\) produces the deployable effect
+Write component \(k\)'s term as
+\(c_{jk}(g_j-\mu_{jk})\), with
+\(c_{jk}=w_{jk}/\sigma_{jk}\) for a standardized score and
+\(c_{jk}=w_{jk}\) for a raw score. Define
+\(C_j=\sum_k\beta_k c_{jk}\) and
+\(M_j=\sum_k\beta_k c_{jk}\mu_{jk}\). The exact one-row frozen
+representation has
 \begin{equation}
-  \widetilde w_j=\sum_{k=1}^{q}w_{jk}\beta_k .
+  \mu_j^\star=\frac{M_j}{C_j},\qquad
+  \widetilde w_j=\sigma_j^\star C_j .
   \label{eq:combined-weights}
 \end{equation}
+Raw allele-count components use the target mean and leave one removable
+intercept. If \(C_j=0,M_j\ne0\), or \(\mu_j^\star\notin[0,2]\), no valid
+single LDpred3 row can preserve both observed dosage and reference-mean missing
+imputation, so deployment is refused rather than silently rescaled.
 The frozen scoring scale should be carried to new cohorts. Re-standardising
 each cohort independently can change coefficients, calibration, and even the
 meaning of a fixed threshold.

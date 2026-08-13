@@ -60,6 +60,9 @@ def test_every_module_and_public_function_has_a_docstring():
 def test_version_is_a_release_string():
     parts = multipgs.__version__.split(".")
     assert len(parts) == 3 and all(p.isdigit() for p in parts)
+    changelog = (pathlib.Path(__file__).resolve().parents[1]
+                 / "CHANGELOG.md").read_text(encoding="utf-8")
+    assert f"## {multipgs.__version__} - " in changelog
 
 
 def test_readme_examples_name_real_functions():
