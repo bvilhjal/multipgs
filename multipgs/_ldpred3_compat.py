@@ -21,7 +21,8 @@ _MODULE_NAMES = {
     # dual-path style as ldpred3 (explicit-loop kernel under Numba, vectorised
     # NumPy fallback without it) and reuses the decorators rather than
     # maintaining a second, subtly different import guard.
-    "ldpred3._numba": ("HAVE_NUMBA", "_jit_fastmath_nogil", "_jit_nogil"),
+    "ldpred3._numba": ("HAVE_NUMBA", "_jit_fastmath_nogil", "_jit_nogil",
+                       "_jit_parallel", "prange"),
     # ldpred3 documents dequantize_ld as "the single place every LD consumer
     # that reads block values as float should route through", but does not list
     # it in ``ld_repr.__all__``. multipgs is such a consumer: score_gram reads a

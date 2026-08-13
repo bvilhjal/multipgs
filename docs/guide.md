@@ -131,13 +131,15 @@ from multipgs import panel_from_sumstats
 panel = panel_from_sumstats(
     {"height": "height.tsv.gz", "bmi": "bmi.tsv.gz"},
     "cohort", ld_cache="ld/cohort", method="auto",
-    infer=True, auto_chains=50)
+    infer=True, auto_chains=50, n_jobs=4)
 ```
 
 Each trait is fitted with `ldpred3.run_ldpred3_prs`. **Pass `ld_cache`**: the LD
 reference is built by the first trait and reused by the rest, which is the
 difference between one LD build and `K` of them. Doing so sets
 `subset_to_sumstats=False` so the blocks span the same variants for every trait.
+After that first successful write, `n_jobs` runs the remaining traits in a
+thread pool; `1` (the default) stays sequential.
 
 `infer=True, auto_chains=50` requests the multi-chain architecture summary used
 by §3 and records the exact attempted-chain count. It adds inference work; omit

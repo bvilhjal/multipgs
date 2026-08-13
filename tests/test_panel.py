@@ -256,6 +256,33 @@ def _ldpred3_result(*, fid=("F1", "F2"), iid=("I1", "I2"), inference=None):
         beta_adjusted=np.array([0.3]), af=np.array([0.2]), sd=np.array([0.5]))
 
 
+def test_panel_from_sumstats_runs_later_traits_after_the_cache(monkeypatch,
+                                                              tmp_path):
+    """The first successful fit writes the LD cache; later traits may share threads."""
+    import threading
+
+    import ldpred3
+
+    cache = tmp_path / "ld_cache"
+    seen = []
+    lock = threading.Lock()
+
+    def fake(path, plink, **kwargs):
+        with lock:
+            seen.append((str(path), "ld_out" in kwargs,
+                         threading.current_thread().name))
+        return _ldpred3_result()
+
+    monkeypatch.setattr(ldpred3, "run_ldpred3_prs", fake)
+    panel = panel_from_sumstats(
+        {"one": "one.tsv", "two": "two.tsv", "three": "three.tsv"},
+        "target", ld_cache=str(cache), n_jobs=2)
+    assert list(panel.score_ids) == ["one", "two", "three"]
+    assert seen[0][0] == "one.tsv" and seen[0][1] is True
+    later = {path: wrote_ld_out for path, wrote_ld_out, _ in seen[1:]}
+    assert later == {"two.tsv": False, "three.tsv": False}
+
+
 def test_panel_from_sumstats_accepts_missing_inference_and_preserves_mapping(
         monkeypatch):
     import ldpred3

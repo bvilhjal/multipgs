@@ -38,11 +38,11 @@ from __future__ import annotations
 
 import numpy as np
 
-from ._ldpred3_compat import HAVE_NUMBA, _jit_nogil
+from ._ldpred3_compat import HAVE_NUMBA, _jit_nogil, _jit_parallel, prange
 
 
-__all__ = ["enet_path_gaussian", "enet_path_binomial", "lambda_grid",
-           "unpenalized_fit"]
+__all__ = ["enet_path_gaussian", "enet_path_gaussian_batch",
+           "enet_path_binomial", "lambda_grid", "unpenalized_fit"]
 
 # Element budget for the row-chunked weighted column-sum-of-squares. Bounds the
 # temporary at roughly 16 MB of float64 whatever n and K are.
@@ -241,6 +241,26 @@ def _path_gram(G, pf, beta, grad, lambdas, alpha, tol, max_iter, dfmax, out):
 _path_gram_jit = _jit_nogil(_path_gram) if HAVE_NUMBA else _path_gram
 
 
+def _path_gram_batch(G, pf, betas, grads, lambdas, alpha, tol, max_iter,
+                     dfmax, out, fitted, exhausted):
+    """Independent warm-started paths that share one Gram.
+
+    Repeats write disjoint ``betas[r]``, ``grads[r]`` and ``out[r]`` slices.
+    ``G`` and ``pf`` are read-only, so the ``prange`` is race-free.
+    """
+    n_rep = betas.shape[0]
+    for r in prange(n_rep):
+        fitted[r], exhausted[r] = _path_gram_jit(
+            G, pf, betas[r], grads[r], lambdas, alpha, tol, max_iter,
+            dfmax, out[r])
+
+
+if HAVE_NUMBA:  # pragma: no cover - selected at import
+    _path_gram_batch_jit = _jit_parallel(_path_gram_batch)
+else:
+    _path_gram_batch_jit = _path_gram_batch
+
+
 def unpenalized_fit(G, r, pf, *, ridge=1e-10):
     """Least-squares fit restricted to the unpenalized columns.
 
@@ -351,6 +371,41 @@ def enet_path_gaussian(G, r, *, pf, alpha, lambdas, beta_init=None,
             "n_coordinate_descent_exhausted": int(n_exhausted),
             "n_irls_exhausted": 0}
     return result + (info,)
+
+
+def enet_path_gaussian_batch(G, R, *, pf, alpha, lambdas, tol=1e-7,
+                             max_iter=1000, dfmax=None):
+    """``enet_path_gaussian`` for many right-hand sides that share ``G``.
+
+    ``R`` is ``(n_rep, K)``. Returns ``(coefs, n_fitted)`` with ``coefs`` of
+    shape ``(n_rep, n_lambda, K)`` and ``n_fitted`` of length ``n_rep``.
+    Used by PUMAS, which refits the same Gram against every pseudo-training
+    covariance.
+    """
+    G = np.ascontiguousarray(G, dtype=np.float64)
+    R = np.ascontiguousarray(R, dtype=np.float64)
+    pf = np.ascontiguousarray(pf, dtype=np.float64)
+    lambdas = np.ascontiguousarray(lambdas, dtype=np.float64)
+    if R.ndim != 2:
+        raise ValueError("R must be (n_rep, K)")
+    n_rep, K = R.shape
+    if G.shape != (K, K) or pf.shape != (K,):
+        raise ValueError("G, R and pf must be (K, K), (n_rep, K) and (K,)")
+    if n_rep == 0:
+        return np.zeros((0, lambdas.shape[0], K), dtype=np.float64), \
+            np.zeros(0, dtype=np.int64)
+    dfmax = K if dfmax is None else int(dfmax)
+    betas = np.empty((n_rep, K), dtype=np.float64)
+    grads = np.empty((n_rep, K), dtype=np.float64)
+    for i in range(n_rep):
+        betas[i], grads[i] = unpenalized_fit(G, R[i], pf)
+    out = np.zeros((n_rep, lambdas.shape[0], K), dtype=np.float64)
+    fitted = np.empty(n_rep, dtype=np.int64)
+    exhausted = np.empty(n_rep, dtype=np.int64)
+    _path_gram_batch_jit(
+        G, pf, betas, grads, lambdas, float(alpha), float(tol),
+        int(max_iter), dfmax, out, fitted, exhausted)
+    return out, fitted
 
 
 # ---------------------------------------------------------------------------

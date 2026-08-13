@@ -35,9 +35,12 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 import numpy as np
+
+from ._validate import _positive_integer
 
 
 __all__ = ["ScorePanel", "panel_from_catalog", "panel_from_sumstats",
@@ -537,7 +540,8 @@ def _prepare_block(d, miss, standardize):
 # ---------------------------------------------------------------------------
 
 def panel_from_sumstats(sumstats, plink, *, score_ids=None, ld_cache=None,
-                        on_error="raise", progress=None, **ldpred3_kwargs):
+                        on_error="raise", progress=None, n_jobs=1,
+                        **ldpred3_kwargs):
     """Fit one LDpred3 model per GWAS and score them all on one target.
 
     Parameters
@@ -555,6 +559,10 @@ def panel_from_sumstats(sumstats, plink, *, score_ids=None, ld_cache=None,
     on_error : {"raise", "skip"}
     progress : callable, optional
         ``progress(i, n, score_id)`` before each fit.
+    n_jobs : int, default 1
+        Independent traits after the LD cache exists. The first successful fit
+        always runs alone so it can write ``ld_cache``; the remainder run in a
+        thread pool of this size. ``1`` is sequential.
     **ldpred3_kwargs
         Passed through to :func:`ldpred3.run_ldpred3_prs` (``method``,
         ``n_eff``, ``block_size``, QC options, ...).
@@ -576,6 +584,7 @@ def panel_from_sumstats(sumstats, plink, *, score_ids=None, ld_cache=None,
 
     if on_error not in ("raise", "skip"):
         raise ValueError("on_error must be 'raise' or 'skip'")
+    n_jobs = _positive_integer(n_jobs, "n_jobs")
     if hasattr(sumstats, "items"):
         items = list(sumstats.items())
     else:
@@ -601,20 +610,10 @@ def panel_from_sumstats(sumstats, plink, *, score_ids=None, ld_cache=None,
     columns, ids, metas, weight_tables = [], [], [], []
     fid = iid = None
     n_failed = 0
-    for i, (sid, path) in enumerate(items):
-        if progress is not None:
-            progress(i, len(items), sid)
-        try:
-            res = run_ldpred3_prs(str(path), plink, **kwargs)
-        except Exception as exc:
-            if on_error == "raise":
-                raise RuntimeError(f"LDpred3 failed on {sid} ({path}): "
-                                   f"{exc}") from exc
-            n_failed += 1
-            continue
-        # After the first successful fit the cache exists; stop asking for it
-        # to be written again.
-        kwargs.pop("ld_out", None)
+    n_items = len(items)
+
+    def _consume(sid, path, res):
+        nonlocal fid, iid
         if fid is None:
             fid, iid = res.sample_fid, res.sample_iid
         elif (not np.array_equal(np.asarray(res.sample_fid), np.asarray(fid))
@@ -638,6 +637,57 @@ def panel_from_sumstats(sumstats, plink, *, score_ids=None, ld_cache=None,
             "sd": None if res.sd is None else np.asarray(res.sd, dtype=float),
         })
 
+    def _fit(sid, path, kw):
+        try:
+            return sid, path, run_ldpred3_prs(str(path), plink, **dict(kw)), None
+        except Exception as exc:
+            return sid, path, None, exc
+
+    remaining = list(enumerate(items))
+    # The first successful trait writes the LD cache; later traits only read it.
+    first = None
+    while remaining:
+        i, (sid, path) = remaining.pop(0)
+        if progress is not None:
+            progress(i, n_items, sid)
+        sid, path, res, exc = _fit(sid, path, kwargs)
+        if exc is not None:
+            if on_error == "raise":
+                raise RuntimeError(f"LDpred3 failed on {sid} ({path}): "
+                                   f"{exc}") from exc
+            n_failed += 1
+            continue
+        kwargs.pop("ld_out", None)
+        first = (sid, path, res)
+        break
+    if first is None:
+        raise ValueError(f"all {n_items} LDpred3 fits failed")
+    _consume(*first)
+
+    if n_jobs == 1 or not remaining:
+        later = []
+        for i, (sid, path) in remaining:
+            if progress is not None:
+                progress(i, n_items, sid)
+            later.append(_fit(sid, path, kwargs))
+    else:
+        for i, (sid, path) in remaining:
+            if progress is not None:
+                progress(i, n_items, sid)
+        workers = min(n_jobs, len(remaining))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            later = list(pool.map(
+                lambda item: _fit(item[1][0], item[1][1], kwargs), remaining))
+
+    for sid, path, res, exc in later:
+        if exc is not None:
+            if on_error == "raise":
+                raise RuntimeError(f"LDpred3 failed on {sid} ({path}): "
+                                   f"{exc}") from exc
+            n_failed += 1
+            continue
+        _consume(sid, path, res)
+
     if not columns:
         raise ValueError(f"all {len(items)} LDpred3 fits failed")
     K = len(columns)
@@ -647,6 +697,7 @@ def panel_from_sumstats(sumstats, plink, *, score_ids=None, ld_cache=None,
         standardized=np.ones(K, dtype=bool), weights=weight_tables,
         meta=metas,
         log={"source": "ldpred3", "n_scores": K, "n_failed": n_failed,
+             "n_jobs": int(n_jobs),
              "target": str(plink), "ld_cache": str(ld_cache) if ld_cache
              else None})
 

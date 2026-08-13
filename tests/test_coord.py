@@ -161,6 +161,22 @@ def test_binomial_warm_start_matches_a_single_pass():
     assert np.allclose(b0_all[6:], b0_b, atol=1e-5)
 
 
+def test_gaussian_batch_matches_sequential_paths():
+    """PUMAS refits share a Gram; the batch must match one path per right-hand side."""
+    _, _, G, r = _problem(n=200, K=12, seed=21)
+    rng = np.random.default_rng(21)
+    R = r + 0.05 * rng.normal(size=(6, r.size))
+    pf = np.ones(G.shape[0])
+    lambdas = np.geomspace(0.2, 0.01, 15)
+    batched, n_fitted = _coord.enet_path_gaussian_batch(
+        G, R, pf=pf, alpha=1.0, lambdas=lambdas, tol=1e-12)
+    for i, rhs in enumerate(R):
+        coefs, n_one = _coord.enet_path_gaussian(
+            G, rhs, pf=pf, alpha=1.0, lambdas=lambdas, tol=1e-12)
+        assert int(n_fitted[i]) == n_one
+        assert np.array_equal(batched[i], coefs)
+
+
 def test_shape_validation():
     G = np.eye(3)
     with pytest.raises(ValueError, match=r"G, r and pf"):

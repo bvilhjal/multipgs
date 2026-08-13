@@ -1,0 +1,335 @@
+"""Streaming score Gram ``W^T D W`` from an LD reference."""
+
+from __future__ import annotations
+
+import numpy as np
+
+from ._validate import _positive_integer
+
+def _as_blocks(ld, n_variants):
+    """Normalize an LD argument to ``(corr_block, idx)`` pairs.
+
+    Accepts ldpred3's native block list, a single dense correlation matrix, or
+    anything ``ldpred3.ld_matmul`` understands paired with explicit indices.
+    Non-dense inputs are consumed lazily and must tile ``0..m-1`` exactly once.
+    """
+    if isinstance(ld, np.ndarray):
+        if ld.ndim != 2 or ld.shape[0] != ld.shape[1]:
+            raise ValueError(f"a dense LD matrix must be square, got {ld.shape}")
+        if ld.shape[0] != n_variants:
+            raise ValueError(f"LD matrix is {ld.shape[0]} x {ld.shape[0]} but "
+                             f"the weights cover {n_variants} variants")
+        return [(ld, np.arange(n_variants))]
+
+    def validated():
+        expected = 0
+        seen = False
+        for b, block in enumerate(ld):
+            if not (isinstance(block, tuple) and len(block) == 2):
+                raise ValueError(
+                    f"LD block {b} is not a (corr_block, idx) pair; this is the "
+                    "layout ldpred3.compute_ld_blocks and "
+                    "ldpred3.load_ld_blocks return, got "
+                    f"{type(block).__name__}")
+            corr, idx = block
+            idx = np.asarray(idx, dtype=np.int64).ravel()
+            if idx.size == 0:
+                continue
+            seen = True
+            if np.any(np.diff(idx) != 1):
+                raise ValueError(
+                    f"LD block {b} does not cover a contiguous run of variants. "
+                    "The streaming Gram slices weights by block range; use "
+                    "ldpred3.compute_ld_blocks, whose blocks tile 0..m-1.")
+            if int(idx[0]) != expected:
+                kind = "overlaps an earlier block" if int(idx[0]) < expected \
+                    else "leaves a gap before it"
+                raise ValueError(
+                    f"LD block {b} starts at variant {int(idx[0])}, expected "
+                    f"{expected}; it {kind}. Blocks must tile 0..m-1 exactly "
+                    "once and in order.")
+            expected = int(idx[-1]) + 1
+            yield corr, idx
+        if not seen:
+            raise ValueError("the LD reference has no blocks")
+        if expected != n_variants:
+            raise ValueError(f"the LD blocks cover variants 0..{expected - 1} "
+                             f"but the weights cover 0..{n_variants - 1}")
+
+    return validated()
+
+
+def _weight_columns(weights, n_variants=None):
+    """Normalize weights to ``(coo_variant, coo_score, coo_value, m, K)``.
+
+    Dense ``(m, K)`` input is accepted for small problems. A panel of catalog
+    scores is overwhelmingly sparse — most scores carry a few hundred variants
+    out of a reference of millions — so a list of per-score ``(index, weight)``
+    pairs is the form that scales, and it is what
+    :func:`multipgs.catalog.harmonize_scoring_file` already returns.
+    """
+    if isinstance(weights, np.ndarray):
+        if weights.ndim != 2:
+            raise ValueError(f"dense weights must be 2-D (m, K), got "
+                             f"{weights.shape}")
+        if not np.all(np.isfinite(weights)):
+            raise ValueError("dense weights contain non-finite values")
+        m, k = weights.shape
+        if n_variants is not None:
+            if isinstance(n_variants, (bool, np.bool_)):
+                raise ValueError("n_variants must be a non-negative integer")
+            try:
+                requested = int(n_variants)
+            except (TypeError, ValueError, OverflowError):
+                raise ValueError(
+                    "n_variants must be a non-negative integer") from None
+            if requested < 0 or requested != n_variants:
+                raise ValueError("n_variants must be a non-negative integer")
+            if requested != m:
+                raise ValueError(
+                    f"n_variants={requested} but dense weights have {m} rows")
+        rows, cols = np.nonzero(weights)
+        return rows.astype(np.int64), cols.astype(np.int64), \
+            weights[rows, cols].astype(float), m, k
+
+    pairs = list(weights)
+    if not pairs:
+        raise ValueError("no score weights given")
+    idx_parts, col_parts, val_parts = [], [], []
+    largest = -1
+    for k, pair in enumerate(pairs):
+        if not (isinstance(pair, tuple) and len(pair) == 2):
+            raise ValueError(f"score {k} must be an (index, weight) pair, got "
+                             f"{type(pair).__name__}")
+        idx = np.asarray(pair[0], dtype=np.int64).ravel()
+        val = np.asarray(pair[1], dtype=float).ravel()
+        if idx.shape != val.shape:
+            raise ValueError(f"score {k} has {idx.size} indices and {val.size} "
+                             "weights")
+        if idx.size and not np.all(np.isfinite(val)):
+            raise ValueError(f"score {k} has non-finite weights")
+        if idx.size:
+            largest = max(largest, int(idx.max()))
+            if int(idx.min()) < 0:
+                raise ValueError(f"score {k} has a negative variant index")
+            # A sparse score is a mathematical vector, not an insertion log.
+            # Coalescing here gives W'DW and W'z the same interpretation.
+            unique, inverse = np.unique(idx, return_inverse=True)
+            if unique.size != idx.size:
+                combined = np.zeros(unique.size, dtype=float)
+                np.add.at(combined, inverse, val)
+                keep = combined != 0.0
+                idx, val = unique[keep], combined[keep]
+        idx_parts.append(idx)
+        col_parts.append(np.full(idx.size, k, dtype=np.int64))
+        val_parts.append(val)
+
+    m = int(largest + 1) if n_variants is None else int(n_variants)
+    if m < 0:
+        raise ValueError("n_variants must be non-negative")
+    if m <= largest:
+        raise ValueError(f"a weight indexes variant {largest} but the reference "
+                         f"has {m}")
+    return (np.concatenate(idx_parts) if idx_parts else np.zeros(0, np.int64),
+            np.concatenate(col_parts) if col_parts else np.zeros(0, np.int64),
+            np.concatenate(val_parts) if val_parts else np.zeros(0),
+            m, len(pairs))
+
+
+def score_gram(weights, ld, *, n_variants=None):
+    """The ``K x K`` score covariance ``W^T D W`` from an LD reference.
+
+    Streams the reference one LD block at a time, densifying only that block's
+    slice of the weights, so peak memory is ``O(block_size * K)`` rather than
+    ``O(m * K)``. For a 900-score panel and 500-variant blocks that is a few
+    megabytes instead of tens of gigabytes.
+
+    Parameters
+    ----------
+    weights : ndarray or sequence of (index, weight)
+        Per-variant weights for each score, on the **standardized** genotype
+        scale, aligned to the LD reference's variants. PGS Catalog weights count
+        raw alleles and must be converted first — see :func:`align_to_reference`.
+    ld : sequence of (corr_block, idx), or ndarray
+        ldpred3 LD blocks, or one dense correlation matrix.
+    n_variants : int, optional
+        Reference size, needed only when the weights are sparse and no score
+        touches the last variant.
+
+    Returns
+    -------
+    (gram, score_var) : (ndarray, ndarray)
+        ``gram`` is ``W^T D W`` (``K x K``); ``score_var`` is its diagonal, the
+        variance of each score under the reference's LD.
+    """
+    return _score_gram_from_coo(_weight_columns(weights, n_variants), ld)
+
+
+def _block_quadform(corr, block_w):
+    """``W_b^T D_b W_b`` for one LD block, using its own representation.
+
+    ldpred3 stores a large block as a low-rank factor (LR8):
+    ``D = U U^T + diag(residual)``. Going through :func:`ldpred3.ld_matmul`
+    computes ``U (U^T W)`` — projecting back up to the block's full variant
+    dimension — only for this function to immediately contract it back down
+    again. Keeping the factor instead,
+
+        W^T D W = (U^T W)^T (U^T W) + (residual * W)^T W,
+
+    skips that back-projection and shrinks the second product from ``O(k A^2)``
+    to ``O(r A^2)``. In the bigsnpr HapMap3+ reference the low-rank blocks hold
+    the bulk of the variants — median 3,120 variants at median rank 890, so
+    ``r/k`` is about 0.29 — and this is where a genome-wide Gram spends its
+    time.
+
+    Everything else, including dense int8 and float32 blocks and any
+    representation added later, falls through to ``ld_matmul``, which is also
+    the fallback if the pinned ldpred3 does not expose the dequantizer.
+    """
+    from ldpred3 import ld_matmul
+
+    try:
+        from ldpred3 import LowRankLD
+
+        from ._ldpred3_compat import dequantize_ld
+    except (ImportError, AttributeError):    # pragma: no cover - older ldpred3
+        return block_w.T @ np.asarray(ld_matmul(corr, block_w), dtype=float)
+
+    block = dequantize_ld(corr)
+    if not isinstance(block, LowRankLD):
+        return block_w.T @ np.asarray(ld_matmul(block, block_w), dtype=float)
+    # float64 throughout, so a compact block does not lower the Gram's
+    # precision — the same contract ld_matmul documents for its own return.
+    factor = np.asarray(block.U, dtype=np.float64)
+    residual = np.asarray(block.residual_diag, dtype=np.float64)
+    projected = factor.T @ block_w
+    return projected.T @ projected + (block_w * residual[:, None]).T @ block_w
+
+
+def _score_gram_from_coo(parsed, ld):
+    """:func:`score_gram` on already-parsed weights.
+
+    Parsing a sparse weight set materializes three arrays over every non-zero
+    entry, which for a genome-wide panel is the largest allocation in the whole
+    fit. A caller that already holds the parse passes it here instead of
+    handing the raw weights back to be parsed a second time.
+    """
+    rows, cols, vals, m, k = parsed
+    blocks = _as_blocks(ld, m)
+
+    order = np.argsort(rows, kind="stable")
+    rows, cols, vals = rows[order], cols[order], vals[order]
+
+    gram = np.zeros((k, k), dtype=float)
+    for corr, idx in blocks:
+        lo, hi = int(idx[0]), int(idx[-1]) + 1
+        start, stop = np.searchsorted(rows, (lo, hi))
+        if start == stop:
+            continue
+        # Catalog scores are sparse across both variants and blocks. Work only
+        # on the scores touching this block; forming a B x K matrix and a full
+        # K x K product here can waste two orders of magnitude of work.
+        active = np.unique(cols[start:stop])
+        local_cols = np.searchsorted(active, cols[start:stop])
+        block_w = np.zeros((idx.size, active.size), dtype=float)
+        block_w[rows[start:stop] - lo, local_cols] = vals[start:stop]
+        gram[np.ix_(active, active)] += _block_quadform(corr, block_w)
+
+    # W^T D W is symmetric in exact arithmetic; the accumulation is not, and an
+    # asymmetric Gram makes the coordinate descent's covariance updates drift.
+    gram = 0.5 * (gram + gram.T)
+    return gram, np.diag(gram).copy()
+
+
+def _weight_digest(rows, cols, vals, n_variants, n_scores):
+    """Canonical digest of the exact aligned score matrix used by a fit."""
+    import hashlib
+
+    rows = np.asarray(rows, dtype=np.int64)
+    cols = np.asarray(cols, dtype=np.int64)
+    vals = np.asarray(vals, dtype=np.float64)
+    keep = vals != 0.0
+    rows, cols, vals = rows[keep], cols[keep], vals[keep]
+    order = np.lexsort((cols, rows))
+    digest = hashlib.sha256()
+    digest.update(np.asarray([n_variants, n_scores], dtype="<i8").tobytes())
+    digest.update(rows[order].astype("<i8", copy=False).tobytes())
+    digest.update(cols[order].astype("<i8", copy=False).tobytes())
+    digest.update(vals[order].astype("<f8", copy=False).tobytes())
+    return digest.hexdigest()
+
+
+def _ld_variant_count(weights_ld, ld, explicit, label):
+    """Infer one LD source's variant count without borrowing a GWAS length."""
+    if explicit is not None:
+        count = _positive_integer(explicit, label)
+        if isinstance(weights_ld, np.ndarray):
+            if weights_ld.ndim != 2:
+                raise ValueError(f"{label} weights must be two-dimensional")
+            if weights_ld.shape[0] != count:
+                raise ValueError(
+                    f"{label}={count} but dense LD weights have "
+                    f"{weights_ld.shape[0]} rows")
+        if isinstance(ld, np.ndarray):
+            if ld.ndim != 2 or ld.shape[0] != ld.shape[1]:
+                raise ValueError(f"{label} LD matrix must be square")
+            if ld.shape[0] != count:
+                raise ValueError(
+                    f"{label}={count} but dense LD has {ld.shape[0]} rows")
+        return count
+    if isinstance(weights_ld, np.ndarray):
+        if weights_ld.ndim != 2:
+            raise ValueError(f"{label} weights must be two-dimensional")
+        return int(weights_ld.shape[0])
+    if isinstance(ld, np.ndarray):
+        if ld.ndim != 2 or ld.shape[0] != ld.shape[1]:
+            raise ValueError(f"{label} LD matrix must be square")
+        return int(ld.shape[0])
+    if isinstance(ld, (list, tuple)) and ld:
+        last = np.asarray(ld[-1][1], dtype=np.int64).ravel()
+        if last.size:
+            return int(last[-1]) + 1
+    return None
+
+
+def _score_cross_moment(weights_gwas, z, n_scores, label):
+    """Compute ``W_gwas' z`` on that GWAS's own standardized-genotype basis."""
+    rows, cols, vals, m, k = _weight_columns(weights_gwas, int(z.size))
+    if m != z.size:
+        raise ValueError(f"{label} weights cover {m} variants but z covers "
+                         f"{z.size}")
+    if k != n_scores:
+        raise ValueError(f"{label} weights describe {k} scores but the LD "
+                         f"weights describe {n_scores}; score identity and "
+                         "column order must agree")
+    c = np.zeros(k, dtype=float)
+    np.add.at(c, cols, vals * z[rows])
+    return c, int(vals.size), m
+
+
+def score_moments(weights_ld, z, ld, *, weights_gwas=None,
+                  n_variants_ld=None):
+    """The score-space moments ``(c, G)`` for one set of summary statistics.
+
+    The pair that :func:`evaluate_sumstat` scores against, and the same pair
+    :func:`multi_pgs_sumstats` fits from. Building them for an *evaluation* GWAS
+    is how a combination gets an honest regime A number. ``weights_gwas`` and
+    ``weights_ld`` represent the same raw component scores, but each is
+    multiplied by the empirical genotype SD of its own dataset:
+    ``c = W_gwas.T @ z`` and ``G = W_ld.T @ D @ W_ld``. They may cover different
+    variant sets; only their score columns must agree.
+    """
+    if weights_gwas is None:
+        raise ValueError(
+            "weights_gwas is required separately from weights_ld; pass the "
+            "same matrix explicitly only when GWAS and LD genotype scales are "
+            "genuinely identical")
+    z = np.asarray(z, dtype=float).ravel()
+    if not np.all(np.isfinite(z)):
+        raise ValueError("z contains non-finite values")
+    n_variants_ld = _ld_variant_count(
+        weights_ld, ld, n_variants_ld, "n_variants_ld")
+    gram, var = score_gram(weights_ld, ld, n_variants=n_variants_ld)
+    c, _, _ = _score_cross_moment(
+        weights_gwas, z, gram.shape[0], "weights_gwas")
+    return c, gram, var

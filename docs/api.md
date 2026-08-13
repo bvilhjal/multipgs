@@ -79,7 +79,7 @@ on the allele-count scale and `log["standardized"]` is false; it is suitable for
 | Name | Purpose |
 |---|---|
 | `panel_from_catalog` | score PGS Catalog files against a target, in one genotype pass |
-| `panel_from_sumstats` | fit each GWAS with LDpred3 and score it on the target |
+| `panel_from_sumstats` | fit each GWAS with LDpred3 and score it on the target; `n_jobs` parallelizes traits after the LD cache exists |
 | `ScorePanel` | the `n × K` matrix, its per-variant weights and provenance |
 | `combine_weights` | collapse a panel plus a fit into one deployable weight file |
 | `read_panel`, `write_panel` | plain-text score matrices (`FID IID <scores...>`) |

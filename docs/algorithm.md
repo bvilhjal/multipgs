@@ -135,12 +135,17 @@ convergence flag is a numerical warning, not a scientific model diagnostic.
 
 ### Cost
 
-With `A = assessment_folds`, Gaussian sufficient-statistic construction is
-`O(A n D²)` for the nested assessment as a whole, not one fresh `O(nD²)` Gram
-for every fitted path. Each final or inner path then operates on `D × D`
-statistics. Held-out Grams are constructed and subtracted one at a time, so
-peak model memory is `O(nD + D²)`; no fold keeps a full standardized copy.
-Binomial remains `O(nD)` per sweep with an IRLS loop and is the slower family.
+With `A = assessment_folds`, the full-data Gaussian parent is formed once.
+Outer-training and inner-training Grams are obtained by subtracting the
+held-out rows, so nested assessment is `O(n D²)` in matrix products rather
+than `O(A n D²)`. The numerical origin is a function of `X` only
+(`origin_y = 0`). Phenotype moments on an outer-training set are formed on
+those rows, so a large outer-assessment `y` cannot cancel into training `r`.
+Fold-local mean imputation still rebuilds statistics, because it changes `X`.
+Each final or inner path then operates on `D × D` statistics. Held-out Grams
+are constructed and subtracted one at a time, so peak model memory is
+`O(nD + D²)`; no fold keeps a full standardized copy. Binomial remains
+`O(nD)` per sweep with an IRLS loop and is the slower family.
 
 The executable scaling artifact records wall time and absolute peak RSS for
 representative cases. On the committed Python 3.13/NumPy 2.1.3 run, 5 final
@@ -185,7 +190,10 @@ coordinates; it is not folded into elastic-net `alpha`.
 `score_gram` consumes LD blocks in exact variant order and accumulates only the
 score columns active in each block. Peak working memory is
 `O(block_size · K_active + K²)`, not `O(mK)`. PUMAS-style repeats factor the
-`K × K` covariance once and reuse it for every noise draw.
+`K × K` covariance once and reuse it for every noise draw. Pseudo-training
+refits that share a Gram are one compiled batch over repeats rather than a
+Python loop of independent paths. Rank, projection and the cleaned covariance
+come from one correlation-scale eigendecomposition per Gram.
 
 With `D` and `z` from the same individuals these moments are exact; with
 external LD they are plug-in estimates, and noisy `c` need not satisfy the
@@ -223,6 +231,11 @@ the PUMAS covariance plug-in. Raw seeds, summaries, and provenance live in
 [`benchmarks/sumstat_calibration.py`](../benchmarks/sumstat_calibration.py).
 
 ## Score construction
+
+`panel_from_sumstats` builds the LD cache on the first successful trait. Later
+independent traits can run concurrently (`n_jobs`); the default `1` is
+sequential. Tests that replace `ldpred3.run_ldpred3_prs` with a Python iterator
+should leave `n_jobs=1`.
 
 `panel_from_catalog` reads the target genotypes **once**. Every scoring file is
 harmonised against the variant table up front, the union of matched variants is

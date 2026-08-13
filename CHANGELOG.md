@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Nested Gaussian assessment reuses the full-data parent Gram by subtracting
+  held-out rows. The numerical origin is a function of `X` only (`origin_y` is
+  identically zero), and training `X'y` is formed on the training rows, so an
+  outer-assessment phenotype cannot leak into the path. Fold-local mean
+  imputation still rebuilds.
+- `panel_from_sumstats(..., n_jobs=)` fits independent traits concurrently
+  after the first successful trait has written `ld_cache`. The default `1` is
+  sequential.
+- PUMAS pseudo-training refits that share a Gram run as one compiled
+  coordinate-descent batch (`enet_path_gaussian_batch`) instead of a Python
+  loop over repeats. Boundedness is still applied per repeat.
+- Rank, range projection and the cleaned covariance of a score Gram now share
+  one correlation-scale eigendecomposition.
+- `stack.py` and `sumstat.py` are split along named seams (`_cmsa`, `_stats`,
+  `_gram`, `_moments`, `_pumas`, `_align`, `_evaluate`, `_validate`). Public
+  imports are unchanged.
 - The guide now describes `penalty_from_accuracy` as a ranking heuristic, not
   a bound on target-trait relevance, matching the implementation.
 - Missing Catalog ancestry is written `NA` in `EUR_PERCENT`, not `0`. A

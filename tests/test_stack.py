@@ -153,7 +153,9 @@ def test_outer_assessment_outcomes_do_not_change_the_inner_fit(monkeypatch):
     seed = 7
     outer0 = stack_mod._folds(
         len(y), 3, np.random.default_rng(seed))[0]
-    original = stack_mod._fit_one_fold
+    from multipgs import _cmsa as cmsa_mod
+
+    original = cmsa_mod._fit_one_fold
     seen = []
 
     def recorded(*args, **kwargs):
@@ -163,7 +165,7 @@ def test_outer_assessment_outcomes_do_not_change_the_inner_fit(monkeypatch):
                      result["intercept"]))
         return result
 
-    monkeypatch.setattr(stack_mod, "_fit_one_fold", recorded)
+    monkeypatch.setattr(cmsa_mod, "_fit_one_fold", recorded)
 
     def first_outer_models(outcome):
         seen.clear()
@@ -270,7 +272,9 @@ def test_missing_values_raise_by_default_and_can_be_imputed():
 
 def test_nested_mean_imputation_uses_each_outer_training_set(monkeypatch):
     """Outer validation feature values must not set training imputation means."""
-    original = stack_mod._impute_from_training
+    from multipgs import _cmsa as cmsa_mod
+
+    original = cmsa_mod._impute_from_training
     imputed = []
 
     def checked(X, train):
@@ -282,7 +286,7 @@ def test_nested_mean_imputation_uses_each_outer_training_set(monkeypatch):
         assert out[0, 0] == pytest.approx(expected)
         return out
 
-    monkeypatch.setattr(stack_mod, "_impute_from_training", checked)
+    monkeypatch.setattr(cmsa_mod, "_impute_from_training", checked)
     rng = np.random.default_rng(406)
     scores = rng.normal(size=(120, 5))
     scores[0, 0] = np.nan
@@ -360,7 +364,7 @@ def test_cmsa_average_does_not_filter_unfavorable_folds(monkeypatch):
                 "lam": 0.1, "lam_index": 1, "n_val": int(val.size)}
 
     def fake_assessment(*args, **kwargs):
-        return 0.0, 1.0, 0.0, 2
+        return 0.0, 1.0, 0.0, 2, stack_mod._empty_solver_info()
 
     monkeypatch.setattr(stack_mod, "_fit_one_fold", fake_fold)
     monkeypatch.setattr(stack_mod, "_nested_cv_assessment", fake_assessment)
@@ -383,6 +387,7 @@ def test_gaussian_subtracted_statistics_match_direct_standardization():
     val = np.arange(0, 180, 4)
     tr = stack_mod._complement(180, val)
     total = stack_mod._gaussian_stats(X, y)
+    assert total["origin_y"] == 0.0
     stats = stack_mod._subtract_gaussian_stats(
         total,
         stack_mod._gaussian_stats_at_origin(X, y, val, reference=total))
