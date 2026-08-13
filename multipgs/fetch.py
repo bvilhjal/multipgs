@@ -59,7 +59,8 @@ import numpy as np
 
 
 __all__ = ["search_scores", "ScoreRecord", "download_scores",
-           "write_score_metadata", "cohort_overlap", "REST_BASE"]
+           "write_score_metadata", "read_score_metadata",
+           "cohort_overlap", "REST_BASE"]
 
 REST_BASE = "https://www.pgscatalog.org/rest"
 
@@ -777,6 +778,40 @@ def write_score_metadata(records, path, *, columns=None):
             row = [_format(_metadata_value(record, c)) for c in columns]
             fh.write(record.pgs_id + "\t" + "\t".join(row) + "\n")
     return path
+
+
+def read_score_metadata(path):
+    """Read a table written by :func:`write_score_metadata`.
+
+    Returns ``{score_id: {column: value}}``. Numeric columns become floats;
+    ``NA`` is ``nan``.
+    """
+    numeric = {"N_EFF", "N_TOTAL", "N_CASES", "N_CONTROLS", "N_SAMPLE_SETS",
+               "N_VARIANTS", "EUR_PERCENT", "N_COHORTS"}
+    with open(path, "r", encoding="utf-8") as fh:
+        header = fh.readline().rstrip("\n").split("\t")
+    if not header or header[0].upper() != "SCORE":
+        raise ValueError(f"{path}: expected a SCORE-keyed metadata table")
+    columns = header[1:]
+    out = {}
+    with open(path, "r", encoding="utf-8") as fh:
+        next(fh)
+        for line in fh:
+            line = line.rstrip("\n")
+            if not line:
+                continue
+            parts = line.split("\t")
+            if len(parts) != len(header):
+                raise ValueError(f"{path}: expected {len(header)} columns")
+            row = {}
+            for name, raw in zip(columns, parts[1:]):
+                if name in numeric:
+                    row[name] = (float("nan") if raw in ("", "NA", "N/A", ".")
+                                 else float(raw))
+                else:
+                    row[name] = raw
+            out[str(parts[0])] = row
+    return out
 
 
 def cohort_overlap(records):

@@ -21,7 +21,7 @@ authors = [{ name = "Bjarni Vilhjálmsson" }]
 # revision in the README install command. The upper bound is the seam guard --
 # multipgs/_ldpred3_compat.py touches a private module (`ldpred3._numba`) that
 # may change across a minor release.
-dependencies = ["numpy>=1.20", "ldpred3>=0.4.5,<0.5"]
+dependencies = ["numpy>=1.20", "ldpred3>=0.4.7,<0.5"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.9",
@@ -48,6 +48,7 @@ fast = [
     "numba>=0.59; python_version < '3.14'",
     "numba>=0.66; python_version >= '3.14'",
 ]
+bipred = ["bipred>=0.3.7"]
 test = ["pytest>=7", "scikit-learn>=1.0"]
 lint = ["ruff>=0.5"]
 

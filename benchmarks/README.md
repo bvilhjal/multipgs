@@ -39,7 +39,7 @@ from raw rows and verify the headline README values and provenance structure.
 
 Three historical real-data runs (`overlap_inflation`, `real_ld_simulation`, and
 `real_meta_rules`) report `ldpred3=0.3.1`, below multipgs's current supported
-range `ldpred3>=0.4.5,<0.5`. That may be the code actually imported or stale editable
+range `ldpred3>=0.4.7,<0.5`. That may be the code actually imported or stale editable
 installation metadata; the old provenance does not contain enough information
 to distinguish them. Those rows remain useful as historical scientific
 diagnostics, but are not evidence that the current release was validated

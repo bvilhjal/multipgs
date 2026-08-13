@@ -79,10 +79,16 @@ on the allele-count scale and `log["standardized"]` is false; it is suitable for
 | Name | Purpose |
 |---|---|
 | `panel_from_catalog` | score PGS Catalog files against a target, in one genotype pass |
-| `panel_from_sumstats` | fit each GWAS with LDpred3 and score it on the target; `n_jobs` parallelizes traits after the LD cache exists |
+| `panel_from_sumstats` | fit each GWAS with LDpred3 and score it on the target; `n_jobs` parallelizes traits after the LD cache exists; `traits=` supplies per-GWAS `n_eff` / method / alpha |
+| `panel_from_weights` | score a directory of ldpred3 weight files in one genotype pass (frozen `AF_REF`/`SD_REF` when present) |
 | `ScorePanel` | the `n × K` matrix, its per-variant weights and provenance |
+| `ScorePanel.concat` | place two panels side by side on shared `FID:IID` |
 | `combine_weights` | collapse a panel plus a fit into one deployable weight file |
+| `check_weights` | require frozen scoring of that file to reproduce the fitted combination |
 | `read_panel`, `write_panel` | plain-text score matrices (`FID IID <scores...>`) |
+| `save_panel`, `load_panel` | full panel including weights, scale flags and metadata (`.npz`) |
+| `attach_metadata` | merge a Catalog `metadata.tsv` (including `N_EFF`) into `panel.meta` |
+| `read_trait_table` | read the per-GWAS table used by `panel_from_sumstats(traits=)` |
 
 `ScorePanel` methods: `.select(columns)` by index, id or mask; `.align(other)` to
 match two panels on `FID:IID`; `.summary()` for matched-variant and weight-mass
@@ -111,6 +117,7 @@ Odds-ratio weights are log-transformed on read; non-additive rows
 | `search_scores`, `ScoreRecord` | find scores by trait, PGS ids, PMID, or Catalog publication |
 | `download_scores` | download harmonized scoring files for GRCh37 or GRCh38 |
 | `write_score_metadata` | write score-keyed discovery and publication metadata plus effective sample size |
+| `read_score_metadata` | read that table back as `{score_id: {column: value}}` |
 | `cohort_overlap` | flag score pairs sharing named discovery cohorts; a lower bound, not proof of sample overlap |
 
 ## Screening and expected accuracy
@@ -124,6 +131,9 @@ Odds-ratio weights are log-transformed on read; non-additive rows
 | `architectures_from_panel` | read those back out of an LDpred3-built panel |
 | `screen`, `ScreenResult` | represented model-level Hansen et al. gates, with per-score reasons |
 | `penalty_from_accuracy` | expected accuracy → elastic-net penalty factors |
+| `penalty_from_relevance` | `r2_k · r_G(k,f)²` → elastic-net penalty factors |
+| `align_sumstats_to_cache` | GWAS → standardized `beta_hat` in `ld_cache` order (needs bipred only for the screen below) |
+| `ldsc_rg_screen`, `RgScreen` | `bipred.ldsc_rg` of a focal GWAS vs auxiliaries; χ² cap on LDSC rows only |
 
 `meta_pgs(method="sqrt_n_eff")` requires same-trait, consistently oriented
 scores and discovery effective sample sizes. `method="expected_r2"` instead
@@ -184,11 +194,13 @@ understates the shrinkage for a large R².
 | Command | Purpose |
 |---|---|
 | `fetch` | acquire PGS Catalog scoring files and metadata |
-| `panel` | construct an individual-level score matrix |
-| `fit` | fit the individual-level learned combination |
+| `panel` | construct an individual-level score matrix (`.tsv` or `.npz`) |
+| `fit` | fit the individual-level learned combination (`--scores` or `--panel`) |
+| `combine` | collapse a `.npz` panel and a fit into one ldpred3 weight file |
+| `score` | score a cohort from that file with frozen `AF_REF`/`SD_REF` |
 | `meta` | derive a same-trait combination without a phenotype |
 | `evaluate` | evaluate one score against individual-level phenotypes |
 
 See `multipgs <command> --help`, or [guide.md](guide.md). `python -m multipgs`
-is the same entry point. Summary-statistic fitting and evaluation are currently
-Python API only; there is no `sumstats` command.
+is the same entry point. Score-space `multi_pgs_sumstats` is still Python API
+only.

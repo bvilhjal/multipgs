@@ -72,6 +72,38 @@ def test_panel_then_fit_then_evaluate(cohort, tmp_path, capsys):
     assert "r2" in out and "incremental_r2" in out
 
 
+def test_panel_npz_fit_combine_and_score(cohort, tmp_path, capsys):
+    panel_path = str(tmp_path / "panel.npz")
+    assert main(["panel", "--catalog", *cohort["scoring_files"],
+                 "--plink", cohort["prefix"], "--out", panel_path,
+                 "--quiet"]) == 0
+    capsys.readouterr()
+    coefs = str(tmp_path / "coefs.tsv")
+    assert main(["fit", "--panel", panel_path, "--pheno", cohort["pheno"],
+                 "--covar", cohort["covar"], "--out", coefs,
+                 "--folds", "4", "--n-lambda", "20", "--seed", "0",
+                 "--quiet"]) == 0
+    capsys.readouterr()
+    weights = str(tmp_path / "multi.weights")
+    assert main(["combine", "--panel", panel_path, "--fit", coefs,
+                 "--out", weights, "--check", "--plink",
+                 cohort["prefix"]]) == 0
+    out = capsys.readouterr().out
+    assert "reproduces the fit" in out
+    scored = str(tmp_path / "scored.tsv")
+    assert main(["score", "--weights", weights, "--plink", cohort["prefix"],
+                 "--out", scored]) == 0
+    assert "frozen scaling" in capsys.readouterr().out
+    header = open(scored, encoding="utf-8").readline().split()
+    assert header == ["FID", "IID", "SCORE"]
+
+
+def test_panel_sumstats_without_ld_is_refused(cohort, tmp_path):
+    with pytest.raises(SystemExit, match="ld-prefix or --ld-cache"):
+        main(["panel", "--sumstats", cohort["scoring_files"][0],
+              "--plink", cohort["prefix"], "--out", str(tmp_path / "x.tsv")])
+
+
 def test_panel_accepts_a_directory(cohort, tmp_path, capsys):
     import os
     import shutil

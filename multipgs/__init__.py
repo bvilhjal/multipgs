@@ -53,7 +53,7 @@ from __future__ import annotations
 
 import importlib
 
-__version__ = "0.3.1"
+__version__ = "0.3.2"
 
 # Public name -> submodule it lives in. No module name may equal one of its own
 # exported names: importing a submodule binds it on this package, and the cache
@@ -64,15 +64,19 @@ _EXPORTS = {
     "stack": ["multi_pgs_fit", "MultiPGSFit", "FoldFit"],
     "meta": ["meta_pgs", "MetaPGS"],
     "panel": ["ScorePanel", "panel_from_catalog", "panel_from_sumstats",
-              "combine_weights", "read_panel", "write_panel"],
+              "panel_from_weights", "combine_weights", "check_weights",
+              "read_panel", "write_panel", "save_panel", "load_panel",
+              "attach_metadata", "read_trait_table"],
     "catalog": ["read_scoring_file", "ScoringFile", "harmonize_scoring_file"],
     "fetch": ["search_scores", "ScoreRecord", "download_scores",
-              "write_score_metadata", "cohort_overlap"],
+              "write_score_metadata", "read_score_metadata", "cohort_overlap"],
     "sumstat": ["multi_pgs_sumstats", "SumstatFit", "score_gram", "pseudo_r2",
                 "align_to_reference", "evaluate_sumstat", "SumstatEval",
                 "score_moments", "REGIMES", "subsample_score_moments"],
     "architecture": ["Architecture", "daetwyler_r2", "architectures_from_panel",
-                     "screen", "ScreenResult", "penalty_from_accuracy"],
+                     "screen", "ScreenResult", "penalty_from_accuracy",
+                     "penalty_from_relevance"],
+    "rg": ["align_sumstats_to_cache", "ldsc_rg_screen", "RgScreen"],
     "metrics": ["evaluate", "EvalResult", "r2", "incremental_r2", "auc",
                  "nagelkerke_r2", "liability_r2"],
     "simulate": ["simulate_panel", "SimPanel", "simulate_same_trait_panel",

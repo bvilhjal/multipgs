@@ -102,6 +102,7 @@ from multipgs import panel_from_catalog
 
 panel = panel_from_catalog("scores/", "cohort")     # a dir, files, or a mix
 print(panel.summary())
+# metadata.tsv next to the files is attached automatically (n_eff, ancestry)
 ```
 
 The target genotypes are read once and all `K` scores accumulate in that pass.
@@ -126,25 +127,36 @@ panel = panel_from_catalog("scores/", "cohort", min_matched=1000,
 ### Building component scores from GWAS summary statistics
 
 ```python
-from multipgs import panel_from_sumstats
+from multipgs import panel_from_sumstats, read_trait_table
 
+# Prefer an external LD reference (or an existing cache), not the target .bed.
 panel = panel_from_sumstats(
     {"height": "height.tsv.gz", "bmi": "bmi.tsv.gz"},
-    "cohort", ld_cache="ld/cohort", method="auto",
-    infer=True, auto_chains=50, n_jobs=4)
+    "cohort", ld_prefix="ld/ref", ld_cache="ld/cohort", method="auto",
+    infer=True, auto_chains=10, n_jobs=4, weights_dir="weights/")
 ```
 
-Each trait is fitted with `ldpred3.run_ldpred3_prs`. **Pass `ld_cache`**: the LD
-reference is built by the first trait and reused by the rest, which is the
-difference between one LD build and `K` of them. Doing so sets
-`subset_to_sumstats=False` so the blocks span the same variants for every trait.
-After that first successful write, `n_jobs` runs the remaining traits in a
-thread pool; `1` (the default) stays sequential.
+Per-trait `n_eff`, case/control counts, method and alpha go in a table
+(`TRAIT PATH N_EFF N_CASES N_CONTROLS METHOD ALPHA`) and are passed as
+`traits="traits.tsv"`. `n_cases`/`n_controls` are converted with
+`ldpred3.n_eff_case_control` before the fit. Architecture inference
+(`infer=True`, `auto_chains=50`) is for screening, not the default score path.
 
-`infer=True, auto_chains=50` requests the multi-chain architecture summary used
-by §3 and records the exact attempted-chain count. It adds inference work; omit
-both arguments if you only need scores and do not plan to screen architectures.
-This is also how you produce the target trait's own score, which belongs in the
+Already-fitted ldpred3 weight files skip the Gibbs step:
+
+```python
+from multipgs import panel_from_weights
+
+own = panel_from_weights("weights/", "cohort")
+```
+
+`panel_from_sumstats` calls `ldpred3.run_ldpred3_prs`. Give it `ld_cache` (and
+preferably `ld_prefix`) so the first trait writes the blocks and the rest only
+read them; that also sets `subset_to_sumstats=False`. After the first
+successful write, `n_jobs` runs remaining traits in a thread pool.
+
+`infer=True, auto_chains=50` is the Hansen screening path and is extra work.
+Omit both if you only need scores. Include the target trait's own score in the
 panel like any other.
 
 ### Combining panels
@@ -153,19 +165,13 @@ Scores from both routes can be stacked side by side, and the panel remembers
 which scale each came from:
 
 ```python
-import numpy as np
-from multipgs.panel import ScorePanel
-
-both = ScorePanel(
-    scores=np.hstack([cat.scores, own.scores]),
-    sample_fid=cat.sample_fid, sample_iid=cat.sample_iid,
-    score_ids=np.concatenate([cat.score_ids, own.score_ids]),
-    standardized=np.concatenate([cat.standardized, own.standardized]),
-    weights=cat.weights + own.weights, meta=cat.meta + own.meta, log={})
+both = cat.concat(own)
+both.save("panel.npz")
 ```
 
-Both panels must be built on the same target so the rows correspond. Alignment
-returns two panels, so write `cat, own = cat.align(own)` before concatenating.
+`concat` matches individuals on `FID:IID` and refuses colliding score ids.
+`save` / `load_panel` keep weights, scale flags, inference and `n_eff`, which
+the TSV from `write_panel` does not.
 
 ## 3. Screening the panel
 
@@ -200,12 +206,17 @@ Screening is not the same as penalising. If you would rather keep a weak score
 and shrink it harder:
 
 ```python
-from multipgs import daetwyler_r2, penalty_from_accuracy
+from multipgs import daetwyler_r2, penalty_from_accuracy, penalty_from_relevance
 
 pf = penalty_from_accuracy(daetwyler_r2(h2, p, n_eff, n_variants))
+# with bipred r_G estimates: pf = penalty_from_relevance(r2, rg)
 fit = multi_pgs_fit(panel.scores, y, penalty_factor=pf,
                     score_ids=panel.score_ids, seed=1)
 ```
+
+`ldsc_rg_screen` (optional `multipgs[bipred]`) estimates `r_G` of each
+auxiliary GWAS against a focal trait on a shared `ld_cache`. The LDSC χ² cap
+is applied to those regression rows only.
 
 Read `penalty_from_accuracy`'s note first: it weights by each score's accuracy
 for *its own* trait. That is a ranking heuristic, not a bound on relevance to
@@ -461,12 +472,23 @@ effect looks like, not a small effect bounded away from zero
 ## 6. Deploying
 
 ```python
-from multipgs import combine_weights
+from multipgs import check_weights, combine_weights
 from ldpred3 import score_from_weights
 
 combine_weights(panel, fit, path="multi.weights")
+check_weights(panel, fit, "multi.weights", "train_cohort")
 result = score_from_weights("multi.weights", "new_cohort", scaling="frozen")
 ```
+
+Or from the CLI, after `panel --out panel.npz` and `fit --panel panel.npz`:
+
+```bash
+multipgs combine --panel panel.npz --fit fit.tsv --out multi.weights \
+    --check --plink train
+multipgs score --weights multi.weights --plink test --out test.prs
+```
+
+`multipgs score` always uses frozen scaling.
 
 `combine_weights` collapses `K` weight sets and their coefficients into one
 per-variant table, on the standardized scale ldpred3 applies. The new cohort is

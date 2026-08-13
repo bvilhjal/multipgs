@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from multipgs import (Architecture, architectures_from_panel, daetwyler_r2,
-                      penalty_from_accuracy, screen)
+                      penalty_from_accuracy, penalty_from_relevance, screen)
 
 
 def test_daetwyler_matches_the_closed_form():
@@ -175,6 +175,35 @@ def test_architectures_read_back_from_a_panel():
     assert np.isnan(archs[1].shrinkage)       # shrink_corr is not this metric
     res = screen(archs)
     assert res.keep.tolist() == [True, True]   # second is unscreenable
+
+
+def test_architectures_read_n_eff_stored_on_the_panel():
+    from multipgs.panel import ScorePanel
+
+    panel = ScorePanel(
+        scores=np.zeros((3, 1)), sample_fid=np.arange(3),
+        sample_iid=np.arange(3),
+        score_ids=np.array(["cad"], dtype=object),
+        standardized=np.ones(1, dtype=bool), weights=[],
+        meta=[{"n_eff": 50_000,
+               "inference": {"h2_est": 0.2, "p_est": 1e-3, "r2_est": 0.05,
+                             "n_chains_kept": 40, "n_chains": 50}}])
+    archs = architectures_from_panel(panel)
+    assert archs[0].n_eff == 50_000
+    assert archs[0].rg != archs[0].rg  # nan
+
+
+def test_screen_min_abs_rg_is_opt_in():
+    weak = _arch(score_id="weak", rg=0.05)
+    assert screen([weak]).keep[0]
+    assert not screen([weak], min_abs_rg=0.2).keep[0]
+    assert "genetic correlation" in screen(
+        [_arch(score_id="miss")], min_abs_rg=0.1).reasons["miss"]
+
+
+def test_penalty_from_relevance_penalises_uncorrelated_scores_more():
+    pf = penalty_from_relevance([0.2, 0.2], [0.8, 0.0])
+    assert pf[1] > pf[0]
 
 
 def test_architectures_from_panel_checks_n_eff_length():

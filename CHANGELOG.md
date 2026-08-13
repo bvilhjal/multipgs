@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Full panels persist to `.npz` (`save_panel` / `load_panel` / `ScorePanel.save`)
+  with weights, scale flags, inference and `n_eff`. `concat` joins two panels
+  on `FID:IID`. `panel_from_weights` scores a directory of ldpred3 weight files
+  in one pass. `check_weights` requires frozen scoring to reproduce the fit.
+- `panel_from_sumstats` accepts a per-trait table (`n_eff` / cases / method /
+  alpha), `ld_prefix`, `weights_dir` and an optional preflight. The CLI requires
+  `--ld-prefix` or an existing `--ld-cache`, writes `.npz` when `--out` ends
+  that way, and adds `combine` / `score` (frozen). Catalog `metadata.tsv` is
+  attached automatically.
+- Optional `multipgs[bipred]`: `ldsc_rg_screen` estimates `r_G` of auxiliary
+  GWAS against a focal trait on a shared ldpred3 cache (χ² cap on LDSC rows
+  only). `penalty_from_relevance` ranks by `r2 · r_G²`; `screen(min_abs_rg=)`
+  is the matching gate. ldpred3 dependency is `>=0.4.7,<0.5`.
 - Nested Gaussian assessment reuses the full-data parent Gram by subtracting
   held-out rows. The numerical origin is a function of `X` only (`origin_y` is
   identically zero), and training `X'y` is formed on the training rows, so an

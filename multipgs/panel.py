@@ -33,7 +33,9 @@ be handed straight back to ldpred3 to score a new cohort.
 
 from __future__ import annotations
 
+import json
 import os
+import warnings
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -44,7 +46,11 @@ from ._validate import _positive_integer
 
 
 __all__ = ["ScorePanel", "panel_from_catalog", "panel_from_sumstats",
-           "combine_weights", "read_panel", "write_panel"]
+           "panel_from_weights", "combine_weights", "check_weights",
+           "read_panel", "write_panel", "save_panel", "load_panel",
+           "attach_metadata", "read_trait_table"]
+
+_PANEL_FORMAT = 1
 
 # Genotype elements held in memory per streamed block. 8e6 float64 is 64 MB.
 _BLOCK_ELEMS = 8_000_000
@@ -236,10 +242,57 @@ class ScorePanel:
         if n_dead:
             lines.append(f"  {n_dead} score(s) are constant here and cannot "
                          f"enter a fit")
+        h2 = [m.get("inference", {}).get("h2_est") for m in self.meta
+              if isinstance(m, dict) and isinstance(m.get("inference"), dict)
+              and m.get("inference", {}).get("h2_est") is not None]
+        if h2:
+            vals = np.asarray(h2, dtype=float)
+            lines.append(f"  inferred h2: median {np.nanmedian(vals):.3f}, "
+                         f"min {np.nanmin(vals):.3f}")
+        n_eff = [m.get("n_eff") for m in self.meta
+                 if isinstance(m, dict) and m.get("n_eff") is not None
+                 and np.isfinite(m.get("n_eff", np.nan))]
+        if n_eff:
+            lines.append(f"  n_eff known for {len(n_eff)} of {self.n_scores} "
+                         "scores")
         for key in ("n_failed", "n_skipped"):
             if self.log.get(key):
                 lines.append(f"  {key.replace('_', ' ')}: {self.log[key]}")
         return "\n".join(lines)
+
+    def concat(self, other):
+        """Place ``other``'s scores beside this panel's, on shared individuals.
+
+        Individuals are matched on ``FID:IID``. Score ids must be unique across
+        the two panels. Scale flags, weights and metadata travel with their
+        columns.
+        """
+        left, right = self.align(other)
+        left_ids = [str(s) for s in np.asarray(left.score_ids, dtype=object)]
+        right_ids = [str(s) for s in np.asarray(right.score_ids, dtype=object)]
+        clash = sorted(set(left_ids) & set(right_ids))
+        if clash:
+            raise ValueError("concat would collide on score id(s): "
+                             + ", ".join(clash[:5]))
+        return ScorePanel(
+            scores=np.hstack([left.scores, right.scores]),
+            sample_fid=left.sample_fid, sample_iid=left.sample_iid,
+            score_ids=np.array(left_ids + right_ids, dtype=object),
+            standardized=np.concatenate([
+                np.asarray(left.standardized, dtype=bool),
+                np.asarray(right.standardized, dtype=bool)]),
+            weights=(list(left.weights) + list(right.weights)
+                     if left.weights or right.weights else []),
+            meta=(list(left.meta) + list(right.meta)
+                  if left.meta or right.meta else []),
+            log={"source": "concat",
+                 "n_scores": left.n_scores + right.n_scores,
+                 "left": left.n_scores, "right": right.n_scores,
+                 "n_individuals": len(left)})
+
+    def save(self, path):
+        """Write this panel, including per-variant weights, to ``path`` (.npz)."""
+        return save_panel(self, path)
 
 
 def _keys(fid, iid):
@@ -272,7 +325,8 @@ def _require_unique_keys(keys, name):
 
 def panel_from_catalog(paths, plink, *, sample_path=None, drop_ambiguous=True,
                        standardize=False, min_matched=1, on_error="raise",
-                       block=None, prefer_harmonized=True, progress=None):
+                       block=None, prefer_harmonized=True, progress=None,
+                       metadata=None):
     """Score a directory or list of PGS Catalog files against one target.
 
     Parameters
@@ -299,6 +353,10 @@ def panel_from_catalog(paths, plink, *, sample_path=None, drop_ambiguous=True,
         Variants per streamed block. The default keeps a block near 64 MB.
     progress : callable, optional
         Called as ``progress(i, n, score_id)`` before each file is harmonised.
+    metadata : str, optional
+        Catalog ``metadata.tsv`` from :func:`multipgs.fetch.write_score_metadata`.
+        When omitted, a ``metadata.tsv`` sitting next to the scoring files is
+        picked up automatically.
 
     Returns
     -------
@@ -391,7 +449,7 @@ def panel_from_catalog(paths, plink, *, sample_path=None, drop_ambiguous=True,
         weight_tables.append(_CompactWeightTable(variant_table, at, w))
 
     K = len(per_score)
-    return ScorePanel(
+    panel = ScorePanel(
         scores=scores, sample_fid=np.asarray(fid), sample_iid=np.asarray(iid),
         score_ids=np.array(score_ids, dtype=object),
         standardized=np.full(K, bool(standardize)),
@@ -400,6 +458,11 @@ def panel_from_catalog(paths, plink, *, sample_path=None, drop_ambiguous=True,
              "n_failed": n_failed, "n_skipped": n_skipped,
              "target": str(plink), "standardize": bool(standardize),
              "drop_ambiguous": bool(drop_ambiguous)})
+    sidecar = metadata if metadata is not None else _sidecar_metadata(files)
+    if sidecar is not None:
+        attach_metadata(panel, sidecar)
+        panel.log["metadata"] = str(sidecar)
+    return panel
 
 
 def _smallest_index_dtype(size):
@@ -411,34 +474,46 @@ def _smallest_index_dtype(size):
     raise ValueError("variant union is too large to index")
 
 
-def _expand_paths(paths):
+def _expand_paths(paths, suffixes=(".txt", ".txt.gz", ".tsv", ".tsv.gz",
+                                   ".weights")):
     """One path, a directory, or a mix of both, to a flat list of files."""
     if isinstance(paths, (str, os.PathLike)):
         paths = [paths]
+    skip = {"metadata.tsv", "n_eff.tsv"}
     out = []
     for entry in paths:
         p = str(entry)
         if os.path.isdir(p):
             out.extend(sorted(
                 os.path.join(p, f) for f in os.listdir(p)
-                if f.endswith((".txt", ".txt.gz", ".tsv", ".tsv.gz"))))
+                if f.endswith(suffixes) and f not in skip
+                and not f.startswith(".")))
         else:
             out.append(p)
     return out
 
 
 def _accumulate_scores(per_score, n_samples, n_total, plink, dosage, *,
-                       standardize, block, read_bed, strip_ext, is_bgen):
+                       standardize, block, read_bed, strip_ext, is_bgen,
+                       frozen=None):
     """One pass over the genotypes: ``K`` scores, plus per-variant AF and SD."""
     K = len(per_score)
     union = np.unique(np.concatenate([vi for vi, _ in per_score]))
     m = union.size
     # Per score: positions into `union`, ascending, with matching weights.
-    mapped = []
-    for var_index, w in per_score:
+    mapped, frozen_ord = [], None if frozen is None else []
+    for i, (var_index, w) in enumerate(per_score):
         pos = np.searchsorted(union, var_index)
         order = np.argsort(pos, kind="mergesort")
         mapped.append((pos[order], np.asarray(w)[order]))
+        if frozen is not None:
+            item = frozen[i]
+            if item is None:
+                frozen_ord.append(None)
+            else:
+                fa, fs = item
+                frozen_ord.append((np.asarray(fa, dtype=float)[order],
+                                   np.asarray(fs, dtype=float)[order]))
 
     scores = np.zeros((n_samples, K))
     af = np.zeros(m)
@@ -458,11 +533,36 @@ def _accumulate_scores(per_score, n_samples, n_total, plink, dosage, *,
                            variant_idx=cols)
             d = np.asarray(raw, dtype=float)
             miss = d < 0
-        block_matrix, mean_b, sd_b = _prepare_block(d, miss, standardize)
+        use_target = standardize and frozen_ord is None
+        block_matrix, mean_b, sd_b = _prepare_block(d, miss, use_target)
         af[start:stop] = mean_b / 2.0
         sd[start:stop] = sd_b
-        _accumulate_block(scores, block_matrix, mapped, start, stop)
+        if frozen_ord is None:
+            _accumulate_block(scores, block_matrix, mapped, start, stop)
+        else:
+            _accumulate_frozen(scores, block_matrix, mapped, frozen_ord,
+                               start, stop)
     return scores, union, af, sd
+
+
+def _accumulate_frozen(scores, dosage, mapped, frozen, start, stop):
+    """Apply per-score frozen ``(g - 2 AF_REF) / SD_REF`` weights to a block."""
+    for s, (pos, w) in enumerate(mapped):
+        lo = int(np.searchsorted(pos, start))
+        hi = int(np.searchsorted(pos, stop))
+        if hi <= lo:
+            continue
+        g = dosage[:, pos[lo:hi] - start]
+        scale = frozen[s]
+        if scale is None:
+            scores[:, s] += g @ w[lo:hi]
+            continue
+        fa, fs = scale[0][lo:hi], scale[1][lo:hi]
+        good = fs > 1e-12
+        z = np.zeros_like(g)
+        if np.any(good):
+            z[:, good] = (g[:, good] - 2.0 * fa[good]) / fs[good]
+        scores[:, s] += z @ w[lo:hi]
 
 
 def _accumulate_block(scores, block_matrix, mapped, start, stop):
@@ -540,14 +640,16 @@ def _prepare_block(d, miss, standardize):
 # ---------------------------------------------------------------------------
 
 def panel_from_sumstats(sumstats, plink, *, score_ids=None, ld_cache=None,
-                        on_error="raise", progress=None, n_jobs=1,
-                        **ldpred3_kwargs):
+                        ld_prefix=None, on_error="raise", progress=None,
+                        n_jobs=1, weights_dir=None, preflight=False,
+                        traits=None, **ldpred3_kwargs):
     """Fit one LDpred3 model per GWAS and score them all on one target.
 
     Parameters
     ----------
     sumstats : sequence of str, or mapping
         Summary-statistic files. A mapping's keys become the score ids.
+        Ignored when ``traits`` is given.
     plink : str
         Target genotypes (PLINK prefix or ``.bgen``).
     ld_cache : str, optional
@@ -556,6 +658,10 @@ def panel_from_sumstats(sumstats, plink, *, score_ids=None, ld_cache=None,
         than in a loop. Traits must therefore share a variant set; that is the
         normal case when the target genotypes are fixed and
         ``subset_to_sumstats`` is left off.
+    ld_prefix : str, optional
+        External LD-reference PLINK prefix, forwarded to
+        :func:`ldpred3.run_ldpred3_prs`. Prefer this (or an existing
+        ``ld_cache``) over building LD from the target cohort.
     on_error : {"raise", "skip"}
     progress : callable, optional
         ``progress(i, n, score_id)`` before each fit.
@@ -563,9 +669,17 @@ def panel_from_sumstats(sumstats, plink, *, score_ids=None, ld_cache=None,
         Independent traits after the LD cache exists. The first successful fit
         always runs alone so it can write ``ld_cache``; the remainder run in a
         thread pool of this size. ``1`` is sequential.
+    weights_dir : str, optional
+        Write each trait's ldpred3 weight file here (``<score_id>.weights``).
+    preflight : bool, default False
+        Run :func:`ldpred3.preflight_prs` on every file before the first fit.
+    traits : str or sequence of mappings, optional
+        Per-trait table (see :func:`read_trait_table`) with its own ``n_eff`` /
+        case-control counts / method / alpha. Shared kwargs still apply.
     **ldpred3_kwargs
         Passed through to :func:`ldpred3.run_ldpred3_prs` (``method``,
-        ``n_eff``, ``block_size``, QC options, ...).
+        ``n_eff``, ``block_size``, QC options, ...). Per-trait values from
+        ``traits`` override these.
 
     Returns
     -------
@@ -585,34 +699,53 @@ def panel_from_sumstats(sumstats, plink, *, score_ids=None, ld_cache=None,
     if on_error not in ("raise", "skip"):
         raise ValueError("on_error must be 'raise' or 'skip'")
     n_jobs = _positive_integer(n_jobs, "n_jobs")
-    if hasattr(sumstats, "items"):
-        items = list(sumstats.items())
+    if traits is not None:
+        rows = read_trait_table(traits) if isinstance(traits, (str, os.PathLike)) \
+            else [dict(row) for row in traits]
+        items = [(str(row["id"]), str(row["path"]), row) for row in rows]
+    elif hasattr(sumstats, "items"):
+        items = [(sid, path, {}) for sid, path in sumstats.items()]
     else:
         paths = [str(p) for p in _expand_paths(sumstats)]
         if score_ids is None:
-            items = [(_stem(p), p) for p in paths]
+            items = [(_stem(p), p, {}) for p in paths]
         else:
             ids = list(score_ids)
             if len(ids) != len(paths):
                 raise ValueError(f"score_ids has {len(ids)} entries for "
                                  f"{len(paths)} sumstats files")
-            items = list(zip(ids, paths))
+            items = [(sid, path, {}) for sid, path in zip(ids, paths)]
     if not items:
         raise ValueError("no summary-statistic files given")
 
     kwargs = dict(ldpred3_kwargs)
+    if ld_prefix is not None:
+        kwargs["ld_prefix"] = ld_prefix
+    if ld_cache is None and kwargs.get("ld_prefix") is None:
+        warnings.warn(
+            "panel_from_sumstats is building LD from the target genotypes; "
+            "pass ld_prefix= or an existing ld_cache= so the LD reference is "
+            "not the cohort you will score", stacklevel=2)
     if ld_cache is not None:
         kwargs.setdefault("subset_to_sumstats", False)
         kwargs["ld_cache"] = ld_cache
         if not os.path.exists(str(ld_cache)):
             kwargs["ld_out"] = ld_cache
+    if n_jobs > 1 and int(kwargs.get("ncores", 1) or 1) > 1:
+        warnings.warn(
+            "n_jobs>1 with ncores>1 oversubscribes the machine; leave "
+            "ncores=1 when running traits concurrently", stacklevel=2)
+    if weights_dir is not None:
+        os.makedirs(str(weights_dir), exist_ok=True)
+    if preflight:
+        _preflight_traits(items, plink, kwargs, on_error=on_error)
 
     columns, ids, metas, weight_tables = [], [], [], []
     fid = iid = None
     n_failed = 0
     n_items = len(items)
 
-    def _consume(sid, path, res):
+    def _consume(sid, path, res, trait):
         nonlocal fid, iid
         if fid is None:
             fid, iid = res.sample_fid, res.sample_iid
@@ -621,13 +754,18 @@ def panel_from_sumstats(sumstats, plink, *, score_ids=None, ld_cache=None,
                                     np.asarray(iid))):
             raise RuntimeError(f"{sid} was scored on a different sample order "
                                f"than the earlier traits")
-        inference = _inference_metadata(res, kwargs)
+        used = _trait_kwargs(kwargs, trait)
+        inference = _inference_metadata(res, used)
+        meta = {"path": str(path), "n_matched": int(res.var_index.size),
+                "harmonize_log": dict(res.harmonize_log),
+                "qc_log": dict(res.qc_log or {}),
+                "inference": inference}
+        n_eff = used.get("n_eff")
+        if n_eff is not None:
+            meta["n_eff"] = float(n_eff)
         columns.append(np.asarray(res.scores, dtype=float))
         ids.append(sid)
-        metas.append({"path": str(path), "n_matched": int(res.var_index.size),
-                      "harmonize_log": dict(res.harmonize_log),
-                      "qc_log": dict(res.qc_log),
-                      "inference": inference})
+        metas.append(meta)
         weight_tables.append({
             "id": np.asarray(res.variant_id), "chrom": np.asarray(res.chrom),
             "pos": np.asarray(res.pos), "a1": np.asarray(res.effect_allele),
@@ -636,21 +774,36 @@ def panel_from_sumstats(sumstats, plink, *, score_ids=None, ld_cache=None,
             "af": None if res.af is None else np.asarray(res.af, dtype=float),
             "sd": None if res.sd is None else np.asarray(res.sd, dtype=float),
         })
+        if weights_dir is not None:
+            dest = os.path.join(str(weights_dir), f"{sid}.weights")
+            writer = getattr(res, "write_weights", None)
+            if writer is not None:
+                writer(dest)
+            else:
+                from ldpred3.weights import write_weights
+                write_weights(
+                    dest, id=res.variant_id, chrom=res.chrom, pos=res.pos,
+                    effect_allele=res.effect_allele,
+                    other_allele=res.other_allele, weight=res.beta_adjusted,
+                    af=res.af, sd=res.sd)
+            meta["weights"] = dest
 
-    def _fit(sid, path, kw):
+    def _fit(sid, path, trait):
         try:
-            return sid, path, run_ldpred3_prs(str(path), plink, **dict(kw)), None
+            return (sid, path, trait,
+                    run_ldpred3_prs(str(path), plink,
+                                    **_trait_kwargs(kwargs, trait)), None)
         except Exception as exc:
-            return sid, path, None, exc
+            return sid, path, trait, None, exc
 
     remaining = list(enumerate(items))
     # The first successful trait writes the LD cache; later traits only read it.
     first = None
     while remaining:
-        i, (sid, path) = remaining.pop(0)
+        i, (sid, path, trait) = remaining.pop(0)
         if progress is not None:
             progress(i, n_items, sid)
-        sid, path, res, exc = _fit(sid, path, kwargs)
+        sid, path, trait, res, exc = _fit(sid, path, trait)
         if exc is not None:
             if on_error == "raise":
                 raise RuntimeError(f"LDpred3 failed on {sid} ({path}): "
@@ -658,7 +811,7 @@ def panel_from_sumstats(sumstats, plink, *, score_ids=None, ld_cache=None,
             n_failed += 1
             continue
         kwargs.pop("ld_out", None)
-        first = (sid, path, res)
+        first = (sid, path, res, trait)
         break
     if first is None:
         raise ValueError(f"all {n_items} LDpred3 fits failed")
@@ -666,27 +819,28 @@ def panel_from_sumstats(sumstats, plink, *, score_ids=None, ld_cache=None,
 
     if n_jobs == 1 or not remaining:
         later = []
-        for i, (sid, path) in remaining:
+        for i, (sid, path, trait) in remaining:
             if progress is not None:
                 progress(i, n_items, sid)
-            later.append(_fit(sid, path, kwargs))
+            later.append(_fit(sid, path, trait))
     else:
-        for i, (sid, path) in remaining:
+        for i, (sid, path, trait) in remaining:
             if progress is not None:
                 progress(i, n_items, sid)
         workers = min(n_jobs, len(remaining))
         with ThreadPoolExecutor(max_workers=workers) as pool:
             later = list(pool.map(
-                lambda item: _fit(item[1][0], item[1][1], kwargs), remaining))
+                lambda item: _fit(item[1][0], item[1][1], item[1][2]),
+                remaining))
 
-    for sid, path, res, exc in later:
+    for sid, path, trait, res, exc in later:
         if exc is not None:
             if on_error == "raise":
                 raise RuntimeError(f"LDpred3 failed on {sid} ({path}): "
                                    f"{exc}") from exc
             n_failed += 1
             continue
-        _consume(sid, path, res)
+        _consume(sid, path, res, trait)
 
     if not columns:
         raise ValueError(f"all {len(items)} LDpred3 fits failed")
@@ -698,8 +852,10 @@ def panel_from_sumstats(sumstats, plink, *, score_ids=None, ld_cache=None,
         meta=metas,
         log={"source": "ldpred3", "n_scores": K, "n_failed": n_failed,
              "n_jobs": int(n_jobs),
-             "target": str(plink), "ld_cache": str(ld_cache) if ld_cache
-             else None})
+             "target": str(plink),
+             "ld_cache": str(ld_cache) if ld_cache else None,
+             "ld_prefix": str(ld_prefix) if ld_prefix else None,
+             "weights_dir": str(weights_dir) if weights_dir else None})
 
 
 def _inference_metadata(result, run_kwargs):
@@ -736,10 +892,304 @@ def _inference_metadata(result, run_kwargs):
 
 def _stem(path):
     base = os.path.basename(str(path))
-    for suffix in (".tsv.gz", ".txt.gz", ".gz", ".tsv", ".txt", ".sumstats"):
+    for suffix in (".tsv.gz", ".txt.gz", ".gz", ".tsv", ".txt", ".sumstats",
+                   ".weights"):
         if base.endswith(suffix):
             return base[: -len(suffix)]
     return os.path.splitext(base)[0]
+
+
+def _trait_kwargs(shared, trait):
+    """Merge per-trait overrides onto the shared ``run_ldpred3_prs`` kwargs."""
+    out = dict(shared)
+    if not trait:
+        return out
+    n_eff = trait.get("n_eff")
+    n_cases, n_controls = trait.get("n_cases"), trait.get("n_controls")
+    if n_cases is not None or n_controls is not None:
+        if n_cases is None or n_controls is None:
+            raise ValueError(f"{trait.get('id', '?')}: n_cases and n_controls "
+                             "must be given together")
+        from ldpred3 import n_eff_case_control
+        n_eff = n_eff_case_control(float(n_cases), float(n_controls))
+    if n_eff is not None:
+        out["n_eff"] = float(n_eff)
+    for key in ("method", "alpha"):
+        if trait.get(key) is not None:
+            out[key] = trait[key]
+    return out
+
+
+def _preflight_traits(items, plink, kwargs, *, on_error):
+    from ldpred3 import preflight_prs
+
+    warnings_out = []
+    for sid, path, trait in items:
+        used = _trait_kwargs(kwargs, trait)
+        try:
+            report = preflight_prs(
+                str(path), plink, n_eff=used.get("n_eff"),
+                sample_path=used.get("sample_path"),
+                qc=used.get("qc", True),
+                subset_to_sumstats=used.get("subset_to_sumstats", True))
+        except Exception as exc:
+            if on_error == "raise":
+                raise RuntimeError(f"preflight failed on {sid} ({path}): "
+                                   f"{exc}") from exc
+            warnings_out.append(f"{sid}: {exc}")
+            continue
+        missing = report.get("missing") or []
+        if missing:
+            msg = f"{sid}: unresolved columns {missing}"
+            if on_error == "raise":
+                raise ValueError(msg)
+            warnings_out.append(msg)
+        for note in report.get("warnings") or []:
+            warnings_out.append(f"{sid}: {note}")
+    if warnings_out:
+        warnings.warn("preflight: " + "; ".join(warnings_out[:8]),
+                      stacklevel=3)
+
+
+def read_trait_table(path):
+    """Read a per-trait table for :func:`panel_from_sumstats`.
+
+    Required columns (any case): ``TRAIT``/``SCORE``/``ID`` and ``PATH``.
+    Optional: ``N_EFF``, ``N_CASES``, ``N_CONTROLS``, ``METHOD``, ``ALPHA``.
+    """
+    rows = []
+    with open(path, "r", encoding="utf-8") as fh:
+        header = None
+        for line in fh:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split("\t") if "\t" in line else line.split()
+            if header is None:
+                header = [p.lstrip("#").upper() for p in parts]
+                continue
+            if len(parts) != len(header):
+                raise ValueError(f"{path}: expected {len(header)} columns, "
+                                 f"got {len(parts)}")
+            rows.append(dict(zip(header, parts)))
+    if header is None:
+        raise ValueError(f"{path}: no header row")
+    id_col = next((c for c in ("TRAIT", "SCORE", "ID") if c in header), None)
+    if id_col is None or "PATH" not in header:
+        raise ValueError(f"{path}: need TRAIT/SCORE/ID and PATH columns")
+
+    def _num(value):
+        if value in ("", ".", "NA", "N/A", "NULL"):
+            return None
+        return float(value)
+
+    out = []
+    for row in rows:
+        rec = {"id": row[id_col], "path": row["PATH"],
+               "n_eff": _num(row["N_EFF"]) if "N_EFF" in row else None,
+               "n_cases": _num(row["N_CASES"]) if "N_CASES" in row else None,
+               "n_controls": _num(row["N_CONTROLS"]) if "N_CONTROLS" in row
+               else None,
+               "method": row.get("METHOD") or None,
+               "alpha": _num(row["ALPHA"]) if "ALPHA" in row else None}
+        if rec["method"] is not None:
+            rec["method"] = rec["method"].strip() or None
+        out.append(rec)
+    if not out:
+        raise ValueError(f"{path}: no trait rows")
+    ids = [r["id"] for r in out]
+    if len(set(ids)) != len(ids):
+        raise ValueError(f"{path}: duplicate trait id(s)")
+    return out
+
+
+def _sidecar_metadata(files):
+    dirs = {os.path.dirname(os.path.abspath(f)) for f in files}
+    if len(dirs) != 1:
+        return None
+    candidate = os.path.join(next(iter(dirs)), "metadata.tsv")
+    return candidate if os.path.isfile(candidate) else None
+
+
+def attach_metadata(panel, metadata):
+    """Merge a SCORE-keyed metadata table into ``panel.meta``.
+
+    ``N_EFF`` is stored as ``meta[k]['n_eff']`` so
+    :func:`architectures_from_panel` can read it without a second argument.
+    """
+    from .fetch import read_score_metadata
+
+    table = read_score_metadata(metadata) if isinstance(
+        metadata, (str, os.PathLike)) else dict(metadata)
+    if not panel.meta:
+        panel.meta = [{} for _ in range(panel.n_scores)]
+    if len(panel.meta) != panel.n_scores:
+        raise ValueError("panel.meta length does not match n_scores")
+    for i, sid in enumerate(np.asarray(panel.score_ids, dtype=object)):
+        row = table.get(str(sid))
+        if not row:
+            continue
+        meta = dict(panel.meta[i] or {})
+        meta.update(row)
+        if "N_EFF" in row and np.isfinite(row["N_EFF"]):
+            meta["n_eff"] = float(row["N_EFF"])
+        panel.meta[i] = meta
+    return panel
+
+
+# ---------------------------------------------------------------------------
+# From saved ldpred3 weight files
+# ---------------------------------------------------------------------------
+
+def panel_from_weights(paths, plink, *, sample_path=None, drop_ambiguous=True,
+                       min_matched=1, on_error="raise", block=None,
+                       progress=None):
+    """Score a directory of ldpred3 weight files against one target.
+
+    Files written by :meth:`ldpred3.pipeline.PRSResult.write_weights` (columns
+    ``ID CHR POS A1 A2 WEIGHT``, optionally ``AF_REF SD_REF``) are harmonised
+    once and applied in a single genotype pass. Frozen ``AF_REF``/``SD_REF``
+    are used when present, matching
+    :func:`ldpred3.score_from_weights` ``scaling="frozen"``.
+    """
+    from ldpred3.genotype_io import read_bed, read_bim, read_fam, strip_ext
+    from ldpred3.harmonize import harmonize
+    from ldpred3.sumstats import Sumstats
+    from ldpred3.weights import read_weights
+
+    if on_error not in ("raise", "skip"):
+        raise ValueError("on_error must be 'raise' or 'skip'")
+    files = _expand_paths(paths)
+    if not files:
+        raise ValueError(f"no weight files found in {paths!r}")
+
+    is_bgen = str(plink).endswith(".bgen")
+    if is_bgen:
+        from ldpred3 import load_genotypes
+        geno = load_genotypes(plink, sample_path=sample_path)
+        variants = geno.variants
+        fid, iid = geno.samples.fid, geno.samples.iid
+        dosage = geno.dosage
+        n_samples, n_total = len(fid), len(variants.id)
+    else:
+        prefix = strip_ext(str(plink))
+        variants = read_bim(prefix + ".bim")
+        samples = read_fam(prefix + ".fam")
+        fid, iid = samples.fid, samples.iid
+        n_samples, n_total = len(fid), len(variants.id)
+        dosage = None
+
+    score_ids, metas, per_score, frozen, n_failed, n_skipped = (
+        [], [], [], [], 0, 0)
+    for i, path in enumerate(files):
+        try:
+            wt = read_weights(path)
+        except Exception:
+            if on_error == "raise":
+                raise
+            n_failed += 1
+            continue
+        sid = _stem(path)
+        if progress is not None:
+            progress(i, len(files), sid)
+        m = len(wt)
+        ss = Sumstats(id=wt.id, chrom=wt.chrom, pos=wt.pos, ea=wt.a1,
+                      oa=wt.a2, beta=wt.weight, se=np.ones(m),
+                      n_eff=np.ones(m), eaf=np.full(m, np.nan),
+                      info=np.full(m, np.nan))
+        h = harmonize(ss, variants, drop_ambiguous=drop_ambiguous)
+        if len(h) < min_matched:
+            msg = (f"{sid}: only {len(h)} of {m} variants matched the target "
+                   f"(min_matched={min_matched})")
+            if on_error == "raise":
+                raise ValueError(msg)
+            n_skipped += 1
+            continue
+        w = np.asarray(h.beta, dtype=float)
+        var_index = np.asarray(h.var_index, dtype=np.int64)
+        if wt.has_scale:
+            fa = np.asarray(wt.af_ref, dtype=float)[h.src_index]
+            fs = np.asarray(wt.sd_ref, dtype=float)[h.src_index]
+            fa = np.where(h.flipped, 1.0 - fa, fa)
+            frozen.append((fa, fs))
+        else:
+            frozen.append(None)
+        score_ids.append(sid)
+        metas.append({"path": str(path), "n_matched": int(len(h)),
+                      "has_scale": bool(wt.has_scale),
+                      "harmonize_log": dict(h.log)})
+        per_score.append((var_index, w))
+
+    if not per_score:
+        raise ValueError(f"none of the {len(files)} weight files produced a "
+                         f"usable score ({n_failed} unreadable, {n_skipped} "
+                         f"below min_matched)")
+
+    scores, union, af, sd = _accumulate_scores(
+        per_score, n_samples, n_total, plink, dosage, standardize=False,
+        block=block, read_bed=read_bed, strip_ext=strip_ext, is_bgen=is_bgen,
+        frozen=frozen)
+    variant_arrays = {
+        "id": np.asarray(variants.id)[union],
+        "chrom": np.asarray(variants.chrom)[union],
+        "pos": np.asarray(variants.pos)[union],
+        "a1": np.asarray(variants.a1)[union],
+        "a2": np.asarray(variants.a2)[union],
+        "af": af, "sd": sd,
+    }
+    variant_table = _SharedVariantTable(variant_arrays)
+    index_dtype = _smallest_index_dtype(union.size)
+    weight_tables = []
+    for (var_index, w), scale in zip(per_score, frozen):
+        at = np.searchsorted(union, var_index).astype(index_dtype, copy=False)
+        at.setflags(write=False)
+        table = _CompactWeightTable(variant_table, at, w)
+        if scale is not None:
+            # Prefer the file's frozen AF/SD on this score's variants.
+            weight_tables.append({
+                "id": table["id"], "chrom": table["chrom"],
+                "pos": table["pos"], "a1": table["a1"], "a2": table["a2"],
+                "weight": w, "af": scale[0], "sd": scale[1],
+            })
+        else:
+            weight_tables.append(table)
+    K = len(per_score)
+    return ScorePanel(
+        scores=scores, sample_fid=np.asarray(fid), sample_iid=np.asarray(iid),
+        score_ids=np.array(score_ids, dtype=object),
+        standardized=np.ones(K, dtype=bool), weights=weight_tables,
+        meta=metas,
+        log={"source": "ldpred3_weights", "n_files": len(files),
+             "n_scores": K, "n_failed": n_failed, "n_skipped": n_skipped,
+             "target": str(plink)})
+
+
+def check_weights(panel, fit, path, plink, *, min_corr=1.0 - 1e-8):
+    """Require that scoring ``path`` with frozen scaling reproduces the fit.
+
+    Aligns individuals on ``FID:IID``. Returns ``{"corr", "n"}``.
+    """
+    from ldpred3 import score_from_weights
+
+    scored = score_from_weights(path, plink, scaling="frozen")
+    direct = np.asarray(fit.multi_pgs(panel), dtype=float)
+    mine = _keys(panel.sample_fid, panel.sample_iid)
+    theirs = _keys(scored.sample_fid, scored.sample_iid)
+    _require_unique_keys(mine, "the panel")
+    _require_unique_keys(theirs, "the scored cohort")
+    lookup = {k: i for i, k in enumerate(theirs)}
+    idx = [lookup[k] for k in mine if k in lookup]
+    keep = [i for i, k in enumerate(mine) if k in lookup]
+    if not keep:
+        raise ValueError("the panel and the scored cohort share no "
+                         "individuals (matched on FID:IID)")
+    corr = float(np.corrcoef(direct[keep],
+                             np.asarray(scored.scores, dtype=float)[idx])[0, 1])
+    if not np.isfinite(corr) or corr < float(min_corr):
+        raise ValueError(
+            f"frozen scoring of {path} correlates {corr:.8f} with the fitted "
+            f"combination (required >= {float(min_corr):.8f})")
+    return {"corr": corr, "n": len(keep)}
 
 
 # ---------------------------------------------------------------------------
@@ -942,7 +1392,9 @@ def write_panel(panel, path):
 
 
 def read_panel(path):
-    """Read a panel written by :func:`write_panel`."""
+    """Read a panel written by :func:`write_panel` or :func:`save_panel`."""
+    if str(path).endswith(".npz"):
+        return load_panel(path)
     fid, iid, rows = [], [], []
     with open(path, "r", encoding="utf-8") as fh:
         header = fh.readline().rstrip("\n").split("\t")
@@ -968,3 +1420,107 @@ def read_panel(path):
         score_ids=np.array(header[2:], dtype=object),
         standardized=np.zeros(K, dtype=bool), weights=[], meta=[],
         log={"source": str(path)})
+
+
+def _jsonable(obj):
+    if isinstance(obj, dict):
+        return {str(k): _jsonable(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_jsonable(v) for v in obj]
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, (np.floating, np.integer)):
+        return obj.item()
+    if isinstance(obj, np.bool_):
+        return bool(obj)
+    if obj is None or isinstance(obj, (str, int, float, bool)):
+        return obj
+    return str(obj)
+
+
+def save_panel(panel, path):
+    """Serialize a :class:`ScorePanel` including weights and metadata."""
+    payload = {
+        "format": np.array([_PANEL_FORMAT], dtype=np.int16),
+        "scores": np.asarray(panel.scores, dtype=float),
+        "sample_fid": np.asarray(panel.sample_fid, dtype=object),
+        "sample_iid": np.asarray(panel.sample_iid, dtype=object),
+        "score_ids": np.asarray(panel.score_ids, dtype=object),
+        "standardized": np.asarray(panel.standardized, dtype=bool),
+        "meta_json": np.asarray(json.dumps(_jsonable(list(panel.meta)))),
+        "log_json": np.asarray(json.dumps(_jsonable(dict(panel.log)))),
+    }
+    tables, table_of = [], {}
+    kinds, indices, weights = [], [], []
+    for table in panel.weights:
+        if isinstance(table, _CompactWeightTable):
+            tid = id(table.variant_table)
+            if tid not in table_of:
+                table_of[tid] = len(tables)
+                tables.append(table.variant_table)
+            kinds.append(1)
+            indices.append(np.asarray(table.index))
+            weights.append(np.asarray(table["weight"], dtype=float))
+            payload[f"w_table_{len(kinds) - 1}"] = np.array(
+                [table_of[tid]], dtype=np.int32)
+        else:
+            kinds.append(0)
+            indices.append(np.array([], dtype=np.int64))
+            weights.append(np.asarray(table["weight"], dtype=float))
+            for key in ("id", "chrom", "pos", "a1", "a2"):
+                payload[f"w_{len(kinds) - 1}_{key}"] = np.asarray(table[key])
+            for key in ("af", "sd"):
+                values = table.get(key)
+                if values is not None:
+                    payload[f"w_{len(kinds) - 1}_{key}"] = np.asarray(
+                        values, dtype=float)
+    payload["w_kind"] = np.asarray(kinds, dtype=np.int8)
+    for i, (idx, w) in enumerate(zip(indices, weights)):
+        payload[f"w_index_{i}"] = idx
+        payload[f"w_weight_{i}"] = w
+    for t, vt in enumerate(tables):
+        for key in ("id", "chrom", "pos", "a1", "a2", "af", "sd"):
+            payload[f"vt_{t}_{key}"] = np.asarray(vt[key])
+    payload["n_variant_tables"] = np.array([len(tables)], dtype=np.int32)
+    np.savez_compressed(path, **payload)
+    return path
+
+
+def load_panel(path):
+    """Load a panel written by :func:`save_panel`."""
+    with np.load(path, allow_pickle=True) as z:
+        fmt = int(z["format"][0]) if "format" in z else 0
+        if fmt != _PANEL_FORMAT:
+            raise ValueError(f"{path}: unsupported panel format {fmt}")
+        n_tables = int(z["n_variant_tables"][0]) if "n_variant_tables" in z \
+            else 0
+        vtables = []
+        for t in range(n_tables):
+            arrays = {key: z[f"vt_{t}_{key}"]
+                      for key in ("id", "chrom", "pos", "a1", "a2", "af", "sd")}
+            vtables.append(_SharedVariantTable(arrays))
+        kinds = np.asarray(z["w_kind"]) if "w_kind" in z else np.zeros(0)
+        weights = []
+        for i, kind in enumerate(kinds):
+            if int(kind) == 1:
+                tid = int(z[f"w_table_{i}"][0])
+                weights.append(_CompactWeightTable(
+                    vtables[tid], z[f"w_index_{i}"], z[f"w_weight_{i}"]))
+            else:
+                table = {key: z[f"w_{i}_{key}"]
+                         for key in ("id", "chrom", "pos", "a1", "a2")
+                         if f"w_{i}_{key}" in z}
+                table["weight"] = z[f"w_weight_{i}"]
+                for key in ("af", "sd"):
+                    if f"w_{i}_{key}" in z:
+                        table[key] = z[f"w_{i}_{key}"]
+                weights.append(table)
+        meta = json.loads(str(z["meta_json"]))
+        log = json.loads(str(z["log_json"]))
+        return ScorePanel(
+            scores=np.asarray(z["scores"], dtype=float),
+            sample_fid=np.asarray(z["sample_fid"], dtype=object),
+            sample_iid=np.asarray(z["sample_iid"], dtype=object),
+            score_ids=np.asarray(z["score_ids"], dtype=object),
+            standardized=np.asarray(z["standardized"], dtype=bool),
+            weights=weights, meta=meta, log=log)

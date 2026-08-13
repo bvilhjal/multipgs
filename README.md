@@ -46,7 +46,7 @@ Python 3.9–3.14. Numba is strongly recommended. ldpred3 is not on PyPI, so its
 Git install needs authenticated GitHub read access:
 
 ```bash
-python -m pip install "ldpred3[fast] @ git+https://github.com/bvilhjal/ldpred3.git@dcde5737f720642105c0e1c79878219304fa3012"
+python -m pip install "ldpred3[fast] @ git+https://github.com/bvilhjal/ldpred3.git@ea9ab38"
 python -m pip install "multipgs[fast] @ git+https://github.com/bvilhjal/multipgs.git"
 ```
 
@@ -54,10 +54,11 @@ For development against sibling checkouts:
 
 ```bash
 python -m pip install -e "../ldpred3[fast]"
+python -m pip install -e "../bipred[fast]"   # optional r_G screen
 python -m pip install -e ".[fast,test]"
 ```
 
-If the second command reports that it cannot satisfy `ldpred3>=0.4.5`, the
+If the second command reports that it cannot satisfy `ldpred3>=0.4.7,<0.5`, the
 editable ldpred3 install has stale recorded metadata — a checkout that moved
 past the version pip last saw. Re-running the first command refreshes it.
 
@@ -152,9 +153,11 @@ measurements in
 
 ```bash
 multipgs fetch --trait MONDO_0004989 --out scores/ --cohort-overlap
-multipgs panel --catalog scores/ --plink train --out scores.tsv
-multipgs fit --scores scores.tsv --pheno pheno.tsv --covar covar.tsv --out fit.tsv
-multipgs evaluate --scores test_scores.tsv --pheno test_pheno.tsv --family binomial
+multipgs panel --catalog scores/ --plink train --out panel.npz
+multipgs fit --panel panel.npz --pheno pheno.tsv --covar covar.tsv --out fit.tsv
+multipgs combine --panel panel.npz --fit fit.tsv --out multi.weights --check --plink train
+multipgs score --weights multi.weights --plink test --out test.prs
+multipgs evaluate --scores test.prs --pheno test_pheno.tsv --family binomial
 ```
 
 Every command matches individuals on `FID:IID` rather than assuming row order.

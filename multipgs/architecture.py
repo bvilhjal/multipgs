@@ -50,7 +50,8 @@ import numpy as np
 
 
 __all__ = ["Architecture", "daetwyler_r2", "architectures_from_panel",
-           "screen", "ScreenResult", "penalty_from_accuracy"]
+           "screen", "ScreenResult", "penalty_from_accuracy",
+           "penalty_from_relevance"]
 
 
 @dataclass
@@ -73,6 +74,7 @@ class Architecture:
     n_variants: int = 0
     n_eff: float = float("nan")
     shrinkage: float = float("nan")
+    rg: float = float("nan")
 
     def expected_r2(self):
         """Daetwyler bound from this score's own inferred architecture."""
@@ -171,6 +173,7 @@ def architectures_from_panel(panel, *, n_eff=None):
             raise ValueError(f"inference metadata for {sid!r} must be a "
                              "mapping")
         n_variants = meta.get("n_variants", meta.get("n_matched", 0))
+        stored_n = meta.get("n_eff", n_eff_map.get(sid, np.nan))
         out.append(Architecture(
             score_id=sid,
             h2=float(inf.get("h2_est", np.nan)),
@@ -179,11 +182,12 @@ def architectures_from_panel(panel, *, n_eff=None):
             n_chains_kept=int(inf.get("n_chains_kept", 0) or 0),
             n_chains=int(inf.get("n_chains", meta.get("n_chains", 0)) or 0),
             n_variants=int(n_variants or 0),
-            n_eff=n_eff_map.get(sid, np.nan),
+            n_eff=float(n_eff_map[sid] if sid in n_eff_map else stored_n),
             # Only this exact field has Hansen's meaning. In particular, never
             # reinterpret ldpred3's shrink_corr LD-regularisation control.
             shrinkage=float(inf.get(
-                "shrinkage", meta.get("shrinkage", np.nan)))))
+                "shrinkage", meta.get("shrinkage", np.nan))),
+            rg=float(meta.get("rg", inf.get("rg", np.nan)))))
     return out
 
 
@@ -214,7 +218,7 @@ class ScreenResult:
 
 def screen(architectures, *, h2_range=(0.01, 1.0), min_chains_kept=20,
            min_chains_total=50, min_variants=60_000, min_n_eff=10_000,
-           min_shrinkage=None, min_expected_r2=None,
+           min_shrinkage=None, min_expected_r2=None, min_abs_rg=None,
            keep_unscreenable=True):
     """Apply the Hansen et al. inclusion gates to candidate scores.
 
@@ -252,6 +256,10 @@ def screen(architectures, *, h2_range=(0.01, 1.0), min_chains_kept=20,
         Also require the Daetwyler bound to clear this. Off by default: it needs
         ``n_eff``, and the bound is optimistic enough that a threshold on it is
         a blunt instrument.
+    min_abs_rg : float, optional
+        Drop a fitted score whose ``Architecture.rg`` (typically from
+        :func:`multipgs.ldsc_rg_screen`) is missing or below this absolute
+        genetic correlation with the focal trait. Off by default.
     keep_unscreenable : bool
         What to do with scores carrying no architecture at all (PGS Catalog
         weights, typically). ``True`` lets them through and flags them; ``False``
@@ -287,6 +295,7 @@ def screen(architectures, *, h2_range=(0.01, 1.0), min_chains_kept=20,
     min_shrinkage = _minimum("min_shrinkage", min_shrinkage, upper=1.0)
     min_expected_r2 = _minimum("min_expected_r2", min_expected_r2,
                                upper=1.0)
+    min_abs_rg = _minimum("min_abs_rg", min_abs_rg, upper=1.0)
 
     architectures = list(architectures)
     normalized_ids = [str(a.score_id) for a in architectures]
@@ -304,6 +313,7 @@ def screen(architectures, *, h2_range=(0.01, 1.0), min_chains_kept=20,
         r2_infer = _optional_number("r2_infer", a.r2_infer, sid)
         shrinkage = _optional_number("shrinkage", a.shrinkage, sid)
         n_eff = _optional_number("n_eff", a.n_eff, sid)
+        rg = _optional_number("rg", a.rg, sid)
         if np.isfinite(shrinkage) and not 0 <= shrinkage <= 1:
             raise ValueError(f"{sid}: shrinkage must be in [0, 1] or nan")
         n_chains_kept = _count("n_chains_kept", a.n_chains_kept, sid)
@@ -357,6 +367,10 @@ def screen(architectures, *, h2_range=(0.01, 1.0), min_chains_kept=20,
             exp = a.expected_r2()
             if not np.isfinite(exp) or exp < min_expected_r2:
                 fail = f"expected r2 below {min_expected_r2:g}"
+        elif min_abs_rg is not None and not np.isfinite(rg):
+            fail = "genetic correlation not available"
+        elif min_abs_rg is not None and abs(rg) < min_abs_rg:
+            fail = f"|rg| below {min_abs_rg:g}"
         keep.append(fail is None)
         if fail is not None:
             reasons[sid] = fail
@@ -459,6 +473,22 @@ def penalty_from_accuracy(expected_r2, *, power=1.0, clip=4.0, floor=1e-4):
             upper = shift
     projected = np.clip(log_pf + (lower + upper) / 2.0, -limit, limit)
     return np.exp(projected)
+
+
+def penalty_from_relevance(expected_r2, rg, *, power=1.0, clip=4.0,
+                           floor=1e-4):
+    """Penalty factors from own-trait accuracy times ``r_G²``.
+
+    Uses :func:`penalty_from_accuracy` on ``r2_k * rg_k²``. Missing or
+    non-finite ``rg`` is treated as zero relevance (the most-penalised rank).
+    This is still a ranking heuristic, not a bound on target-trait prediction.
+    """
+    r2 = np.asarray(expected_r2, dtype=float).ravel()
+    g = np.asarray(rg, dtype=float).ravel()
+    if r2.shape != g.shape:
+        raise ValueError("expected_r2 and rg must have the same length")
+    rel = r2 * np.square(np.where(np.isfinite(g), g, 0.0))
+    return penalty_from_accuracy(rel, power=power, clip=clip, floor=floor)
 
 
 def _duplicates(values):

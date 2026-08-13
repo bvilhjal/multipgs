@@ -402,6 +402,16 @@ def test_metadata_table_is_readable_by_the_score_vector_reader(tmp_path):
     assert values[1] == pytest.approx(4.0 / (1 / 1000 + 1 / 3000))
 
 
+def test_read_score_metadata_round_trips_na_and_n_eff(tmp_path):
+    payload = _score("PGS000001")
+    payload["ancestry_distribution"] = {}
+    path = str(tmp_path / "meta.tsv")
+    fetch.write_score_metadata([fetch.ScoreRecord.from_api(payload)], path)
+    table = fetch.read_score_metadata(path)
+    assert np.isnan(table["PGS000001"]["EUR_PERCENT"])
+    assert "N_EFF" in table["PGS000001"]
+
+
 def test_an_unknown_sample_size_is_written_NA_not_zero(tmp_path):
     records = [fetch.ScoreRecord.from_api(_score("PGS000001", samples=[]))]
     path = str(tmp_path / "meta.tsv")

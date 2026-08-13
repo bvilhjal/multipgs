@@ -7,9 +7,11 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from multipgs import (ScorePanel, architectures_from_panel, combine_weights,
-                      multi_pgs_fit, panel_from_catalog, panel_from_sumstats,
-                      read_panel, screen, simulate_target, write_panel)
+from multipgs import (ScorePanel, architectures_from_panel, check_weights,
+                      combine_weights, load_panel, multi_pgs_fit,
+                      panel_from_catalog, panel_from_sumstats,
+                      panel_from_weights, read_panel, read_trait_table,
+                      save_panel, screen, simulate_target, write_panel)
 
 
 @pytest.fixture(scope="module")
@@ -167,6 +169,70 @@ def read_panel_roundtrip(panel, tmp=None):
         return read_panel(path)
 
 
+def test_npz_round_trip_keeps_weights_and_scale(target, tmp_path):
+    panel = panel_from_catalog(target["scoring_files"], target["prefix"])
+    path = tmp_path / "panel.npz"
+    save_panel(panel, path)
+    back = load_panel(path)
+    assert np.allclose(back.scores, panel.scores)
+    assert list(back.score_ids) == list(panel.score_ids)
+    assert np.array_equal(back.standardized, panel.standardized)
+    assert len(back.weights) == panel.n_scores
+    assert np.allclose(back.weights[0]["weight"], panel.weights[0]["weight"])
+    assert np.array_equal(back.weights[0]["id"], panel.weights[0]["id"])
+
+
+def test_concat_joins_on_shared_individuals_and_rejects_id_clash(target):
+    panel = panel_from_catalog(target["scoring_files"], target["prefix"])
+    left, right = panel.select([0, 1]), panel.select([2, 3])
+    both = left.concat(right)
+    assert both.n_scores == 4
+    assert list(both.score_ids) == list(panel.score_ids)
+    assert np.allclose(both.scores, panel.scores)
+    with pytest.raises(ValueError, match="collide"):
+        left.concat(panel.select([1, 2]))
+
+
+def test_panel_from_weights_matches_catalog_allele_count_scores(target, tmp_path):
+    from ldpred3.weights import write_weights
+
+    panel = panel_from_catalog(target["scoring_files"][:1], target["prefix"])
+    table = panel.weights[0]
+    path = tmp_path / "one.weights"
+    write_weights(path, id=table["id"], chrom=table["chrom"], pos=table["pos"],
+                  effect_allele=table["a1"], other_allele=table["a2"],
+                  weight=table["weight"])
+    scored = panel_from_weights(str(path), target["prefix"])
+    assert scored.n_scores == 1
+    assert scored.standardized[0]
+    assert np.allclose(scored.scores[:, 0], panel.scores[:, 0], atol=1e-6)
+
+
+def test_check_weights_accepts_a_faithful_combined_file(target, tmp_path):
+    panel = panel_from_catalog(target["scoring_files"], target["prefix"])
+    rng = np.random.default_rng(2)
+    y = panel.scores[:, 0] + rng.normal(size=len(panel)) * 0.1
+    fit = multi_pgs_fit(panel.scores, y, n_folds=4, n_lambda=20, seed=0,
+                        score_ids=panel.score_ids)
+    path = tmp_path / "multi.weights"
+    combine_weights(panel, fit, path=str(path))
+    info = check_weights(panel, fit, str(path), target["prefix"])
+    assert info["corr"] > 0.999999
+    assert info["n"] == len(panel)
+
+
+def test_read_trait_table_converts_blank_n_eff(tmp_path):
+    path = tmp_path / "traits.tsv"
+    path.write_text(
+        "TRAIT\tPATH\tN_EFF\tN_CASES\tN_CONTROLS\tMETHOD\tALPHA\n"
+        "cad\tcad.tsv\t.\t60801\t123504\tauto\t-1\n"
+        "bmi\tbmi.tsv\t681275\t.\t.\tauto\t-0.5\n", encoding="utf-8")
+    rows = read_trait_table(str(path))
+    assert rows[0]["id"] == "cad" and rows[0]["n_eff"] is None
+    assert rows[0]["n_cases"] == 60801 and rows[1]["n_eff"] == 681275
+    assert rows[1]["alpha"] == -0.5
+
+
 def test_write_and_read_panel_round_trip(target):
     panel = panel_from_catalog(target["scoring_files"], target["prefix"])
     back = read_panel_roundtrip(panel)
@@ -254,6 +320,41 @@ def _ldpred3_result(*, fid=("F1", "F2"), iid=("I1", "I2"), inference=None):
         effect_allele=np.array(["A"], dtype=object),
         other_allele=np.array(["G"], dtype=object),
         beta_adjusted=np.array([0.3]), af=np.array([0.2]), sd=np.array([0.5]))
+
+
+def test_panel_from_sumstats_merges_per_trait_n_eff(monkeypatch, tmp_path):
+    import ldpred3
+
+    seen = []
+
+    def fake(path, plink, **kwargs):
+        seen.append(kwargs.get("n_eff"))
+        return _ldpred3_result()
+
+    monkeypatch.setattr(ldpred3, "run_ldpred3_prs", fake)
+    panel = panel_from_sumstats(
+        None, "target", ld_cache=str(tmp_path / "ld"),
+        traits=[{"id": "cad", "path": "cad.tsv", "n_cases": 100, "n_controls": 300},
+                {"id": "bmi", "path": "bmi.tsv", "n_eff": 50_000}])
+    assert seen[0] == pytest.approx(4.0 / (1 / 100 + 1 / 300))
+    assert seen[1] == 50_000
+    assert panel.meta[0]["n_eff"] == pytest.approx(seen[0])
+    assert panel.meta[1]["n_eff"] == 50_000
+
+
+def test_catalog_attaches_sidecar_metadata(target, tmp_path):
+    import os
+    import shutil
+    from multipgs.fetch import write_score_metadata, ScoreRecord
+
+    d = tmp_path / "cat"
+    d.mkdir()
+    for p in target["scoring_files"]:
+        shutil.copy(p, d / os.path.basename(p))
+    records = [ScoreRecord(pgs_id="PGS000001", n_eff=12_345.0)]
+    write_score_metadata(records, str(d / "metadata.tsv"), columns=["N_EFF"])
+    panel = panel_from_catalog(str(d), target["prefix"])
+    assert panel.meta[0].get("n_eff") == 12_345.0
 
 
 def test_panel_from_sumstats_runs_later_traits_after_the_cache(monkeypatch,

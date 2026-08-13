@@ -28,7 +28,7 @@
     "sumstat_r2_max": "0.4982",
     "sumstat_r2_min": "0.4973"
   },
-  "input_digest_sha256": "d85508991219e7d6a10d547893f2be89e003c3ee39db2c0d39d074c71dc4c0d3",
+  "input_digest_sha256": "72e024cdae261d0dcdd1d1783b34b5f65e5296e30c5ce54669e024df888146ab",
   "inputs": [
     "CHANGELOG.md",
     "MANIFEST.in",
@@ -104,6 +104,7 @@
     "multipgs/meta.py",
     "multipgs/metrics.py",
     "multipgs/panel.py",
+    "multipgs/rg.py",
     "multipgs/simulate.py",
     "multipgs/stack.py",
     "multipgs/sumstat.py",
@@ -122,12 +123,13 @@
     "tests/test_meta.py",
     "tests/test_metrics.py",
     "tests/test_panel.py",
+    "tests/test_rg.py",
     "tests/test_simulate.py",
     "tests/test_stack.py",
     "tests/test_sumstat.py",
     "tests/test_sumstat_core_contracts.py"
   ],
-  "package_version": "0.3.1",
+  "package_version": "0.3.2",
   "plots": {
     "fit_best_single": "(A,0.08169)(B,0.20177)(C,0.08925)(D,0.22703)(E,0.09785)(F,0.24406)(G,0.08094)(H,0.20603)",
     "fit_multi": "(A,0.16985)(B,0.43249)(C,0.15522)(D,0.41961)(E,0.17398)(F,0.43857)(G,0.16131)(H,0.41576)",
@@ -148,14 +150,14 @@
     "real_meta_direct": "(sqrtN,0.16416)(expected,0.17729)"
   },
   "schema_version": 1,
-  "source_revision": "942cb72d2ee5",
+  "source_revision": "6325d270d268",
   "tests": {
-    "count": 335,
+    "count": 351,
     "ldpred3": "0.4.7",
-    "numpy": "1.26.4",
+    "numpy": "2.4.6",
     "pytest": "9.1.1",
-    "python": "3.10.20",
-    "scikit_learn": "1.7.2",
+    "python": "3.14.6",
+    "scikit_learn": "1.9.0",
     "status": "passed"
   }
 }
