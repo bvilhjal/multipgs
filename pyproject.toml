@@ -12,16 +12,13 @@ license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Bjarni Vilhjálmsson" }]
 # ldpred3 supplies genotype I/O, allele harmonisation, the LDpred model behind
-# panel_from_sumstats, and the Numba shim the coordinate-descent kernels reuse.
+# panel_from_sumstats, and the shared LD/weight interoperability contracts.
 #
-# A range, not an exact pin. ldpred3 is on no package index, so an exact
-# specifier makes pip search for a distribution it can never find whenever the
-# installed version differs, which breaks the sibling-checkout development
-# recipe in the README. Reproducibility is carried where it belongs: the exact
-# revision in the README install command. The upper bound is the seam guard --
-# multipgs/_ldpred3_compat.py touches a private module (`ldpred3._numba`) that
-# may change across a minor release.
-dependencies = ["numpy>=1.20", "ldpred3>=0.4.7,<0.5"]
+# The 0.5 line supplies the public interoperability layer used for cache,
+# harmonisation, LD-representation and weight contracts. These private sibling
+# packages are installed from coordinated Git checkouts; the range lets pip
+# verify that the checkouts really belong to the same API generation.
+dependencies = ["numpy>=1.20", "ldpred3>=0.5.0.dev1,<0.6"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.9",
@@ -44,11 +41,8 @@ Documentation = "https://github.com/bvilhjal/multipgs#documentation"
 multipgs = "multipgs.cli:main"
 
 [project.optional-dependencies]
-fast = [
-    "numba>=0.59; python_version < '3.14'",
-    "numba>=0.66; python_version >= '3.14'",
-]
-bipred = ["bipred>=0.3.8"]
+fast = ["ldpred3[fast]>=0.5.0.dev1,<0.6"]
+bipred = ["bipred>=0.3.9.dev0,<0.4"]
 test = ["pytest>=7", "scikit-learn>=1.0", "pypdf>=5"]
 lint = ["ruff>=0.5"]
 

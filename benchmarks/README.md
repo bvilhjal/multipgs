@@ -48,7 +48,7 @@ from raw rows and verify the headline README values and provenance structure.
 
 Three historical real-data runs (`overlap_inflation`, `real_ld_simulation`, and
 `real_meta_rules`) report `ldpred3=0.3.1`, below multipgs's current supported
-range `ldpred3>=0.4.7,<0.5`. That may be the code actually imported or stale editable
+range `ldpred3>=0.5.0.dev1,<0.6`. That may be the code actually imported or stale editable
 installation metadata; the old provenance does not contain enough information
 to distinguish them. Those rows remain useful as historical scientific
 diagnostics, but are not evidence that the current release was validated
@@ -437,18 +437,16 @@ column and a `float64` value per non-zero entry — 24 bytes, and
 `bytes_per_nonzero` comes back at exactly 24.0. A dense `float32` `(m, K)`
 matrix costs 4 bytes per cell, so sparse is cheaper only below `4/24 = 1/6`
 density: about 175,700 variants of support per score on this reference. A
-900-score panel of *sparse* catalog scores at 5,000 variants each is 108 MB in
-that form and nobody notices. A 900-score panel of genome-wide dense HapMap3
-scores sits at density 1, where the same form is 21.2 GiB against 3.5 GiB
-dense — and the pipeline parses `weights_ld` and `weights_gwas` separately, so
-it holds two copies at its peak: 42 GiB, which is the real constraint on
-running a catalog-scale dense panel. The benchmark materializes both
-representations in a separate LD-free worker and checks the arithmetic. Note
-what it also shows: `_weight_columns` given a dense matrix immediately calls
-`np.nonzero` and builds the very same COO arrays, so today a dense panel handed
-to multipgs costs strictly more than a sparse one. The crossover says which
-representation a future dense Gram path ought to consume; it is not yet an
-available saving.
+900-score panel of sparse catalog scores at 5,000 variants each is 108 MB in
+that form. A 900-score genome-wide dense HapMap3 panel is 3.5 GiB instead of
+21.2 GiB as COO. The current dense path preserves the caller's floating-point
+matrix, validates it in bounded row chunks and streams dense block slices
+through the Gram calculation; parsing and the Gram do not enumerate non-zero
+coordinates or build COO copies. The reproducibility digest does enumerate
+non-zeros in bounded chunks, never as genome-wide coordinate arrays. The
+LD-free worker checks both the storage arithmetic and that the parser shares
+the dense input. The committed 0.3.3 smoke CSV predates this dense path, so
+rerun the command above for current memory evidence.
 
 **What this cannot establish.** It measures cost and nothing else. There is no
 accuracy number anywhere in its output — for accuracy see `fit_accuracy.py`,

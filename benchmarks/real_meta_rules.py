@@ -388,9 +388,7 @@ def _harmonize_gwas(raw, variants, reference_af):
     looking weak. Nothing downstream can distinguish the two; only this mask
     can, which is why it is returned and reported per score.
     """
-    from ldpred3 import standardize_betas
-    from ldpred3.harmonize import harmonize
-    from ldpred3.sumstats import Sumstats
+    from ldpred3.interop import Sumstats, harmonize, standardize_betas
 
     ids, ea, oa, beta, se, n_eff, af, log = raw
     m = len(np.asarray(variants.id))

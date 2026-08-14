@@ -57,7 +57,7 @@ from __future__ import annotations
 
 import importlib
 
-__version__ = "0.3.3"
+__version__ = "0.3.4.dev0"
 
 # Public name -> submodule it lives in. No module name may equal one of its own
 # exported names: importing a submodule binds it on this package, and the cache

@@ -454,6 +454,322 @@ def test_panel_from_sumstats_runs_later_traits_after_the_cache(monkeypatch,
     assert panel.log["ld_reused"] is True
 
 
+def test_real_sumstat_panel_validates_once_and_batch_scores(tmp_path,
+                                                            monkeypatch):
+    """Different trait subsets share one validated cache and one score pass."""
+    import shutil
+
+    import ldpred3.ld as ld_module
+    import ldpred3.pipeline as pipeline_module
+    from ldpred3 import score_from_weights
+
+    made = simulate_target(
+        str(tmp_path / "cohort"), n=80, n_variants=40, n_scores=2,
+        missing=0.02, seed=91)
+    variants = made["variants"]
+
+    def write_gwas(path, selected, sign):
+        rows = ["SNP\tCHR\tBP\tA1\tA2\tBETA\tSE\tN"]
+        for j in selected:
+            rows.append(
+                f"{variants.id[j]}\t{variants.chrom[j]}\t{variants.pos[j]}\t"
+                f"{variants.a1[j]}\t{variants.a2[j]}\t"
+                f"{sign * (0.01 + j / 1000):.6f}\t0.05\t5000")
+        path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+    left, right = tmp_path / "left.tsv", tmp_path / "right.tsv"
+    write_gwas(left, range(0, 20), 1.0)
+    write_gwas(right, range(20, 40), -1.0)
+
+    calls = 0
+    original_load = ld_module.load_ld_blocks
+
+    def counted_load(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original_load(*args, **kwargs)
+
+    monkeypatch.setattr(ld_module, "load_ld_blocks", counted_load)
+    reference = str(tmp_path / "reference")
+    for suffix in (".bed", ".bim", ".fam"):
+        shutil.copyfile(made["prefix"] + suffix, reference + suffix)
+    reference_loads = 0
+    original_genotypes = pipeline_module.load_genotypes
+
+    def counted_genotypes(path, **kwargs):
+        nonlocal reference_loads
+        if str(path) == reference:
+            reference_loads += 1
+        return original_genotypes(path, **kwargs)
+
+    monkeypatch.setattr(pipeline_module, "load_genotypes", counted_genotypes)
+    cache = tmp_path / "shared.npz"
+    weights_dir = tmp_path / "weights"
+    panel = panel_from_sumstats(
+        {"left": left, "right": right}, made["prefix"], ld_cache=cache,
+        ld_prefix=reference,
+        method="inf", h2=0.2, qc=False, sd_check=False, block_size=10,
+        ld_int8=False, weights_dir=weights_dir, n_jobs=2)
+
+    assert calls == 1
+    assert reference_loads == 1
+    assert panel.log["cache_validations"] == 1
+    assert panel.log["target_scoring_passes"] == 1
+    assert panel.weights[0]["id"].size == panel.weights[1]["id"].size == 20
+    for k, sid in enumerate(("left", "right")):
+        frozen = score_from_weights(
+            weights_dir / f"{sid}.weights", made["prefix"], scaling="frozen")
+        # The text weight file writes a bounded number of significant digits;
+        # the in-memory batch result is the higher-precision reference.
+        assert np.allclose(panel.scores[:, k], frozen.scores, atol=2e-9)
+
+
+def test_bgen_shared_cache_decodes_target_dosage_once(tmp_path, monkeypatch):
+    """Fit-only traits share metadata and batch-score one BGEN decode."""
+    import ldpred3
+    import ldpred3.bgen_io as bgen_module
+    import ldpred3.interop as interop_module
+    import ldpred3.pipeline as pipeline_module
+    from ldpred3 import run_ldpred3_prs
+    from ldpred3.bgen_io import write_bgen
+    from ldpred3.genotype_io import read_fam
+
+    made = simulate_target(
+        str(tmp_path / "bgen-shared"), n=50, n_variants=32, n_scores=2,
+        missing=0.01, seed=94)
+    variants = made["variants"]
+    target = str(tmp_path / "bgen-shared.bgen")
+    write_bgen(target, made["dosage"], variants,
+               read_fam(made["prefix"] + ".fam"))
+
+    def write_gwas(path, selected, sign):
+        rows = ["SNP\tCHR\tBP\tA1\tA2\tBETA\tSE\tN"]
+        for j in selected:
+            rows.append(
+                f"{variants.id[j]}\t{variants.chrom[j]}\t{variants.pos[j]}\t"
+                f"{variants.a1[j]}\t{variants.a2[j]}\t"
+                f"{sign * (0.01 + j / 1000):.6f}\t0.05\t5000")
+        path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+    left, right = tmp_path / "left-bgen.tsv", tmp_path / "right-bgen.tsv"
+    write_gwas(left, range(0, 16), 1.0)
+    write_gwas(right, range(16, 32), -1.0)
+    cache = tmp_path / "bgen-shared.npz"
+    common = dict(
+        method="inf", h2=0.2, subset_to_sumstats=False,
+        qc=False, sd_check=False, af_check=False, ld_int8=False, block_size=8)
+    run_ldpred3_prs(left, target, ld_out=cache, score=False, **common)
+    expected = np.column_stack([
+        run_ldpred3_prs(path, target, ld_cache=cache, **common).scores
+        for path in (left, right)])
+
+    decoded_variants = 0
+    original_decode = bgen_module._decode_probs_to_dosage
+    original_prepare = interop_module.prepare_target
+    original_run = ldpred3.run_ldpred3_prs
+    prepare_calls = 0
+    fit_targets = []
+
+    def counted_decode(*args, **kwargs):
+        nonlocal decoded_variants
+        decoded_variants += 1
+        return original_decode(*args, **kwargs)
+
+    def counted_prepare(*args, **kwargs):
+        nonlocal prepare_calls
+        prepare_calls += 1
+        return original_prepare(*args, **kwargs)
+
+    def counted_run(*args, **kwargs):
+        fit_targets.append(kwargs.get("prepared_target"))
+        return original_run(*args, **kwargs)
+
+    # No route may materialise the full BGEN target. Count the shared iterator's
+    # per-variant decodes instead: the disjoint traits cover all 32 columns.
+    getattr(ldpred3, "load_genotypes")
+    monkeypatch.setattr(
+        pipeline_module, "load_genotypes",
+        lambda *_args, **_kwargs: pytest.fail(
+            "BGEN panel materialised the full target dosage matrix"))
+    monkeypatch.setattr(
+        ldpred3, "load_genotypes",
+        lambda *_args, **_kwargs: pytest.fail(
+            "BGEN panel materialised the full target dosage matrix"))
+    monkeypatch.setattr(
+        bgen_module, "_decode_probs_to_dosage", counted_decode)
+    monkeypatch.setattr(interop_module, "prepare_target", counted_prepare)
+    monkeypatch.setattr(ldpred3, "run_ldpred3_prs", counted_run)
+    weights_dir = tmp_path / "bgen-weights"
+    panel = panel_from_sumstats(
+        {"left": left, "right": right}, target, ld_cache=cache,
+        method="inf", h2=0.2, qc=False, sd_check=False, af_check=False,
+        ld_int8=False, block_size=8, weights_dir=weights_dir)
+
+    assert decoded_variants == 32
+    assert prepare_calls == 1
+    assert len(fit_targets) == 2
+    assert fit_targets[0] is not None and fit_targets[1] is fit_targets[0]
+    assert panel.scores.shape == (50, 2)
+    assert panel.log["target_prepared"] is True
+    assert panel.log["target_preparation_owner"] == "panel"
+    assert panel.log["target_scoring_passes"] == 1
+    np.testing.assert_allclose(panel.scores, expected, atol=2e-12)
+    for k, sid in enumerate(("left", "right")):
+        frozen = ldpred3.score_from_weights(
+            weights_dir / f"{sid}.weights", target, scaling="frozen")
+        np.testing.assert_allclose(
+            frozen.scores, panel.scores[:, k], atol=2e-9)
+
+
+def test_bgen_catalog_and_weight_panels_stream_union_once(tmp_path,
+                                                          monkeypatch):
+    """Both public file-scoring routes share the bounded BGEN iterator."""
+    import ldpred3
+    import ldpred3.bgen_io as bgen_module
+    from ldpred3.bgen_io import write_bgen
+    from ldpred3.genotype_io import read_fam
+    from ldpred3.weights import write_weights
+
+    made = simulate_target(
+        str(tmp_path / "stream-all"), n=41, n_variants=30, n_scores=2,
+        n_per_score=18, missing=0.04, seed=95)
+    bgen = str(tmp_path / "stream-all.bgen")
+    write_bgen(bgen, made["dosage"], made["variants"],
+               read_fam(made["prefix"] + ".fam"))
+
+    expected_catalog = panel_from_catalog(
+        made["scoring_files"], made["prefix"], block=3)
+    weight_paths = []
+    for i, table in enumerate(expected_catalog.weights):
+        path = tmp_path / f"score-{i}.weights"
+        write_weights(
+            path, id=table["id"], chrom=table["chrom"], pos=table["pos"],
+            effect_allele=table["a1"], other_allele=table["a2"],
+            weight=table["weight"])
+        weight_paths.append(path)
+    expected_weights = panel_from_weights(
+        weight_paths, made["prefix"], block=4)
+
+    decoded = 0
+    original_decode = bgen_module._decode_probs_to_dosage
+
+    def counted_decode(*args, **kwargs):
+        nonlocal decoded
+        decoded += 1
+        return original_decode(*args, **kwargs)
+
+    getattr(ldpred3, "load_genotypes")
+    monkeypatch.setattr(
+        ldpred3, "load_genotypes",
+        lambda *_args, **_kwargs: pytest.fail(
+            "a BGEN panel route loaded the full dosage matrix"))
+    monkeypatch.setattr(
+        bgen_module, "_decode_probs_to_dosage", counted_decode)
+
+    observed_catalog = panel_from_catalog(
+        made["scoring_files"], bgen, block=3)
+    catalog_union = np.unique(np.concatenate([
+        np.asarray(table["id"]) for table in observed_catalog.weights
+    ])).size
+    assert decoded == catalog_union
+    np.testing.assert_allclose(
+        observed_catalog.scores, expected_catalog.scores, atol=1e-12)
+
+    before = decoded
+    observed_weights = panel_from_weights(weight_paths, bgen, block=4)
+    weight_union = np.unique(np.concatenate([
+        np.asarray(table["id"]) for table in observed_weights.weights
+    ])).size
+    assert decoded - before == weight_union
+    np.testing.assert_allclose(
+        observed_weights.scores, expected_weights.scores, atol=1e-12)
+
+
+def test_variant_union_workspace_is_bounded_by_target_width(monkeypatch):
+    """Overlapping traits must not create an O(Km) concatenation."""
+    import tracemalloc
+
+    import multipgs.panel as panel_module
+
+    n_total = 200_000
+    index = np.arange(n_total, dtype=np.int64)
+    per_score = [(index, None)] * 64
+    monkeypatch.setattr(
+        panel_module.np, "concatenate",
+        lambda *args, **kwargs: pytest.fail("variant indices were concatenated"))
+    tracemalloc.start()
+    try:
+        union = panel_module._variant_union(per_score, n_total)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    np.testing.assert_array_equal(union, index)
+    assert peak < 12 * 1024 ** 2
+
+
+@pytest.mark.parametrize("target_format", ["plink", "bgen"])
+def test_no_cache_batch_scoring_uses_original_target_columns(
+        tmp_path, target_format):
+    """A bounded fit reports raw columns, not positions in its subset table."""
+    from ldpred3 import run_ldpred3_prs
+
+    made = simulate_target(
+        str(tmp_path / "raw-columns"), n=70, n_variants=40, n_scores=1,
+        missing=0.0, seed=93)
+    selected = np.array([2, 6, 11, 18, 24, 31, 37])
+    variants = made["variants"]
+    sumstats = tmp_path / "irregular.tsv"
+    rows = ["SNP\tCHR\tBP\tA1\tA2\tBETA\tSE\tN"]
+    for j in selected:
+        rows.append(
+            f"{variants.id[j]}\t{variants.chrom[j]}\t{variants.pos[j]}\t"
+            f"{variants.a1[j]}\t{variants.a2[j]}\t"
+            f"{0.01 + j / 1000:.6f}\t0.05\t5000")
+    sumstats.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+    target = made["prefix"]
+    if target_format == "bgen":
+        from ldpred3.bgen_io import write_bgen
+        from ldpred3.genotype_io import read_fam
+
+        target = str(tmp_path / "raw-columns.bgen")
+        write_bgen(
+            target, made["dosage"], variants,
+            read_fam(made["prefix"] + ".fam"))
+
+    kwargs = dict(
+        method="inf", h2=0.2, qc=False, sd_check=False, af_check=False,
+        block_size=8)
+    direct = run_ldpred3_prs(sumstats, target, **kwargs)
+    with pytest.warns(UserWarning, match="building LD from the target"):
+        panel = panel_from_sumstats({"one": sumstats}, target, **kwargs)
+    np.testing.assert_array_equal(panel.weights[0]["id"], direct.variant_id)
+    np.testing.assert_allclose(panel.scores[:, 0], direct.scores, atol=2e-12)
+    np.testing.assert_allclose(panel.weights[0]["af"], direct.af, atol=2e-12)
+    np.testing.assert_allclose(panel.weights[0]["sd"], direct.sd, atol=2e-12)
+
+
+def test_all_missing_genotype_column_is_silent_and_zero():
+    import warnings
+
+    from multipgs.panel import _prepare_block
+
+    dosage = np.array([[-1.0, 0.0], [-1.0, 1.0], [-1.0, 2.0]])
+    missing = dosage < 0
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        standardized, mean, sd = _prepare_block(dosage, missing, True)
+    np.testing.assert_array_equal(standardized[:, 0], 0.0)
+    assert mean[0] == sd[0] == 0.0
+
+
+def test_shared_cache_rejects_trait_specific_subset_override(tmp_path):
+    with pytest.raises(ValueError, match="requires subset_to_sumstats=False"):
+        panel_from_sumstats(
+            {"one": "one.tsv", "two": "two.tsv"}, "target",
+            ld_cache=tmp_path / "shared.npz", subset_to_sumstats=True)
+
+
 def test_parallel_sumstats_with_ld_prefix_requires_a_shared_cache(monkeypatch):
     import ldpred3
 

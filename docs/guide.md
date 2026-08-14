@@ -160,10 +160,20 @@ own = panel_from_weights("weights/", "cohort")
 
 `panel_from_sumstats` calls `ldpred3.run_ldpred3_prs`. Give it `ld_cache` (and
 preferably `ld_prefix`) so the first trait writes the blocks and the rest only
-read them; that also sets `subset_to_sumstats=False`. After the first
+read them; that also sets `subset_to_sumstats=False`. The cache is a
+reference-wide allele-compatible superset: each trait may match a different
+principal subset after its own QC. Multipgs fully validates that cache once,
+prepares the target metadata once, fits each model with `score=False`, then
+applies all fitted columns in one target-dosage pass; target AF/SD are retained
+for frozen weight export. Thus an existing reference-wide cache costs one full
+LD validation, one target-metadata preparation, and one dosage decode. Building
+a new in-sample cache adds the dosage read needed to construct LD; optional
+`preflight=True` deliberately adds per-trait diagnostic reads. After the first
 successful write, `n_jobs` runs remaining traits in a thread pool. With only
 `ld_prefix`, every trait rebuilds LD; `n_jobs>1` therefore requires an explicit
-shared `ld_cache`.
+shared `ld_cache`. For BGEN targets, the scoring pass decodes the selected
+variant union once in bounded blocks; it never materializes the full dosage
+matrix. Catalog and saved-weight panels use the same stream.
 
 `infer=True, auto_chains=50` is the Hansen screening path and is extra work.
 Omit both if you only need scores. Include the target trait's own score in the

@@ -52,11 +52,14 @@ estimands the same. See [theory.md](docs/theory.md#three-objects-that-get-combin
 
 ## Install
 
-Python 3.9–3.14. Numba is strongly recommended. ldpred3 is not on PyPI, so its
-Git install needs authenticated GitHub read access:
+Python 3.9–3.14. Numba is strongly recommended. These sibling packages are not
+on PyPI, so Git installs need authenticated GitHub read access. Install the
+coordinated LDpred3 0.5 line first; install Bipred only for the optional
+genetic-correlation screen:
 
 ```bash
-python -m pip install "ldpred3[fast] @ git+https://github.com/bvilhjal/ldpred3.git@ea9ab38"
+python -m pip install "ldpred3[fast] @ git+https://github.com/bvilhjal/ldpred3.git@master"
+python -m pip install "bipred[fast] @ git+https://github.com/bvilhjal/bipred.git@main"  # optional
 python -m pip install "multipgs[fast] @ git+https://github.com/bvilhjal/multipgs.git"
 ```
 
@@ -66,11 +69,12 @@ For development against sibling checkouts:
 python -m pip install -e "../ldpred3[fast]"
 python -m pip install -e "../bipred[fast]"   # optional r_G screen
 python -m pip install -e ".[fast,test]"
+python -m pip check
 ```
 
-If the third command reports that it cannot satisfy `ldpred3>=0.4.7,<0.5`, the
-editable ldpred3 install has stale recorded metadata — a checkout that moved
-past the version pip last saw. Re-running the first command refreshes it.
+The declared contract is `ldpred3>=0.5.0.dev1,<0.6` (and, for the optional
+screen, `bipred>=0.3.9.dev0,<0.4`). A resolver failure means the sibling
+checkouts are genuinely from different API generations; update them together.
 
 ## Runnable example
 

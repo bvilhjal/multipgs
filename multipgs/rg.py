@@ -7,13 +7,32 @@ a joint-fit or stacking variant set.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
-from types import SimpleNamespace
 
 import numpy as np
 
 
 __all__ = ["align_sumstats_to_cache", "ldsc_rg_screen", "RgScreen"]
+
+
+@contextmanager
+def _cache_contents(ld_cache):
+    """Borrow a prepared cache or own one ordinary path-based load."""
+    from ldpred3.interop import PreparedLDCache, load_ld_blocks
+
+    if isinstance(ld_cache, PreparedLDCache):
+        if ld_cache.closed:
+            raise ValueError("prepared ld_cache is closed")
+        yield ld_cache.blocks, ld_cache.variant_ids, ld_cache.metadata
+        return
+    blocks, ids, meta = load_ld_blocks(ld_cache, return_metadata=True)
+    try:
+        yield blocks, ids, meta
+    finally:
+        close = getattr(blocks, "close", None)
+        if close is not None:
+            close()
 
 
 def _require_bipred():
@@ -26,7 +45,13 @@ def _require_bipred():
 
 
 def _cache_variants(ids, meta):
-    """Validate cache provenance and expose it as a variant namespace."""
+    """Validate cache provenance and return LDpred3's variant data model.
+
+    Harmonisation deliberately receives the real :class:`VariantTable`, not a
+    duck-typed namespace.  Besides making the public contract explicit, this
+    matters because LDpred3 validates the table with ``len(variants)`` before
+    touching its columns.
+    """
     if not hasattr(meta, "get"):
         raise ValueError("ld_cache metadata is not a mapping")
     ids = np.asarray(ids)
@@ -45,17 +70,21 @@ def _cache_variants(ids, meta):
                 f"ld_cache metadata {key!r} has length {values.size}, "
                 f"expected {ids.size}")
         fields[key] = values
-    return SimpleNamespace(
+    from ldpred3.interop import VariantTable
+    return VariantTable(
         id=ids, chrom=fields["chrom"], pos=fields["pos"],
+        cm=np.zeros(ids.size, dtype=float),
         a1=fields["counted_allele"], a2=fields["other_allele"])
 
 
 def _align_sumstats(sumstats, variants, *, n_eff=None, qc=True):
     """Align one GWAS to an already validated cache variant map."""
-    from ldpred3 import standardize_betas
-    from ldpred3.harmonize import harmonize
-    from ldpred3.qc import qc_sumstats
-    from ldpred3.sumstats import read_sumstats
+    from ldpred3.interop import (
+        harmonize,
+        qc_sumstats,
+        read_sumstats,
+        standardize_betas,
+    )
 
     ss = read_sumstats(sumstats, n_eff=n_eff)
     qc_log = {}
@@ -84,16 +113,9 @@ def align_sumstats_to_cache(sumstats, ld_cache, *, n_eff=None, qc=True):
     Unmatched or QC-dropped variants are ``nan``. Returns
     ``(beta_hat, n_eff_vector, log)``.
     """
-    from ldpred3.ld import load_ld_blocks
-
-    blocks, ids, meta = load_ld_blocks(ld_cache, return_metadata=True)
-    try:
+    with _cache_contents(ld_cache) as (_blocks, ids, meta):
         variants = _cache_variants(ids, meta)
         return _align_sumstats(sumstats, variants, n_eff=n_eff, qc=qc)
-    finally:
-        close = getattr(blocks, "close", None)
-        if close is not None:
-            close()
 
 
 @dataclass
@@ -150,7 +172,6 @@ def ldsc_rg_screen(focal, auxiliaries, ld_cache, *, n_eff_focal=None,
 
     from bipred import estimate_sample_overlap, ldsc_chi2_mask, ldsc_rg
     from ldpred3 import ld_scores
-    from ldpred3.ld import load_ld_blocks
 
     if hasattr(auxiliaries, "items"):
         pairs = list(auxiliaries.items())
@@ -159,8 +180,7 @@ def ldsc_rg_screen(focal, auxiliaries, ld_cache, *, n_eff_focal=None,
     n_eff_map = {} if n_eff is None else {
         str(key): float(value) for key, value in dict(n_eff).items()}
 
-    blocks, ids, meta = load_ld_blocks(ld_cache, return_metadata=True)
-    try:
+    with _cache_contents(ld_cache) as (blocks, ids, meta):
         variants = _cache_variants(ids, meta)
         ell = np.asarray(ld_scores(blocks), dtype=float)
         if ell.ndim != 1 or ell.size != variants.id.size:
@@ -243,8 +263,4 @@ def ldsc_rg_screen(focal, auxiliaries, ld_cache, *, n_eff_focal=None,
             overlap_corr=np.asarray(overlap, dtype=float),
             overlap_valid=np.asarray(valid, dtype=bool),
             n_used=np.asarray(n_used, dtype=int), log=logs)
-    finally:
-        close = getattr(blocks, "close", None)
-        if close is not None:
-            close()
     return result

@@ -22,8 +22,9 @@ of :func:`multipgs.multi_pgs_sumstats`:
     alignment cost and is reported under a different ``panel`` label so the two
     can never be confused.
 ``parse``
-    :func:`multipgs.sumstat._weight_columns`, the sparse ``(index, weight)``
-    parse. This is the memory wall, not the time wall.
+    :func:`multipgs.sumstat._weight_columns`. Sparse score lists become a
+    canonical ``(index, column, weight)`` representation; dense matrices remain
+    dense views. The sparse parse can be the memory wall, not the time wall.
 ``gram``
     :func:`multipgs.sumstat._score_gram_from_coo`, streaming the reference
     block by block. That is the private entry point, taking the already-parsed
@@ -31,9 +32,9 @@ of :func:`multipgs.multi_pgs_sumstats`:
     :func:`multipgs.sumstat.score_gram` is this plus the ``parse`` stage, and
     timing it here would count the parse twice.
 ``cross_moment``
-    ``W_gwas^T z``. It parses the GWAS-basis weights a **second** time, so the
-    pipeline holds two independent copies of the sparse panel at its peak even
-    when ``weights_gwas is weights_ld``.
+    ``W_gwas^T z``. A sparse GWAS-basis panel is parsed a **second** time, so the
+    pipeline transiently holds two copies when ``weights_gwas is weights_ld``.
+    A dense matrix uses direct ``W.T @ z`` without that conversion.
 ``validate``
     :func:`multipgs.sumstat._validate_moments`, an ``O(K^3)`` eigendecomposition
     of the ``K x K`` correlation matrix.
@@ -71,7 +72,7 @@ panel stops being Gram-bound and becomes eigendecomposition-bound — is the
 result a user needs in order to predict their own run, and it is what the
 ``dominant_stage`` column reports.
 
-**The memory model.** The sparse parse materializes three arrays over every
+**The memory model.** A sparse parse materializes three arrays over every
 non-zero entry: ``int64`` variant index, ``int64`` score column, ``float64``
 value, so 24 bytes per entry, measured and reported as
 ``bytes_per_nonzero``. An equivalent dense ``float32`` ``(m, K)`` matrix costs
@@ -80,17 +81,15 @@ value, so 24 bytes per entry, measured and reported as
 about 175,700 variants. Sparse catalog scores sit far below it — 900 scores at
 5,000 variants each is 108 MB and nobody notices. A panel of genome-wide dense
 HapMap3 scores sits at density 1, where the same 900 scores cost 21.2 GiB
-sparse against 3.5 GiB dense, doubled to 42 GiB because ``weights_ld`` and
-``weights_gwas`` are parsed separately and coexist. That is the real constraint
-on a catalog-scale dense panel, and it is why the parse is the memory wall.
+sparse against 3.5 GiB dense. Parsing the same sparse object for both LD and
+GWAS moments can transiently double the former; a dense object is shared and
+processed blockwise.
 
 A second, LD-free worker materializes both representations and checks the
-arithmetic rather than asserting it. It also exposes the catch:
-``_weight_columns`` given a dense matrix immediately calls ``np.nonzero`` and
-builds the very same COO arrays, so today a dense panel handed to multipgs
-costs dense storage *plus* the sparse parse. The crossover says which
-representation a future dense Gram path ought to consume; it is not a saving
-that is available now.
+arithmetic rather than asserting it. It verifies that a dense parse shares its
+input buffer and records the bounded parse allocation. The Gram subsequently
+slices that matrix by LD block, so the dense saving is an implemented path,
+not merely a crossover calculation.
 
 **What this benchmark cannot establish.** It measures cost, and nothing else.
 
@@ -305,9 +304,7 @@ def _reference(path, max_blocks, need_variants):
 
 def _block_census(blocks):
     """Count blocks by representation; the two kinds cost very different Grams."""
-    from ldpred3 import LowRankLD
-
-    from multipgs._ldpred3_compat import dequantize_ld
+    from ldpred3.interop import LowRankLD, dequantize_ld
 
     census = {"n_blocks": 0, "n_blocks_lowrank": 0, "n_blocks_dense": 0}
     for corr, _ in blocks:
@@ -590,7 +587,6 @@ def _memory_worker(args):
     parsed = _weight_columns(pairs, m)
     sparse_parse_seconds = time.perf_counter() - t0
     sparse_bytes = int(parsed[0].nbytes + parsed[1].nbytes + parsed[2].nbytes)
-    n_entries = int(parsed[2].size)
     rss_after_sparse = _peak_rss_gb()
     del parsed, pairs
 
@@ -610,33 +606,37 @@ def _memory_worker(args):
                                       / SPARSE_BYTES_PER_ENTRY,
         "dense_alloc_bytes": None,
         "memory_dense_parse_seconds": None,
-        "dense_parse_coo_bytes": None,
+        "dense_parse_peak_bytes": None,
+        "dense_parse_shares_input": None,
         "rss_gb_memory_baseline": baseline,
         "rss_gb_after_sparse_parse": rss_after_sparse,
         "rss_gb_after_dense_parse": None,
         "dense_measured": 0,
     }
 
-    # Materializing the dense form costs the dense bytes plus, because
-    # _weight_columns immediately calls np.nonzero on it, the very same COO
-    # arrays the sparse route builds. Measuring it is therefore only affordable
-    # under an explicit budget — and the result is the honest half of the
-    # memory story: today a dense panel handed to multipgs is strictly more
-    # expensive than a sparse one, whatever the encoding arithmetic says.
-    if dense_bytes + SPARSE_BYTES_PER_ENTRY * n_entries <= args.dense_max_gb * 1024 ** 3:
+    # Dense weights stay dense; the budget therefore covers only the explicit
+    # matrix. tracemalloc starts after that allocation so its peak measures the
+    # parser's bounded validation workspace, not storage the caller already owns.
+    if dense_bytes <= args.dense_max_gb * 1024 ** 3:
+        import tracemalloc
+
         pairs, _ = _synthetic_pairs(m, k, support, args.seed)
         dense = np.zeros((m, k), dtype=np.float32)
         for j, (idx, weight) in enumerate(pairs):
             dense[idx, j] = weight
         del pairs
+        tracemalloc.start()
         t0 = time.perf_counter()
         parsed = _weight_columns(dense)
         dense_parse_seconds = time.perf_counter() - t0
+        _, dense_parse_peak = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
         row |= {
             "dense_alloc_bytes": int(dense.nbytes),
             "memory_dense_parse_seconds": dense_parse_seconds,
-            "dense_parse_coo_bytes": int(parsed[0].nbytes + parsed[1].nbytes
-                                         + parsed[2].nbytes),
+            "dense_parse_peak_bytes": int(dense_parse_peak),
+            "dense_parse_shares_input": int(
+                np.shares_memory(parsed.values, dense)),
             "rss_gb_after_dense_parse": _peak_rss_gb(),
             "dense_measured": 1,
         }

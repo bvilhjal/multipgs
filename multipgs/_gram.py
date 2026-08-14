@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 
 from ._validate import _positive_integer
@@ -91,30 +93,55 @@ def _as_blocks(ld, n_variants):
     return validated()
 
 
-def _weight_columns(weights, n_variants=None):
-    """Normalize weights to ``(coo_variant, coo_score, coo_value, m, K)``.
+@dataclass(frozen=True)
+class _DenseWeights:
+    """Validated dense weights kept dense throughout the moment calculation."""
 
-    Dense ``(m, K)`` input is accepted for small problems. A panel of catalog
-    scores is overwhelmingly sparse — most scores carry a few hundred variants
-    out of a reference of millions — so a list of per-score ``(index, weight)``
-    pairs is the form that scales, and it is what
-    :func:`multipgs.catalog.harmonize_scoring_file` already returns.
+    values: np.ndarray
+
+    @property
+    def m(self):
+        return int(self.values.shape[0])
+
+    @property
+    def k(self):
+        return int(self.values.shape[1])
+
+
+def _dense_weights_finite(weights):
+    """Check finite values with at most about one million Boolean temporaries."""
+    rows = max(1, 1_000_000 // max(int(weights.shape[1]), 1))
+    return all(np.all(np.isfinite(weights[start:start + rows]))
+               for start in range(0, weights.shape[0], rows))
+
+
+def _weight_columns(weights, n_variants=None):
+    """Normalize weights to a dense view or canonical sparse COO tuple.
+
+    Dense ``(m, K)`` input remains dense.  Turning it into COO first costs three
+    extra arrays per non-zero (24 bytes with int64 indices and float64 values),
+    which is catastrophic precisely when a matrix is dense. A panel of catalog
+    scores is usually sparse, so a list of per-score ``(index, weight)`` pairs
+    remains the representation that scales for that use case.
     """
     if isinstance(weights, np.ndarray):
         if weights.ndim != 2:
             raise ValueError(f"dense weights must be 2-D (m, K), got "
                              f"{weights.shape}")
-        if not np.all(np.isfinite(weights)):
+        if not _dense_weights_finite(weights):
             raise ValueError("dense weights contain non-finite values")
         m, k = weights.shape
+        if k == 0:
+            raise ValueError("dense weights contain no score columns")
         if n_variants is not None:
             requested = _nonnegative_integer(n_variants, "n_variants")
             if requested != m:
                 raise ValueError(
                     f"n_variants={requested} but dense weights have {m} rows")
-        rows, cols = np.nonzero(weights)
-        return rows.astype(np.int64), cols.astype(np.int64), \
-            weights[rows, cols].astype(float), m, k
+        values = np.asarray(weights)
+        if not np.issubdtype(values.dtype, np.floating):
+            values = values.astype(float)
+        return _DenseWeights(values)
 
     pairs = list(weights)
     if not pairs:
@@ -133,7 +160,6 @@ def _weight_columns(weights, n_variants=None):
         if idx.size and not np.all(np.isfinite(val)):
             raise ValueError(f"score {k} has non-finite weights")
         if idx.size:
-            largest = max(largest, int(idx.max()))
             if int(idx.min()) < 0:
                 raise ValueError(f"score {k} has a negative variant index")
             # A sparse score is a mathematical vector, not an insertion log.
@@ -144,6 +170,14 @@ def _weight_columns(weights, n_variants=None):
                 np.add.at(combined, inverse, val)
                 keep = combined != 0.0
                 idx, val = unique[keep], combined[keep]
+            else:
+                # Sparse input is a mathematical vector, so an explicitly
+                # stored zero is not an entry and must not alter memory logs or
+                # the inferred reference extent.
+                keep = val != 0.0
+                idx, val = idx[keep], val[keep]
+            if idx.size:
+                largest = max(largest, int(idx.max()))
         idx_parts.append(idx)
         col_parts.append(np.full(idx.size, k, dtype=np.int64))
         val_parts.append(val)
@@ -209,14 +243,7 @@ def _block_quadform(corr, block_w):
     representation added later, falls through to ``ld_matmul``, which is also
     the fallback if the pinned ldpred3 does not expose the dequantizer.
     """
-    from ldpred3 import ld_matmul
-
-    try:
-        from ldpred3 import LowRankLD
-
-        from ._ldpred3_compat import dequantize_ld
-    except (ImportError, AttributeError):    # pragma: no cover - older ldpred3
-        return block_w.T @ np.asarray(ld_matmul(corr, block_w), dtype=float)
+    from ldpred3.interop import LowRankLD, dequantize_ld, ld_matmul
 
     block = dequantize_ld(corr)
     if not isinstance(block, LowRankLD):
@@ -230,13 +257,23 @@ def _block_quadform(corr, block_w):
 
 
 def _score_gram_from_coo(parsed, ld):
-    """:func:`score_gram` on already-parsed weights.
+    """:func:`score_gram` on already-parsed dense or sparse weights.
 
     Parsing a sparse weight set materializes three arrays over every non-zero
     entry, which for a genome-wide panel is the largest allocation in the whole
     fit. A caller that already holds the parse passes it here instead of
     handing the raw weights back to be parsed a second time.
     """
+    if isinstance(parsed, _DenseWeights):
+        matrix = parsed.values
+        blocks = _as_blocks(ld, parsed.m)
+        gram = np.zeros((parsed.k, parsed.k), dtype=float)
+        for corr, idx in blocks:
+            lo, hi = int(idx[0]), int(idx[-1]) + 1
+            gram += _block_quadform(corr, matrix[lo:hi])
+        gram = 0.5 * (gram + gram.T)
+        return gram, np.diag(gram).copy()
+
     rows, cols, vals, m, k = parsed
     blocks = _as_blocks(ld, m)
 
@@ -282,6 +319,56 @@ def _weight_digest(rows, cols, vals, n_variants, n_scores):
     return digest.hexdigest()
 
 
+def _parsed_weight_info(parsed):
+    """Return ``(m, K, number of non-zero entries)`` without expanding dense W."""
+    if isinstance(parsed, _DenseWeights):
+        return parsed.m, parsed.k, int(np.count_nonzero(parsed.values))
+    _, _, vals, m, k = parsed
+    return int(m), int(k), int(vals.size)
+
+
+def _parsed_weight_digest(parsed):
+    """Canonical sparse-matrix digest without a dense-to-COO allocation.
+
+    The byte stream matches :func:`_weight_digest`: non-zero row indices, then
+    column indices, then values, all in row-major order. Dense inputs are walked
+    in bounded row chunks and never materialize genome-wide coordinate arrays.
+    """
+    if not isinstance(parsed, _DenseWeights):
+        return _weight_digest(*parsed)
+
+    import hashlib
+
+    matrix = parsed.values
+    digest = hashlib.sha256()
+    digest.update(np.asarray([parsed.m, parsed.k], dtype="<i8").tobytes())
+    chunk_rows = max(1, min(parsed.m, 1_000_000 // max(parsed.k, 1)))
+    for part in ("row", "col", "value"):
+        for start in range(0, parsed.m, chunk_rows):
+            block = matrix[start:start + chunk_rows]
+            row, col = np.nonzero(block)
+            if part == "row":
+                value = row.astype(np.int64, copy=False) + start
+                digest.update(value.astype("<i8", copy=False).tobytes())
+            elif part == "col":
+                digest.update(col.astype("<i8", copy=False).tobytes())
+            else:
+                value = block[row, col]
+                digest.update(value.astype("<f8", copy=False).tobytes())
+    return digest.hexdigest()
+
+
+def _collapse_parsed_weights(parsed, coefficients):
+    """Collapse component scores without changing the stored weight basis."""
+    coefficients = np.asarray(coefficients, dtype=float)
+    if isinstance(parsed, _DenseWeights):
+        return parsed.values @ coefficients
+    rows, cols, vals, m, _ = parsed
+    out = np.zeros(m, dtype=float)
+    np.add.at(out, rows, vals * coefficients[cols])
+    return out
+
+
 def _ld_variant_count(weights_ld, ld, explicit, label):
     """Infer one LD source's variant count without borrowing a GWAS length."""
     if explicit is not None:
@@ -317,7 +404,26 @@ def _ld_variant_count(weights_ld, ld, explicit, label):
 
 def _score_cross_moment(weights_gwas, z, n_scores, label):
     """Compute ``W_gwas' z`` on that GWAS's own standardized-genotype basis."""
-    rows, cols, vals, m, k = _weight_columns(weights_gwas, int(z.size))
+    parsed = _weight_columns(weights_gwas, int(z.size))
+    return _score_cross_moment_parsed(parsed, z, n_scores, label)
+
+
+def _score_cross_moment_parsed(parsed, z, n_scores, label, *, n_entries=None):
+    """Cross-moment from an existing parse, preserving one-shot iterables."""
+    if isinstance(parsed, _DenseWeights):
+        m, k = parsed.m, parsed.k
+        if m != z.size:
+            raise ValueError(f"{label} weights cover {m} variants but z covers "
+                             f"{z.size}")
+        if k != n_scores:
+            raise ValueError(f"{label} weights describe {k} scores but the LD "
+                             f"weights describe {n_scores}; score identity and "
+                             "column order must agree")
+        if n_entries is None:
+            n_entries = int(np.count_nonzero(parsed.values))
+        return parsed.values.T @ z, n_entries, m
+
+    rows, cols, vals, m, k = parsed
     if m != z.size:
         raise ValueError(f"{label} weights cover {m} variants but z covers "
                          f"{z.size}")
@@ -327,7 +433,7 @@ def _score_cross_moment(weights_gwas, z, n_scores, label):
                          "column order must agree")
     c = np.zeros(k, dtype=float)
     np.add.at(c, cols, vals * z[rows])
-    return c, int(vals.size), m
+    return c, int(vals.size) if n_entries is None else int(n_entries), m
 
 
 def score_moments(weights_ld, z, ld, *, weights_gwas=None,
@@ -355,7 +461,12 @@ def score_moments(weights_ld, z, ld, *, weights_gwas=None,
         raise ValueError("z contains non-finite values")
     n_variants_ld = _ld_variant_count(
         weights_ld, ld, n_variants_ld, "n_variants_ld")
-    gram, var = score_gram(weights_ld, ld, n_variants=n_variants_ld)
-    c, _, _ = _score_cross_moment(
-        weights_gwas, z, gram.shape[0], "weights_gwas")
+    parsed = _weight_columns(weights_ld, n_variants_ld)
+    gram, var = _score_gram_from_coo(parsed, ld)
+    if weights_gwas is weights_ld:
+        c, _, _ = _score_cross_moment_parsed(
+            parsed, z, gram.shape[0], "weights_gwas")
+    else:
+        c, _, _ = _score_cross_moment(
+            weights_gwas, z, gram.shape[0], "weights_gwas")
     return c, gram, var

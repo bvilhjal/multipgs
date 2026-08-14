@@ -93,9 +93,7 @@ def _sha256(path, chunk=8 * 1024 * 1024):
 
 def _block_census(blocks):
     """Count blocks by representation, and their variant and rank totals."""
-    from ldpred3 import LowRankLD
-
-    from multipgs._ldpred3_compat import dequantize_ld
+    from ldpred3.interop import LowRankLD, dequantize_ld
 
     census = {"n_blocks": 0, "n_lowrank": 0, "n_dense": 0,
               "variants_lowrank": 0, "variants_dense": 0, "rank_total": 0}

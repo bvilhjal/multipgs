@@ -13,7 +13,8 @@ biobank scale.
 **In, from GWAS summary statistics** — :func:`panel_from_sumstats`. Each trait
 is fitted with :func:`ldpred3.run_ldpred3_prs` and scored on the same target.
 When ``ld_cache`` is supplied, the LD reference is built once and cached on
-disk, so trait 2 onwards pay only for the fit. This is the arm of the paper that
+disk; target metadata is indexed once and shared by all fit-only traits; then
+all columns are scored in one dosage pass. This is the arm of the paper that
 turns public GWAS for other traits into scores; it is also how the target
 trait's own score is produced.
 
@@ -358,8 +359,8 @@ def panel_from_catalog(paths, plink, *, sample_path=None, drop_ambiguous=True,
     paths : str or sequence of str
         Scoring files, or a directory to take ``*.txt``/``*.txt.gz`` from.
     plink : str
-        PLINK prefix, or a ``.bgen`` path. PLINK is streamed; BGEN is loaded
-        whole.
+        PLINK prefix, or a ``.bgen`` path. Both formats are streamed over the
+        union of matched variants in memory-bounded blocks.
     drop_ambiguous : bool
         Drop palindromic A/T and C/G variants, which cannot be strand-resolved
         from alleles alone.
@@ -396,13 +397,12 @@ def panel_from_catalog(paths, plink, *, sample_path=None, drop_ambiguous=True,
     if not files:
         raise ValueError(f"no scoring files found in {paths!r}")
 
-    is_bgen = str(plink).endswith(".bgen")
+    is_bgen = str(plink).lower().endswith(".bgen")
     if is_bgen:
-        from ldpred3 import load_genotypes
-        geno = load_genotypes(plink, sample_path=sample_path)
-        variants = geno.variants
-        fid, iid = geno.samples.fid, geno.samples.iid
-        dosage = geno.dosage
+        from ldpred3.interop import prepare_target
+        target = prepare_target(plink, sample_path=sample_path)
+        variants = target.variants
+        fid, iid = target.samples.fid, target.samples.iid
         n_samples, n_total = len(fid), len(variants.id)
     else:
         prefix = strip_ext(str(plink))
@@ -410,7 +410,6 @@ def panel_from_catalog(paths, plink, *, sample_path=None, drop_ambiguous=True,
         samples = read_fam(prefix + ".fam")
         fid, iid = samples.fid, samples.iid
         n_samples, n_total = len(fid), len(variants.id)
-        dosage = None
 
     score_ids, metas, per_score = [], [], []
     n_failed = n_skipped = 0
@@ -448,8 +447,9 @@ def panel_from_catalog(paths, plink, *, sample_path=None, drop_ambiguous=True,
                          f"below min_matched)")
 
     scores, union, af, sd = _accumulate_scores(
-        per_score, n_samples, n_total, plink, dosage, standardize=standardize,
-        block=block, read_bed=read_bed, strip_ext=strip_ext, is_bgen=is_bgen)
+        per_score, n_samples, n_total, plink, standardize=standardize,
+        block=block, read_bed=read_bed, strip_ext=strip_ext, is_bgen=is_bgen,
+        sample_path=sample_path)
 
     # Store target metadata once for the union, not once per score.  At PGS
     # Catalog scale those repeated object/numeric arrays otherwise dominate
@@ -517,12 +517,23 @@ def _expand_paths(paths, suffixes=(".txt", ".txt.gz", ".tsv", ".tsv.gz",
     return out
 
 
-def _accumulate_scores(per_score, n_samples, n_total, plink, dosage, *,
-                       standardize, block, read_bed, strip_ext, is_bgen,
-                       frozen=None):
+def _variant_union(per_score, n_total):
+    """Sorted variant union with workspace bounded by the target width."""
+    # Concatenating K near-genome-wide index arrays would need O(Km) temporary
+    # memory (900 x 1M int64 entries is 7.2 GB before ``unique``). One Boolean
+    # byte per target variant plus the final sorted index vector is enough.
+    present = np.zeros(n_total, dtype=bool)
+    for var_index, _ in per_score:
+        present[var_index] = True
+    return np.flatnonzero(present)
+
+
+def _accumulate_scores(per_score, n_samples, n_total, plink, *, standardize,
+                       block, read_bed, strip_ext, is_bgen,
+                       frozen=None, sample_path=None):
     """One pass over the genotypes: ``K`` scores, plus per-variant AF and SD."""
     K = len(per_score)
-    union = np.unique(np.concatenate([vi for vi, _ in per_score]))
+    union = _variant_union(per_score, n_total)
     m = union.size
     # Per score: positions into `union`, ascending, with matching weights.
     mapped, frozen_ord = [], None if frozen is None else []
@@ -546,17 +557,35 @@ def _accumulate_scores(per_score, n_samples, n_total, plink, dosage, *,
         block = int(np.clip(_BLOCK_ELEMS // max(n_samples, 1), 64, 8192))
     block = max(1, int(block))
 
-    for start in range(0, m, block):
-        stop = min(start + block, m)
-        cols = union[start:stop]
-        if is_bgen:
-            d = np.asarray(dosage[:, cols], dtype=float)
-            miss = ~np.isfinite(d)
-        else:
-            raw = read_bed(strip_ext(str(plink)) + ".bed", n_samples, n_total,
-                           variant_idx=cols)
-            d = np.asarray(raw, dtype=float)
-            miss = d < 0
+    if is_bgen:
+        from ldpred3.interop import iter_bgen_dosage
+
+        def dosage_blocks():
+            consumed = 0
+            for item in iter_bgen_dosage(
+                    plink, union, sample_path=sample_path, chunk=block):
+                stop = consumed + item.source_index.size
+                if not np.array_equal(item.source_index,
+                                      union[consumed:stop]):
+                    raise RuntimeError(
+                        "BGEN dosage stream lost a selected variant")
+                yield consumed, stop, item.dosage
+                consumed = stop
+            if consumed != m:
+                raise RuntimeError(
+                    "BGEN dosage stream ended before all selected variants")
+    else:
+        def dosage_blocks():
+            for start in range(0, m, block):
+                stop = min(start + block, m)
+                raw = read_bed(
+                    strip_ext(str(plink)) + ".bed", n_samples, n_total,
+                    variant_idx=union[start:stop])
+                yield start, stop, raw
+
+    for start, stop, raw in dosage_blocks():
+        d = np.asarray(raw, dtype=float)
+        miss = ~np.isfinite(d) if is_bgen else d < 0
         # A scale-free LDpred3 file means target standardisation, not raw
         # dosage. Keep the all-target case on the shared BLAS path; mixed or
         # frozen files need their own centres and are accumulated per score.
@@ -664,10 +693,16 @@ def _prepare_block(d, miss, standardize):
     """
     if miss.any():
         d = d.copy()
-        d[miss] = np.nan
-        col_mean = np.nanmean(d, axis=0)
-        col_mean = np.where(np.isfinite(col_mean), col_mean, 0.0)
-        d = np.where(np.isnan(d), col_mean, d)
+        # Sum only observed dosages without ``nanmean``: an all-missing column
+        # is valid (it contributes zero after standardisation) and should not
+        # emit a RuntimeWarning. Reuse the caller-supplied missingness mask and
+        # avoid another n x m temporary.
+        observed = d.shape[0] - miss.sum(axis=0)
+        d[miss] = 0.0
+        col_mean = np.divide(
+            d.sum(axis=0), observed, out=np.zeros(d.shape[1], dtype=float),
+            where=observed > 0)
+        np.copyto(d, col_mean[None, :], where=miss)
     mean = d.mean(axis=0)
     sd = d.std(axis=0)
     if not standardize:
@@ -677,6 +712,71 @@ def _prepare_block(d, miss, standardize):
     out[:, good] /= sd[good]
     out[:, ~good] = 0.0
     return out, mean, sd
+
+
+def _score_ldpred3_fits_once(results, plink, *, sample_path=None, block=None,
+                             prepared_target=None):
+    """Score several fit-only LDpred3 results in one target-dosage pass.
+
+    ``beta_adjusted`` is defined on target-standardized genotypes.  The shared
+    scorer forms every column with the same mean-imputation and population-SD
+    convention as LDpred3, while retaining the target AF/SD needed to freeze
+    each resulting weight file.
+    """
+    from ldpred3.genotype_io import read_bed, read_bim, read_fam, strip_ext
+
+    is_bgen = str(plink).lower().endswith(".bgen")
+    if is_bgen:
+        from ldpred3.interop import PreparedTarget, prepare_target
+        if prepared_target is None:
+            prepared_target = prepare_target(plink, sample_path=sample_path)
+        if (not isinstance(prepared_target, PreparedTarget)
+                or not prepared_target.matches(
+                    plink, sample_path=sample_path)):
+            raise ValueError(
+                "prepared_target does not match the BGEN scoring target")
+        fid, iid = prepared_target.samples.fid, prepared_target.samples.iid
+        n_samples, n_total = len(fid), prepared_target.n_total
+    else:
+        prefix = strip_ext(str(plink))
+        variants = read_bim(prefix + ".bim")
+        samples = read_fam(prefix + ".fam")
+        fid, iid = samples.fid, samples.iid
+        n_samples, n_total = len(fid), len(variants)
+
+    first = results[0]
+    if (not np.array_equal(np.asarray(fid), np.asarray(first.sample_fid))
+            or not np.array_equal(np.asarray(iid), np.asarray(first.sample_iid))):
+        raise RuntimeError(
+            "the target sample order changed between fitting and batch scoring")
+
+    per_score = []
+    for result in results:
+        index = np.asarray(result.var_index)
+        weight = np.asarray(result.beta_adjusted, dtype=float)
+        if (index.ndim != 1 or not np.issubdtype(index.dtype, np.integer)
+                or index.size != weight.size):
+            raise ValueError(
+                "an LDpred3 fit returned inconsistent variant indices/weights")
+        index = index.astype(np.int64, copy=False)
+        if (index.size == 0 or np.any(index < 0) or np.any(index >= n_total)
+                or np.unique(index).size != index.size):
+            raise ValueError(
+                "an LDpred3 fit returned empty, duplicate, or out-of-range "
+                "target variant indices")
+        per_score.append((index, weight))
+
+    scores, union, af, sd = _accumulate_scores(
+        per_score, n_samples, n_total, plink, standardize=True, block=block,
+        read_bed=read_bed, strip_ext=strip_ext, is_bgen=is_bgen,
+        sample_path=sample_path)
+    scales = []
+    for index, _ in per_score:
+        at = np.searchsorted(union, index)
+        if np.any(at >= union.size) or not np.array_equal(union[at], index):
+            raise RuntimeError("batch-scoring union lost a fitted variant")
+        scales.append((af[at].copy(), sd[at].copy()))
+    return scores, scales
 
 
 # ---------------------------------------------------------------------------
@@ -697,11 +797,11 @@ def panel_from_sumstats(sumstats, plink, *, score_ids=None, ld_cache=None,
     plink : str
         Target genotypes (PLINK prefix or ``.bgen``).
     ld_cache : str, optional
-        Path for the LD cache. It is **built by the first trait and reused by
-        the rest**, which is the whole reason to fit a panel in one call rather
-        than in a loop. Traits must therefore share a variant set; that is the
-        normal case when the target genotypes are fixed and
-        ``subset_to_sumstats`` is left off.
+        Path for a reference-wide LD cache. It is **built by the first trait and
+        reused by the rest**, which is the whole reason to fit a panel in one
+        call rather than in a loop. Traits may cover different principal
+        subsets; each must be covered by the cache's allele-compatible variant
+        superset.
     ld_prefix : str, optional
         External LD-reference PLINK prefix, forwarded to
         :func:`ldpred3.run_ldpred3_prs`. On its own, the reference is read and
@@ -715,7 +815,9 @@ def panel_from_sumstats(sumstats, plink, *, score_ids=None, ld_cache=None,
         always runs alone so it can write ``ld_cache``; the remainder run in a
         thread pool of this size. ``1`` is sequential. Parallel fitting from
         ``ld_prefix`` requires ``ld_cache`` so workers do not independently
-        rebuild the same reference.
+        rebuild the same reference. The cache payload is fully validated once,
+        target metadata is prepared once, and all fitted columns are scored
+        together in one target-dosage pass.
     weights_dir : str, optional
         Write each trait's ldpred3 weight file here (``<score_id>.weights``).
     preflight : bool, default False
@@ -735,13 +837,21 @@ def panel_from_sumstats(sumstats, plink, *, score_ids=None, ld_cache=None,
 
     Notes
     -----
-    Reusing one LD cache across traits requires ``subset_to_sumstats=False``
-    (the LD blocks must span the same variants for every trait). This function
-    sets that default when ``ld_cache`` is given; override it explicitly if you
-    know what you are doing, and expect the cache to be rebuilt per trait if
-    the variant set moves.
+    Reusing one LD cache across traits requires a reference-wide cache, so this
+    function sets ``subset_to_sumstats=False`` when ``ld_cache`` is given.
+    LDpred3 takes an exact principal subset for each trait after harmonisation
+    and QC; the traits do not need identical rows or order. Fits use
+    ``score=False`` against one shared, immutable prepared-target context.
+    Multipgs then applies all standardized fitted weights together and records
+    the target AF/SD needed for frozen deployment. An existing external or
+    reference-wide cache therefore needs one full LD validation, one metadata
+    preparation, and one target-dosage decode. Building in-sample LD adds the
+    unavoidable dosage read that constructs that new cache. ``preflight=True``
+    deliberately adds per-trait diagnostic reads before this fit path.
     """
     from ldpred3 import run_ldpred3_prs
+    from ldpred3.interop import (PreparedLDCache, prepare_ld_cache,
+                                 prepare_target, write_weights)
 
     if on_error not in ("raise", "skip"):
         raise ValueError("on_error must be 'raise' or 'skip'")
@@ -772,6 +882,9 @@ def panel_from_sumstats(sumstats, plink, *, score_ids=None, ld_cache=None,
             "builds one shared LD cache instead of every worker rebuilding LD")
 
     kwargs = dict(ldpred3_kwargs)
+    # The panel owns scoring: fit each model without another full target pass,
+    # then stream all K fitted columns together below.
+    kwargs["score"] = False
     if ld_prefix is not None:
         kwargs["ld_prefix"] = ld_prefix
     if ld_cache is None and kwargs.get("ld_prefix") is None:
@@ -779,9 +892,19 @@ def panel_from_sumstats(sumstats, plink, *, score_ids=None, ld_cache=None,
             "panel_from_sumstats is building LD from the target genotypes; "
             "pass ld_prefix= or an existing ld_cache= so the LD reference is "
             "not the cohort you will score", stacklevel=2)
+    prepared_cache = None
+    owns_prepared_cache = False
     if ld_cache is not None:
-        kwargs.setdefault("subset_to_sumstats", False)
-        if os.path.exists(str(ld_cache)):
+        if kwargs.get("subset_to_sumstats") is True:
+            raise ValueError(
+                "panel_from_sumstats with ld_cache requires "
+                "subset_to_sumstats=False so disjoint traits share one "
+                "reference-wide cache")
+        kwargs["subset_to_sumstats"] = False
+        if isinstance(ld_cache, PreparedLDCache):
+            kwargs["ld_cache"] = ld_cache
+            prepared_cache = ld_cache
+        elif os.path.exists(os.fspath(ld_cache)):
             kwargs["ld_cache"] = ld_cache
         else:
             # LDpred3 reads ld_cache immediately; a path being created must be
@@ -797,7 +920,38 @@ def panel_from_sumstats(sumstats, plink, *, score_ids=None, ld_cache=None,
     if preflight:
         _preflight_traits(items, plink, kwargs, on_error=on_error)
 
-    columns, ids, metas, weight_tables = [], [], [], []
+    # Repeated fit-only traits need only target metadata. Keep one immutable
+    # selector in memory instead of rescanning BIM/FAM or the BGEN variant
+    # stream K times. Nonexistent paths are left to LDpred3: several lightweight
+    # callers deliberately replace its runner with a test or planning stub.
+    prepared_target = kwargs.get("prepared_target")
+    target_present = (os.path.isfile(os.fspath(plink))
+                      or os.path.isfile(os.fspath(plink) + ".bed"))
+    if prepared_target is None and target_present:
+        prepared_target = prepare_target(
+            plink, sample_path=kwargs.get("sample_path"))
+        kwargs["prepared_target"] = prepared_target
+    target_prepared_by_panel = (
+        prepared_target is not None
+        and ldpred3_kwargs.get("prepared_target") is None)
+
+    # Full payload validation is deliberately done once. Arbitrary path inputs
+    # keep LDpred3's strict full-validation default; the resulting read-only
+    # context may then be shared safely by the later trait fits.
+    if (ld_cache is not None and not isinstance(ld_cache, PreparedLDCache)
+            and os.path.exists(os.fspath(ld_cache))):
+        prepared_cache = prepare_ld_cache(ld_cache)
+        owns_prepared_cache = True
+        kwargs["ld_cache"] = prepared_cache
+        # Once the exact cache generation is open, reloading the external LD
+        # reference cannot affect the fit; it only repeats its largest I/O.
+        kwargs.pop("ld_prefix", None)
+        kwargs.pop("ld_sample_path", None)
+    elif isinstance(ld_cache, PreparedLDCache):
+        kwargs.pop("ld_prefix", None)
+        kwargs.pop("ld_sample_path", None)
+
+    columns, ids, metas, weight_tables, fit_results = [], [], [], [], []
     fid = iid = None
     n_failed = 0
     n_items = len(items)
@@ -820,7 +974,9 @@ def panel_from_sumstats(sumstats, plink, *, score_ids=None, ld_cache=None,
         n_eff = used.get("n_eff")
         if n_eff is not None:
             meta["n_eff"] = float(n_eff)
-        columns.append(np.asarray(res.scores, dtype=float))
+        fit_results.append(res)
+        if res.scores is not None:  # compatibility with a pre-0.5/fake result
+            columns.append(np.asarray(res.scores, dtype=float))
         ids.append(sid)
         metas.append(meta)
         weight_tables.append({
@@ -831,19 +987,6 @@ def panel_from_sumstats(sumstats, plink, *, score_ids=None, ld_cache=None,
             "af": None if res.af is None else np.asarray(res.af, dtype=float),
             "sd": None if res.sd is None else np.asarray(res.sd, dtype=float),
         })
-        if weights_dir is not None:
-            dest = os.path.join(str(weights_dir), f"{sid}.weights")
-            writer = getattr(res, "write_weights", None)
-            if writer is not None:
-                writer(dest)
-            else:
-                from ldpred3.weights import write_weights
-                write_weights(
-                    dest, id=res.variant_id, chrom=res.chrom, pos=res.pos,
-                    effect_allele=res.effect_allele,
-                    other_allele=res.other_allele, weight=res.beta_adjusted,
-                    af=res.af, sd=res.sd)
-            meta["weights"] = dest
 
     def _fit(sid, path, trait):
         try:
@@ -853,68 +996,115 @@ def panel_from_sumstats(sumstats, plink, *, score_ids=None, ld_cache=None,
         except Exception as exc:
             return sid, path, trait, None, exc
 
-    remaining = list(enumerate(items))
-    # When requested, the first successful trait writes the LD cache; later
-    # traits only read it. Without ld_cache each fit builds its own LD.
-    first = None
-    while remaining:
-        i, (sid, path, trait) = remaining.pop(0)
-        if progress is not None:
-            progress(i, n_items, sid)
-        sid, path, trait, res, exc = _fit(sid, path, trait)
-        if exc is not None:
-            if on_error == "raise":
-                raise RuntimeError(f"LDpred3 failed on {sid} ({path}): "
-                                   f"{exc}") from exc
-            n_failed += 1
-            continue
-        if kwargs.pop("ld_out", None) is not None:
-            kwargs["ld_cache"] = ld_cache
-        first = (sid, path, res, trait)
-        break
-    if first is None:
-        raise ValueError(f"all {n_items} LDpred3 fits failed")
-    _consume(*first)
-
-    if n_jobs == 1 or not remaining:
-        later = []
-        for i, (sid, path, trait) in remaining:
+    try:
+        remaining = list(enumerate(items))
+        # When requested, the first successful trait writes the LD cache; later
+        # traits only read it. Without ld_cache each fit builds its own LD.
+        first = None
+        while remaining:
+            i, (sid, path, trait) = remaining.pop(0)
             if progress is not None:
                 progress(i, n_items, sid)
-            later.append(_fit(sid, path, trait))
-    else:
-        for i, (sid, path, trait) in remaining:
-            if progress is not None:
-                progress(i, n_items, sid)
-        workers = min(n_jobs, len(remaining))
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            later = list(pool.map(
-                lambda item: _fit(item[1][0], item[1][1], item[1][2]),
-                remaining))
+            sid, path, trait, res, exc = _fit(sid, path, trait)
+            if exc is not None:
+                if on_error == "raise":
+                    raise RuntimeError(f"LDpred3 failed on {sid} ({path}): "
+                                       f"{exc}") from exc
+                n_failed += 1
+                continue
+            if kwargs.pop("ld_out", None) is not None:
+                # The first successful fit produced this generation. Validate it
+                # once before sharing it with sequential or concurrent fits.
+                if os.path.exists(os.fspath(ld_cache)):
+                    prepared_cache = prepare_ld_cache(ld_cache)
+                    owns_prepared_cache = True
+                    kwargs["ld_cache"] = prepared_cache
+                    kwargs.pop("ld_prefix", None)
+                    kwargs.pop("ld_sample_path", None)
+                else:  # mocked compatibility tests do not create a real file
+                    kwargs["ld_cache"] = ld_cache
+            first = (sid, path, res, trait)
+            break
+        if first is None:
+            raise ValueError(f"all {n_items} LDpred3 fits failed")
+        _consume(*first)
 
-    for sid, path, trait, res, exc in later:
-        if exc is not None:
-            if on_error == "raise":
-                raise RuntimeError(f"LDpred3 failed on {sid} ({path}): "
-                                   f"{exc}") from exc
-            n_failed += 1
-            continue
-        _consume(sid, path, res, trait)
+        if n_jobs == 1 or not remaining:
+            later = []
+            for i, (sid, path, trait) in remaining:
+                if progress is not None:
+                    progress(i, n_items, sid)
+                later.append(_fit(sid, path, trait))
+        else:
+            for i, (sid, path, trait) in remaining:
+                if progress is not None:
+                    progress(i, n_items, sid)
+            workers = min(n_jobs, len(remaining))
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                later = list(pool.map(
+                    lambda item: _fit(item[1][0], item[1][1], item[1][2]),
+                    remaining))
 
-    if not columns:
+        for sid, path, trait, res, exc in later:
+            if exc is not None:
+                if on_error == "raise":
+                    raise RuntimeError(f"LDpred3 failed on {sid} ({path}): "
+                                       f"{exc}") from exc
+                n_failed += 1
+                continue
+            _consume(sid, path, res, trait)
+    finally:
+        if owns_prepared_cache and prepared_cache is not None:
+            prepared_cache.close()
+
+    if not fit_results:
         raise ValueError(f"all {len(items)} LDpred3 fits failed")
-    K = len(columns)
+    if columns and len(columns) != len(fit_results):
+        raise RuntimeError(
+            "LDpred3 returned a mixture of scored and fit-only results")
+    if columns:
+        panel_scores = np.column_stack(columns)
+    else:
+        panel_scores, scales = _score_ldpred3_fits_once(
+            fit_results, plink,
+            sample_path=ldpred3_kwargs.get("sample_path"),
+            prepared_target=prepared_target)
+        for table, (af, sd) in zip(weight_tables, scales):
+            table["af"], table["sd"] = af, sd
+
+    if weights_dir is not None:
+        for sid, meta, table in zip(ids, metas, weight_tables):
+            dest = os.path.join(str(weights_dir), f"{sid}.weights")
+            write_weights(
+                dest, id=table["id"], chrom=table["chrom"], pos=table["pos"],
+                effect_allele=table["a1"], other_allele=table["a2"],
+                weight=table["weight"], af=table["af"], sd=table["sd"])
+            meta["weights"] = dest
+
+    K = len(fit_results)
     return ScorePanel(
-        scores=np.column_stack(columns), sample_fid=np.asarray(fid),
+        scores=panel_scores, sample_fid=np.asarray(fid),
         sample_iid=np.asarray(iid), score_ids=np.array(ids, dtype=object),
         standardized=np.ones(K, dtype=bool), weights=weight_tables,
         meta=metas,
         log={"source": "ldpred3", "n_scores": K, "n_failed": n_failed,
              "n_jobs": int(n_jobs),
              "target": str(plink),
-             "ld_cache": str(ld_cache) if ld_cache else None,
+             "ld_cache": (str(os.fspath(ld_cache))
+                          if ld_cache is not None else None),
              "ld_prefix": str(ld_prefix) if ld_prefix else None,
              "ld_reused": bool(ld_cache),
+             "cache_prepared": prepared_cache is not None,
+             "cache_validations": int(owns_prepared_cache),
+             "cache_validation_owner": (
+                 "panel" if owns_prepared_cache else
+                 "caller" if isinstance(ld_cache, PreparedLDCache) else
+                 "none"),
+             "target_prepared": prepared_target is not None,
+             "target_preparation_owner": (
+                 "panel" if target_prepared_by_panel else
+                 "caller" if prepared_target is not None else "none"),
+             "target_scoring_passes": 1,
              "weights_dir": str(weights_dir) if weights_dir else None})
 
 
@@ -1114,9 +1304,8 @@ def panel_from_weights(paths, plink, *, sample_path=None, drop_ambiguous=True,
     those columns use this target's AF/SD, matching ``scaling="target"``.
     """
     from ldpred3.genotype_io import read_bed, read_bim, read_fam, strip_ext
-    from ldpred3.harmonize import harmonize
-    from ldpred3.sumstats import Sumstats
-    from ldpred3.weights import read_weights
+    from ldpred3.interop import (Sumstats, harmonize, prepare_target,
+                                 read_weights)
 
     if on_error not in ("raise", "skip"):
         raise ValueError("on_error must be 'raise' or 'skip'")
@@ -1124,13 +1313,11 @@ def panel_from_weights(paths, plink, *, sample_path=None, drop_ambiguous=True,
     if not files:
         raise ValueError(f"no weight files found in {paths!r}")
 
-    is_bgen = str(plink).endswith(".bgen")
+    is_bgen = str(plink).lower().endswith(".bgen")
     if is_bgen:
-        from ldpred3 import load_genotypes
-        geno = load_genotypes(plink, sample_path=sample_path)
-        variants = geno.variants
-        fid, iid = geno.samples.fid, geno.samples.iid
-        dosage = geno.dosage
+        target = prepare_target(plink, sample_path=sample_path)
+        variants = target.variants
+        fid, iid = target.samples.fid, target.samples.iid
         n_samples, n_total = len(fid), len(variants.id)
     else:
         prefix = strip_ext(str(plink))
@@ -1138,7 +1325,6 @@ def panel_from_weights(paths, plink, *, sample_path=None, drop_ambiguous=True,
         samples = read_fam(prefix + ".fam")
         fid, iid = samples.fid, samples.iid
         n_samples, n_total = len(fid), len(variants.id)
-        dosage = None
 
     score_ids, metas, per_score, frozen, n_failed, n_skipped = (
         [], [], [], [], 0, 0)
@@ -1187,9 +1373,9 @@ def panel_from_weights(paths, plink, *, sample_path=None, drop_ambiguous=True,
                          f"below min_matched)")
 
     scores, union, af, sd = _accumulate_scores(
-        per_score, n_samples, n_total, plink, dosage, standardize=False,
+        per_score, n_samples, n_total, plink, standardize=False,
         block=block, read_bed=read_bed, strip_ext=strip_ext, is_bgen=is_bgen,
-        frozen=frozen)
+        frozen=frozen, sample_path=sample_path)
     variant_arrays = {
         "id": np.asarray(variants.id)[union],
         "chrom": np.asarray(variants.chrom)[union],
@@ -1520,7 +1706,7 @@ def combine_weights(panel, fit, *, path=None):
         "sd": np.array([sd_j for _, _, _, _, sd_j in rows], dtype=float),
     }
     if path is not None:
-        from ldpred3.weights import write_weights
+        from ldpred3.interop import write_weights
         write_weights(path, id=out["id"], chrom=out["chrom"], pos=out["pos"],
                       effect_allele=out["a1"], other_allele=out["a2"],
                       weight=out["weight"], af=out["af"], sd=out["sd"])

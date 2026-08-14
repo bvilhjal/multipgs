@@ -255,9 +255,12 @@ Tests that replace `ldpred3.run_ldpred3_prs` with a Python iterator should leave
 
 `panel_from_catalog` reads the target genotypes **once**. Every scoring file is
 harmonised against the variant table up front, the union of matched variants is
-streamed from the `.bed` in blocks sized to keep a block near 64 MB, and all `K`
-scores accumulate in that pass. Calling a single-score routine `K` times would
-re-read the genotypes `K` times.
+streamed from PLINK or BGEN in blocks sized to keep the working matrix near
+64 MB, and all `K` scores accumulate in that pass. BGEN selected probability
+payloads are decoded once and its compact iterator applies an additional byte
+cap before float64 score preparation. Calling a single-score routine `K` times
+would re-read the genotypes `K` times. `panel_from_weights` and the batch scorer
+after `panel_from_sumstats` use the same path.
 
 The panel also stores union variant metadata once. Each Catalog score retains
 only a smallest-width index into that read-only table plus its weights, while

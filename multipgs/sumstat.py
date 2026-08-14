@@ -140,11 +140,14 @@ from . import _coord
 from ._align import align_to_reference
 from ._evaluate import REGIMES, SumstatEval, evaluate_sumstat
 from ._gram import (
+    _collapse_parsed_weights,
     _ld_variant_count,
+    _parsed_weight_digest,
+    _parsed_weight_info,
     _score_cross_moment,
+    _score_cross_moment_parsed,
     _score_gram_from_coo,
     _weight_columns,
-    _weight_digest,
     score_gram,
     score_moments,
 )
@@ -309,20 +312,19 @@ class SumstatFit:
         """
         if n_variants_ld is None:
             n_variants_ld = self.n_variants_ld
-        rows, cols, vals, m, k = _weight_columns(weights_ld, n_variants_ld)
+        parsed = _weight_columns(weights_ld, n_variants_ld)
+        m, k, _ = _parsed_weight_info(parsed)
         if k != self.beta.size:
             raise ValueError(f"weights describe {k} scores but this fit has "
                              f"{self.beta.size}")
         if self.weights_ld_digest is not None:
-            got = _weight_digest(rows, cols, vals, m, k)
+            got = _parsed_weight_digest(parsed)
             if got != self.weights_ld_digest:
                 raise ValueError(
                     "weights differ from the aligned score matrix used to fit "
                     "this combination; variant_weights cannot safely attach "
                     "coefficients to them")
-        out = np.zeros(m, dtype=float)
-        np.add.at(out, rows, vals * self.beta[cols])
-        return out
+        return _collapse_parsed_weights(parsed, self.beta)
 
     def variant_weights(self, weights_ld, *, n_variants_ld=None):
         """Compatibility alias for :meth:`frozen_variant_weights`.
@@ -531,15 +533,23 @@ def multi_pgs_sumstats(weights_ld, z, ld, *, weights_gwas=None,
             raise ValueError("train_fraction must lie strictly in (0, 1)")
         n_repeats = _positive_integer(n_repeats, "n_repeats")
 
-    # Parsed once and used for both the Gram and the fit's weight digest: at
-    # genome-wide scale these three arrays are the largest allocation here.
+    # Parsed once and used for both the Gram and the fit's weight digest. Sparse
+    # panels become canonical COO arrays; dense panels remain dense, avoiding
+    # three genome-wide arrays per non-zero entry.
     parsed_ld = _weight_columns(weights_ld, n_variants_ld)
-    rows_ld, cols_ld, vals_ld, m_ld, _ = parsed_ld
+    m_ld, k_ld, n_weight_entries_ld = _parsed_weight_info(parsed_ld)
     gram_raw, score_var = _score_gram_from_coo(parsed_ld, ld)
     k = gram_raw.shape[0]
+    if k_ld != k:
+        raise RuntimeError("parsed weight columns do not match their Gram")
 
-    wz, n_weight_entries_gwas, m_gwas = _score_cross_moment(
-        weights_gwas, z, k, "weights_gwas")
+    if weights_gwas is weights_ld:
+        wz, n_weight_entries_gwas, m_gwas = _score_cross_moment_parsed(
+            parsed_ld, z, k, "weights_gwas",
+            n_entries=n_weight_entries_ld)
+    else:
+        wz, n_weight_entries_gwas, m_gwas = _score_cross_moment(
+            weights_gwas, z, k, "weights_gwas")
     gram_moment_cache = {}
     gram_raw, gram_factor_raw, coherence = _validate_moments(
         wz, gram_raw, var_y, label="fitting", prepared=gram_moment_cache)
@@ -634,8 +644,6 @@ def multi_pgs_sumstats(weights_ld, z, ld, *, weights_gwas=None,
         z_valid = np.asarray(z_valid, dtype=float).ravel()
         if not np.all(np.isfinite(z_valid)):
             raise ValueError("z_valid contains non-finite values")
-        wz_v, n_weight_entries_gwas_valid, m_gwas_valid = _score_cross_moment(
-            weights_gwas_valid, z_valid, k, "weights_gwas_valid")
         n_variants_ld_valid = _ld_variant_count(
             weights_ld_valid, ld_valid, n_variants_ld_valid,
             "n_variants_ld_valid")
@@ -649,11 +657,21 @@ def multi_pgs_sumstats(weights_ld, z, ld, *, weights_gwas=None,
             parsed_ld_valid = _weight_columns(
                 weights_ld_valid, n_variants_ld_valid)
             gram_v = _score_gram_from_coo(parsed_ld_valid, ld_valid)[0]
-        _, _, vals_ld_valid, m_ld_valid, k_valid = parsed_ld_valid
+        m_ld_valid, k_valid, n_weight_entries_ld_valid = (
+            _parsed_weight_info(parsed_ld_valid))
         if k_valid != k:
             raise ValueError(
                 f"weights_ld_valid describes {k_valid} scores but weights_ld "
                 f"describes {k}; score identity and column order must agree")
+        if weights_gwas_valid is weights_ld_valid:
+            (wz_v, n_weight_entries_gwas_valid,
+             m_gwas_valid) = _score_cross_moment_parsed(
+                 parsed_ld_valid, z_valid, k, "weights_gwas_valid",
+                 n_entries=n_weight_entries_ld_valid)
+        else:
+            (wz_v, n_weight_entries_gwas_valid,
+             m_gwas_valid) = _score_cross_moment(
+                 weights_gwas_valid, z_valid, k, "weights_gwas_valid")
         gram_v, _, validation_coherence = _validate_moments(
             wz_v, gram_v, var_y, label="tuning",
             prepared=(gram_moment_cache if reuse_validation_ld else None))
@@ -873,7 +891,7 @@ def multi_pgs_sumstats(weights_ld, z, ld, *, weights_gwas=None,
            "n_variants_gwas": m_gwas, "selection": selection,
            "n_dead": int(np.sum(dead)), "n_lambda": int(lambdas.size),
            "alpha": float(alpha), "var_y": float(var_y),
-           "n_weight_entries_ld": int(vals_ld.size),
+           "n_weight_entries_ld": n_weight_entries_ld,
            "n_weight_entries_gwas": n_weight_entries_gwas,
            "ld_shrinkage": delta,
            "n_shrinkage": int(deltas.size), "selection_metric": "MSE",
@@ -922,7 +940,7 @@ def multi_pgs_sumstats(weights_ld, z, ld, *, weights_gwas=None,
         log.update({"regime": "B", "selection_role": "tuning"})
         log.update({"n_variants_ld_valid": m_ld_valid,
                     "n_variants_gwas_valid": m_gwas_valid,
-                    "n_weight_entries_ld_valid": int(vals_ld_valid.size),
+                    "n_weight_entries_ld_valid": n_weight_entries_ld_valid,
                     "n_weight_entries_gwas_valid":
                         n_weight_entries_gwas_valid,
                     "tuning_discarded_ld_null_c_norm":
@@ -969,5 +987,5 @@ def multi_pgs_sumstats(weights_ld, z, ld, *, weights_gwas=None,
         alpha=float(alpha), pseudo_r2=float(scores_path[index]),
         pseudo_r2_path=scores_path, selection_mse=float(mse_path[index]),
         selection_mse_path=mse_path, c_raw=wz.copy(), log=log,
-        weights_ld_digest=_weight_digest(
-            rows_ld, cols_ld, vals_ld, m_ld, k), n_variants_ld=m_ld)
+        weights_ld_digest=_parsed_weight_digest(parsed_ld),
+        n_variants_ld=m_ld)

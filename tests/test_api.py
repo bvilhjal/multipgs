@@ -57,12 +57,16 @@ def test_every_module_and_public_function_has_a_docstring():
             assert obj.__doc__, f"{info.name}.{name} has no docstring"
 
 
-def test_version_is_a_release_string():
-    parts = multipgs.__version__.split(".")
-    assert len(parts) == 3 and all(p.isdigit() for p in parts)
+def test_version_and_changelog_are_coordinated():
+    import re
+
+    assert re.fullmatch(r"\d+\.\d+\.\d+(?:\.dev\d+)?", multipgs.__version__)
     changelog = (pathlib.Path(__file__).resolve().parents[1]
                  / "CHANGELOG.md").read_text(encoding="utf-8")
-    assert f"## {multipgs.__version__} - " in changelog
+    if ".dev" in multipgs.__version__:
+        assert "## Unreleased" in changelog
+    else:
+        assert f"## {multipgs.__version__} - " in changelog
 
 
 def test_readme_examples_name_real_functions():

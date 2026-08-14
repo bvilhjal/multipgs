@@ -57,6 +57,80 @@ def test_sparse_and_dense_weights_agree():
     assert np.allclose(dense, sparse)
 
 
+def test_dense_weights_stay_dense_and_share_the_input_buffer():
+    """Dense input must not become three COO arrays per non-zero entry."""
+    from multipgs._gram import _DenseWeights, _weight_columns
+
+    weights = np.arange(60, dtype=np.float32).reshape(12, 5)
+    parsed = _weight_columns(weights)
+    assert isinstance(parsed, _DenseWeights)
+    assert np.shares_memory(parsed.values, weights)
+
+
+def test_dense_gram_does_not_enumerate_nonzero_coordinates(monkeypatch):
+    """The hot Gram path slices W by LD block instead of describing its cells."""
+    import multipgs._gram as gram_module
+
+    weights = np.arange(24.0).reshape(8, 3) / 10.0
+    blocks = [(np.eye(4), np.arange(4)),
+              (np.eye(4), np.arange(4, 8))]
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("dense score_gram must not build COO coordinates")
+
+    monkeypatch.setattr(gram_module.np, "nonzero", forbidden)
+    gram, _ = score_gram(weights, blocks)
+    assert np.allclose(gram, weights.T @ weights)
+
+
+def test_dense_and_sparse_weight_digests_match():
+    from multipgs._gram import (
+        _parsed_weight_digest,
+        _weight_columns,
+    )
+
+    weights = np.array([[1.0, 0.0], [0.0, -2.0], [3.0, 4.0]])
+    sparse = [(np.flatnonzero(weights[:, k]),
+               weights[np.flatnonzero(weights[:, k]), k])
+              for k in range(weights.shape[1])]
+    assert (_parsed_weight_digest(_weight_columns(weights))
+            == _parsed_weight_digest(
+                _weight_columns(sparse, n_variants=weights.shape[0])))
+
+
+def test_sparse_zeros_are_canonical_and_dense_needs_a_score_column():
+    from multipgs._gram import _parsed_weight_info, _weight_columns
+
+    sparse = [
+        (np.array([0, 1]), np.array([2.0, 0.0])),
+        (np.array([2]), np.array([0.0])),
+    ]
+    assert _parsed_weight_info(_weight_columns(sparse, n_variants=3))[2] == 1
+    with pytest.raises(ValueError, match="no score columns"):
+        score_gram(np.empty((3, 0)), np.eye(3))
+
+
+def test_same_one_shot_sparse_weights_are_parsed_once():
+    pairs = [
+        (np.array([0, 2]), np.array([1.0, 0.5])),
+        (np.array([1]), np.array([-2.0])),
+    ]
+    z = np.array([0.3, -0.2, 0.1])
+
+    weights = (pair for pair in pairs)
+    c, gram, _ = score_moments(
+        weights, z, np.eye(3), weights_gwas=weights, n_variants_ld=3)
+    dense = np.array([[1.0, 0.0], [0.0, -2.0], [0.5, 0.0]])
+    np.testing.assert_allclose(c, dense.T @ z)
+    np.testing.assert_allclose(gram, dense.T @ dense)
+
+    weights = (pair for pair in pairs)
+    fitted = multi_pgs_sumstats(
+        weights, z, np.eye(3), weights_gwas=weights,
+        n_variants_ld=3, tune="none", var_y=10.0, n_lambda=3)
+    assert np.all(np.isfinite(fitted.beta))
+
+
 @pytest.mark.parametrize("bad", [np.array([0.9]), np.array([np.nan]), ["0"]])
 def test_sparse_variant_indices_are_validated_before_integer_cast(bad):
     with pytest.raises(ValueError, match="integer variant indices"):
@@ -106,7 +180,7 @@ def test_block_streaming_matches_one_dense_matrix():
 
 
 def test_sparse_blocks_multiply_only_the_active_score_columns(monkeypatch):
-    import ldpred3
+    import ldpred3.interop
 
     seen = []
 
@@ -114,7 +188,7 @@ def test_sparse_blocks_multiply_only_the_active_score_columns(monkeypatch):
         seen.append(rhs.shape)
         return np.asarray(corr) @ rhs
 
-    monkeypatch.setattr(ldpred3, "ld_matmul", tracked)
+    monkeypatch.setattr(ldpred3.interop, "ld_matmul", tracked)
     weights = []
     for score in range(40):
         variant = score % 4

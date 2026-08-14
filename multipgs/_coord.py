@@ -26,7 +26,7 @@ IRLS weights change every outer iteration. It runs the textbook nested loop —
 quadratic approximation outside, weighted coordinate descent inside — with
 *naive updates* against a column-major ``X``, at :math:`O(nK)` per sweep.
 
-Kernels are written twice in the style ldpred3 uses: an explicit-loop version
+Kernels are written twice: an explicit-loop version
 compiled by Numba, and a NumPy fallback that vectorises the same arithmetic in
 the same order, so the two agree to floating-point round-off. The dispatch
 happens once, at import.
@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from ._ldpred3_compat import HAVE_NUMBA, _jit_nogil, _jit_parallel, prange
+from ._numba import HAVE_NUMBA, _jit_nogil, _jit_parallel, prange
 
 
 __all__ = ["enet_path_gaussian", "enet_path_gaussian_batch",

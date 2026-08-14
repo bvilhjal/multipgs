@@ -32,7 +32,7 @@ def test_relevance_is_zero_when_rg_is_missing():
 
 def test_rg_screen_loads_scores_and_closes_cache_once(monkeypatch):
     import ldpred3
-    import ldpred3.ld
+    import ldpred3.interop
     import multipgs.rg as rg
 
     calls = {"load": 0, "ld_scores": 0, "close": 0, "align": [],
@@ -75,7 +75,7 @@ def test_rg_screen_loads_scores_and_closes_cache_once(monkeypatch):
     fake_bipred.in_long_range_ld = lambda chrom, pos: np.array(
         [True, False, False, False, False])
     monkeypatch.setitem(sys.modules, "bipred", fake_bipred)
-    monkeypatch.setattr(ldpred3.ld, "load_ld_blocks", load)
+    monkeypatch.setattr(ldpred3.interop, "load_ld_blocks", load)
     monkeypatch.setattr(ldpred3, "ld_scores", scores)
     monkeypatch.setattr(rg, "_align_sumstats", align)
 
@@ -93,7 +93,7 @@ def test_rg_screen_loads_scores_and_closes_cache_once(monkeypatch):
 
 
 def test_cache_metadata_is_validated_before_alignment(monkeypatch):
-    import ldpred3.ld
+    import ldpred3.interop
     import multipgs.rg as rg
 
     closed = []
@@ -103,7 +103,7 @@ def test_cache_metadata_is_validated_before_alignment(monkeypatch):
             closed.append(True)
 
     monkeypatch.setattr(
-        ldpred3.ld, "load_ld_blocks",
+        ldpred3.interop, "load_ld_blocks",
         lambda *args, **kwargs: (
             Blocks(), np.array(["a", "b", "c"]),
             {"counted_allele": ["A"] * 3, "other_allele": ["G"] * 3,
@@ -111,6 +111,76 @@ def test_cache_metadata_is_validated_before_alignment(monkeypatch):
     with pytest.raises(ValueError, match="metadata 'pos'.*expected 3"):
         rg.align_sumstats_to_cache("not-read", "cache")
     assert closed == [True]
+
+
+def test_real_ldpred3_cache_alignment_uses_variant_table(tmp_path):
+    """Exercise the real harmonizer; mocks previously hid a missing ``len``."""
+    from ldpred3 import standardize_betas
+    from ldpred3.ld import save_ld_blocks
+
+    cache = tmp_path / "ld.npz"
+    ids = np.array(["rs1", "rs2", "rs3"], dtype=object)
+    save_ld_blocks(
+        cache, [(np.eye(3, dtype=np.float32), np.arange(3))], ids,
+        counted_allele=np.array(["A", "A", "A"]),
+        other_allele=np.array(["C", "C", "C"]),
+        chrom=np.array(["1", "1", "2"]), pos=np.array([10, 20, 30]),
+        reference_af=np.array([0.2, 0.3, 0.4]), n_ref=500, ridge=0.0)
+    sumstats = tmp_path / "gwas.tsv"
+    sumstats.write_text(
+        "SNP\tCHR\tBP\tA1\tA2\tBETA\tSE\tN\n"
+        "rs1\t1\t10\tA\tC\t0.10\t0.05\t1000\n"
+        "rs2\t1\t20\tC\tA\t0.20\t0.10\t2000\n"
+        "absent\t9\t99\tA\tC\t1.00\t0.10\t3000\n",
+        encoding="utf-8")
+
+    from multipgs import align_sumstats_to_cache
+    beta, n_eff, log = align_sumstats_to_cache(sumstats, cache, qc=False)
+    expected, _ = standardize_betas(
+        np.array([0.10, -0.20]), np.array([0.05, 0.10]),
+        np.array([1000.0, 2000.0]))
+    assert beta[:2].tolist() == pytest.approx(expected)
+    assert np.isnan(beta[2])
+    assert n_eff.tolist()[:2] == [1000.0, 2000.0]
+    assert np.isnan(n_eff[2])
+    assert log["n_matched"] == 2
+
+
+def test_rg_alignment_borrows_prepared_cache_without_reloading(
+        tmp_path, monkeypatch):
+    """A caller-owned prepared cache remains open and is never reloaded."""
+    import ldpred3.interop as interop
+    from ldpred3.ld import save_ld_blocks
+
+    cache = tmp_path / "prepared.npz"
+    save_ld_blocks(
+        cache, [(np.eye(2, dtype=np.float32), np.arange(2))],
+        np.array(["rs1", "rs2"], dtype=object),
+        counted_allele=np.array(["A", "C"]),
+        other_allele=np.array(["G", "T"]),
+        chrom=np.array(["1", "1"]), pos=np.array([10, 20]),
+        reference_af=np.array([0.2, 0.3]), n_ref=500, ridge=0.0)
+    sumstats = tmp_path / "gwas.tsv"
+    sumstats.write_text(
+        "SNP\tCHR\tBP\tA1\tA2\tBETA\tSE\tN\n"
+        "rs1\t1\t10\tA\tG\t0.10\t0.05\t1000\n",
+        encoding="utf-8")
+
+    prepared = interop.prepare_ld_cache(cache)
+    try:
+        monkeypatch.setattr(
+            interop, "load_ld_blocks",
+            lambda *args, **kwargs: pytest.fail("prepared cache was reloaded"))
+        from multipgs import align_sumstats_to_cache
+        beta, n_eff, log = align_sumstats_to_cache(
+            sumstats, prepared, qc=False)
+        assert np.isfinite(beta[0]) and np.isnan(beta[1])
+        assert n_eff[0] == 1000 and np.isnan(n_eff[1])
+        assert log["n_matched"] == 1
+        assert not prepared.closed
+    finally:
+        prepared.close()
+    assert prepared.closed
 
 
 @pytest.mark.parametrize("value", [1, 1.5, True])

@@ -269,15 +269,14 @@ def read_scoring_file(path, *, prefer_harmonized=True, drop_non_additive=True):
 def harmonize_scoring_file(scoring, variants, *, drop_ambiguous=True):
     """Align a :class:`ScoringFile` to a genotype variant table.
 
-    Delegates the allele logic to :func:`ldpred3.harmonize.harmonize` — matching
+    Delegates the allele logic to :func:`ldpred3.interop.harmonize` — matching
     by rsID then ``chrom:pos``, sign-flipping swapped alleles, resolving strand
     flips where the alleles allow it, and dropping palindromic variants.
 
     Returns ``(var_index, weight, log)``: positions into ``variants`` and the
     weights aligned to that table's A1 allele.
     """
-    from ldpred3.harmonize import harmonize
-    from ldpred3.sumstats import Sumstats
+    from ldpred3.interop import Sumstats, harmonize
 
     m = len(scoring)
     if m == 0:

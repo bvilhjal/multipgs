@@ -3,9 +3,13 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 4 * * 1"
 
 jobs:
   test:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -24,7 +28,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: bvilhjal/ldpred3
-          ref: ea9ab389c109b6ceccbaa990fe91ca34fb3498c0
+          ref: master
           path: ldpred3
           token: ${{ secrets.LDPRED3_READ_TOKEN }}
       - uses: actions/setup-python@v5
@@ -36,7 +40,60 @@ jobs:
       - run: python -m ruff check .
       - run: python -m pytest -q
 
+  ecosystem:
+    runs-on: ubuntu-latest
+    name: sibling resolver and public seams
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require sibling repository access
+        env:
+          LDPRED3_READ_TOKEN: ${{ secrets.LDPRED3_READ_TOKEN }}
+        run: |
+          if [ -z "$LDPRED3_READ_TOKEN" ]; then
+            echo "::error title=Missing sibling token::Configure LDPRED3_READ_TOKEN with read access to the private LDpred3, Bipred, and GWFM repositories."
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+        with:
+          repository: bvilhjal/ldpred3
+          ref: master
+          path: siblings/ldpred3
+          token: ${{ secrets.LDPRED3_READ_TOKEN }}
+      - uses: actions/checkout@v4
+        with:
+          repository: bvilhjal/bipred
+          ref: main
+          path: siblings/bipred
+          token: ${{ secrets.LDPRED3_READ_TOKEN }}
+      - uses: actions/checkout@v4
+        with:
+          repository: bvilhjal/gwfm
+          ref: master
+          path: siblings/gwfm
+          token: ${{ secrets.LDPRED3_READ_TOKEN }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install --upgrade pip
+      - name: Resolve the four declared dependency contracts together
+        run: >-
+          python -m pip install
+          "./siblings/ldpred3[fast]"
+          "./siblings/bipred[fast]"
+          "./siblings/gwfm[fast]"
+          ".[bipred,test]"
+      - run: python -m pip check
+      - name: Exercise the shared cache, representation, and weight seams
+        run: >-
+          python -m pytest -q
+          siblings/ldpred3/tests/test_interop.py
+          siblings/bipred/tests/test_prepare.py
+          siblings/gwfm/tests/test_ldpred3_bridge.py
+          tests/test_ecosystem.py
+          tests/test_rg.py
+
   package:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -55,7 +112,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: bvilhjal/ldpred3
-          ref: ea9ab389c109b6ceccbaa990fe91ca34fb3498c0
+          ref: master
           path: ldpred3
           token: ${{ secrets.LDPRED3_READ_TOKEN }}
       - run: python report/generate_evidence.py --check

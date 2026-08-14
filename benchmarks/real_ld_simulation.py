@@ -167,9 +167,7 @@ def _block_factor(corr):
     spectrum says exactly zero in the directions it has lost rather than
     inventing variance there.
     """
-    from ldpred3 import LowRankLD
-
-    from multipgs._ldpred3_compat import dequantize_ld
+    from ldpred3.interop import LowRankLD, dequantize_ld
 
     block = dequantize_ld(corr)
     if isinstance(block, LowRankLD):

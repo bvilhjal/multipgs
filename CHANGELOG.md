@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Began the 0.3.4 development line, coordinated with LDpred3 0.5 and Bipred
+  0.3.9. Real cache-to-GWAS alignment now passes LDpred3's actual
+  `VariantTable`, and dense score panels remain dense during Gram and
+  cross-moment calculations instead of allocating three COO arrays per
+  non-zero entry. Multi-trait summary-statistic panels fully validate their
+  shared cache once, prepare target metadata once, fit against those shared
+  read-only contexts, and score all fitted columns in one target-dosage pass.
+  Catalog files, saved weights, and fitted panels all stream the selected BGEN
+  union through LDpred3's byte-capped dosage iterator instead of loading an
+  `n_samples x n_variants` matrix. Existing reference-wide caches therefore
+  incur one LD validation and one selected-payload decode; a new in-sample
+  cache adds its necessary LD-construction read.
+  Multipgs now owns its small Numba decorator shim instead of importing LDpred3
+  internals. Ecosystem CI resolves LDpred3, Bipred, GWFM, and Multipgs together
+  and exercises their public interoperability seams on changes, manual runs,
+  and a weekly upstream-drift schedule.
 - The packaged methods PDF is a research note: estimand,
   selection-index theory, three information routes, and the
   simulation evidence that survives its design, rather than a

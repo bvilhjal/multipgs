@@ -28,7 +28,7 @@
     "sumstat_r2_max": "0.4983",
     "sumstat_r2_min": "0.4973"
   },
-  "input_digest_sha256": "ea5ec47cac512410750d406c21369a7692426fc17c498e80d8dcc41a3f305274",
+  "input_digest_sha256": "ca4bd8bd4dca1f5b4ccbf7011ba46585cadc6d3b0a66801886d24611adffc363",
   "inputs": [
     ".github/workflows/ci.yml",
     ".gitignore",
@@ -97,8 +97,8 @@
     "multipgs/_coord.py",
     "multipgs/_evaluate.py",
     "multipgs/_gram.py",
-    "multipgs/_ldpred3_compat.py",
     "multipgs/_moments.py",
+    "multipgs/_numba.py",
     "multipgs/_pumas.py",
     "multipgs/_stats.py",
     "multipgs/_validate.py",
@@ -124,6 +124,7 @@
     "tests/test_cli.py",
     "tests/test_coord.py",
     "tests/test_docs.py",
+    "tests/test_ecosystem.py",
     "tests/test_fetch.py",
     "tests/test_meta.py",
     "tests/test_metrics.py",
@@ -134,7 +135,7 @@
     "tests/test_sumstat.py",
     "tests/test_sumstat_core_contracts.py"
   ],
-  "package_version": "0.3.3",
+  "package_version": "0.3.4.dev0",
   "plots": {
     "fit_best_single": "(A,0.08169)(B,0.20177)(C,0.08925)(D,0.22703)(E,0.09785)(F,0.24406)(G,0.08094)(H,0.20603)",
     "fit_multi": "(A,0.16985)(B,0.43249)(C,0.15522)(D,0.41961)(E,0.17398)(F,0.43857)(G,0.16131)(H,0.41576)",
@@ -155,10 +156,10 @@
     "real_meta_direct": "(sqrtN,0.16416)(expected,0.17729)"
   },
   "schema_version": 1,
-  "source_revision": "ca16e45e0cfb",
+  "source_revision": "0ba63d4ef763",
   "tests": {
-    "count": 400,
-    "ldpred3": "0.4.7",
+    "count": 416,
+    "ldpred3": "0.5.0.dev1",
     "numpy": "1.26.4",
     "pytest": "9.1.1",
     "python": "3.10.20",
