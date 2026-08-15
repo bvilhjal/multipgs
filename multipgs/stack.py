@@ -75,6 +75,7 @@ from ._cmsa import (
     _merge_solver_info,
     _nested_cv_assessment,
 )
+from ._numba import warn_no_numba
 from ._stats import (
     _gaussian_stats,
     _gaussian_stats_at_origin,
@@ -398,6 +399,7 @@ def multi_pgs_fit(scores, y, *, covar=None, family="gaussian", alpha=1.0,
     -------
     MultiPGSFit
     """
+    warn_no_numba()
     if family not in _FAMILIES:
         raise ValueError(f"family must be one of {_FAMILIES}, got {family!r}")
 

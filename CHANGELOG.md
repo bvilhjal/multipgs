@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- `multi_pgs_fit` and `multi_pgs_sumstats` warn once per process when the
+  pure-Python no-Numba fallback is active (`multipgs._numba.warn_no_numba`):
+  the NumPy solver twins compute the same answers but much slower, and the
+  fallback was previously silent.
+- Panel construction against one target inherits LDpred3's per-variant-table
+  harmonisation index cache (LDpred3 changelog), so `panel_from_catalog` no
+  longer rebuilds the O(variants) matching index per scoring file.
 - Began the 0.3.4 development line, coordinated with LDpred3 0.5 and Bipred
   0.3.9. Real cache-to-GWAS alignment now passes LDpred3's actual
   `VariantTable`, and dense score panels remain dense during Gram and

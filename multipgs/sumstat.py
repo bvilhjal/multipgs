@@ -137,6 +137,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from . import _coord
+from ._numba import warn_no_numba
 from ._align import align_to_reference
 from ._evaluate import REGIMES, SumstatEval, evaluate_sumstat
 from ._gram import (
@@ -463,6 +464,7 @@ def multi_pgs_sumstats(weights_ld, z, ld, *, weights_gwas=None,
     -------
     SumstatFit
     """
+    warn_no_numba()
     if weights_gwas is None:
         raise ValueError(
             "weights_gwas is required separately from weights_ld: c uses GWAS "
