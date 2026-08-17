@@ -1,8 +1,17 @@
-"""Optional Numba decorators used by Multipgs' own numerical kernels."""
+"""Optional Numba decorators used by Multipgs' own numerical kernels.
+
+The decorators, ``prange`` and ``HAVE_NUMBA`` are LDpred3's, imported from
+its published ``ldpred3.shim`` code-level surface: one implementation across
+the sibling packages instead of a private copy of the same try/except shim.
+``warn_no_numba`` stays local — its message names multipgs' own kernels and
+extras — but shares the once-per-process semantics.
+"""
 
 from __future__ import annotations
 
 import warnings
+
+from ldpred3.shim import HAVE_NUMBA, _jit_nogil, _jit_parallel, prange
 
 __all__ = ["HAVE_NUMBA", "_jit_nogil", "_jit_parallel", "prange",
            "warn_no_numba"]
@@ -27,24 +36,3 @@ def warn_no_numba():
         "fallbacks; large stacking fits and Gram builds can be much slower. "
         "Install Numba (the [fast] extra) to restore the compiled paths.",
         RuntimeWarning, stacklevel=2)
-
-try:
-    from numba import njit as _njit, prange
-
-    HAVE_NUMBA = True
-
-    def _jit_nogil(func):
-        return _njit(cache=True, nogil=True)(func)
-
-    def _jit_parallel(func):
-        return _njit(cache=True, parallel=True)(func)
-
-except ImportError:  # pragma: no cover - exercised by the no-Numba CI leg
-    HAVE_NUMBA = False
-    prange = range
-
-    def _jit_nogil(func):
-        return func
-
-    def _jit_parallel(func):
-        return func
