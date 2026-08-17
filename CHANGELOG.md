@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Panel constructors and `ScorePanel` itself reject duplicate stringified
+  score ids. `index_of` and `select` share that stringified lookup and fail
+  when an id is not unique, instead of first-hit versus last-wins.
+- Headerless CLI tables with three or more columns are `FID IID <values...>`,
+  including numeric PLINK identifiers. IID is no longer promoted into the
+  design matrix.
+- Binomial coordinate descent uses the same shared `max_iter` sweep budget as
+  the Gaussian Gram path. `on_error="skip"` now covers harmonisation failures,
+  and catalog / weight / sumstat directory scans use route-specific suffixes.
+- `align_to_reference` wraps a mapping variant table into an ldpred3
+  `VariantTable` before calling `harmonize`.
 - `multipgs/_numba.py` now binds its Numba decorators (`_jit_nogil`,
   `_jit_parallel`, `prange`, `HAVE_NUMBA`) from LDpred3's new public
   `ldpred3.shim` code-level surface instead of owning a duplicate of the same

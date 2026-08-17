@@ -255,6 +255,28 @@ def test_gaussian_batch_reports_per_repeat_iteration_exhaustion():
     assert not np.any(info["converged_path"])
 
 
+def test_binomial_max_iter_is_a_total_sweep_budget(monkeypatch):
+    calls = 0
+
+    def never_converges(*args):
+        nonlocal calls
+        calls += 1
+        return 1.0
+
+    monkeypatch.setattr(_coord, "_sweep_wls", never_converges)
+    X = np.array([[-1.0], [-0.5], [0.5], [1.0]])
+    y = np.array([0.0, 0.0, 1.0, 1.0])
+    _, _, n_fitted, info = _coord.enet_path_binomial(
+        X, y, pf=np.ones(1), alpha=1.0, lambdas=np.array([0.0]),
+        tol=1e-30, irls_tol=1e-30, max_iter=3, irls_max=1,
+        return_info=True)
+
+    assert n_fitted == 1
+    assert calls == 3
+    assert info["converged"] is False
+    assert info["n_coordinate_descent_exhausted"] == 1
+
+
 def test_binomial_path_optionally_reports_iteration_exhaustion():
     X = np.array([[-1.0], [-0.5], [0.5], [1.0]])
     y = np.array([0.0, 0.0, 1.0, 1.0])

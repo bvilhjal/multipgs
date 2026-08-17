@@ -2,7 +2,37 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 import numpy as np
+
+
+def _as_variant_table(variants):
+    """Accept an ldpred3 ``VariantTable`` or wrap a mapping with the same keys.
+
+    ``ldpred3.harmonize`` needs attribute access (``variants.a1``,
+    ``len(variants)``). A catalog union mapping is converted once here.
+    """
+    if all(hasattr(variants, name)
+           for name in ("id", "chrom", "pos", "a1", "a2")):
+        return variants
+    try:
+        ids = variants["id"]
+        chrom = variants["chrom"]
+        pos = variants["pos"]
+        a1 = variants["a1"]
+        a2 = variants["a2"]
+    except (TypeError, KeyError, IndexError) as exc:
+        raise TypeError(
+            "variants must be an ldpred3 VariantTable or a mapping with "
+            "id, chrom, pos, a1 and a2") from exc
+    from ldpred3.genotype_model import VariantTable
+    n = len(np.asarray(ids).ravel())
+    cm = (variants["cm"] if isinstance(variants, Mapping) and "cm" in variants
+          else np.zeros(n))
+    return VariantTable(
+        chrom=np.asarray(chrom), id=np.asarray(ids), cm=np.asarray(cm),
+        pos=np.asarray(pos), a1=np.asarray(a1), a2=np.asarray(a2))
 
 
 def align_to_reference(scoring_files, variants, *, sd=None, af=None,
@@ -22,9 +52,10 @@ def align_to_reference(scoring_files, variants, *, sd=None, af=None,
     Parameters
     ----------
     scoring_files : sequence of str or ScoringFile
-    variants : mapping
+    variants : VariantTable or mapping
         The LD reference's variant table, with ``id chrom pos a1 a2``, in the
-        reference's own order — the row order of ``D``.
+        reference's own order — the row order of ``D``. A mapping is wrapped
+        into an ldpred3 ``VariantTable`` before harmonisation.
     sd : array_like, optional
         Empirical dosage standard deviation per reference variant. Preferred.
     af : array_like, optional
@@ -46,10 +77,8 @@ def align_to_reference(scoring_files, variants, *, sd=None, af=None,
     if on_error not in ("raise", "skip"):
         raise ValueError(f"on_error must be 'raise' or 'skip', got {on_error!r}")
 
-    # A reference variant table is either ldpred3's VariantTable (attributes)
-    # or the plain mapping multipgs.panel builds for a catalog union.
-    ids = variants.id if hasattr(variants, "id") else variants["id"]
-    n_variants = len(np.asarray(ids, dtype=object).ravel())
+    variants = _as_variant_table(variants)
+    n_variants = len(variants)
     scale_sd = None
     scale_source = None
     if sd is not None:

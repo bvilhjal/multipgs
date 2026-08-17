@@ -488,7 +488,9 @@ def enet_path_binomial(X, y, *, pf, alpha, lambdas, beta_init=None,
 
     ``X`` should already be standardized and ``y`` coded 0/1. ``beta_init`` and
     ``b0_init`` warm-start the first penalty, which is what lets a caller walk
-    a long grid in blocks without paying to re-descend it. Returns
+    a long grid in blocks without paying to re-descend it. ``max_iter`` is a
+    shared coordinate-descent sweep budget per penalty (full and active-set
+    sweeps together), matching :func:`_path_gram`. Returns
     ``(intercepts, coefs, n_fitted)``. With ``return_info=True``, append a
     mapping that counts coordinate-descent and IRLS iteration exhaustion.
     """
@@ -536,12 +538,14 @@ def enet_path_binomial(X, y, *, pf, alpha, lambdas, beta_init=None,
             wsum = float(np.sum(w))
             eta_old = eta.copy()
             cd_converged = False
-            for _outer in range(max_iter):
+            sweeps = 0
+            while sweeps < max_iter:
                 shift = float(np.dot(w, res)) / wsum
                 b0 += shift
                 res -= shift
                 m = _sweep_wls(X, w, res, beta, xtwx, pf, l1, l2,
                                allidx, K, n)
+                sweeps += 1
                 if max(m, (wsum / n) * shift * shift) < tol:
                     cd_converged = True
                     break
@@ -550,12 +554,13 @@ def enet_path_binomial(X, y, *, pf, alpha, lambdas, beta_init=None,
                     if beta[j] != 0.0 or pf[j] <= 0.0:
                         act[n_act] = j
                         n_act += 1
-                for _inner in range(max_iter):
+                while sweeps < max_iter:
                     shift = float(np.dot(w, res)) / wsum
                     b0 += shift
                     res -= shift
                     m = _sweep_wls(X, w, res, beta, xtwx, pf, l1, l2,
                                    act, n_act, n)
+                    sweeps += 1
                     if max(m, (wsum / n) * shift * shift) < tol:
                         break
             if not cd_converged:

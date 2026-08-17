@@ -161,6 +161,10 @@ class ScorePanel:
     meta: list = field(default_factory=list)
     log: dict = field(default_factory=dict)
 
+    def __post_init__(self):
+        self.score_ids = np.asarray(self.score_ids, dtype=object).ravel()
+        _require_unique_score_ids(self.score_ids)
+
     def __len__(self):
         return int(self.scores.shape[0])
 
@@ -169,11 +173,17 @@ class ScorePanel:
         return int(self.scores.shape[1])
 
     def index_of(self, score_id):
-        """Column index of ``score_id``."""
-        hits = np.flatnonzero(np.asarray(self.score_ids, dtype=object)
-                              == score_id)
-        if hits.size == 0:
+        """Column index of ``score_id``.
+
+        Ids are compared after ``str(...)``, matching :meth:`select`. A
+        duplicate id is an error, not the first hit.
+        """
+        key = str(score_id)
+        hits = [i for i, sid in enumerate(self.score_ids) if str(sid) == key]
+        if not hits:
             raise KeyError(f"no score {score_id!r} in this panel")
+        if len(hits) > 1:
+            raise ValueError(f"score id {key!r} is not unique")
         return int(hits[0])
 
     def select(self, columns):
@@ -344,6 +354,19 @@ def _require_unique_keys(keys, name):
             "alignment would be ambiguous")
 
 
+def _require_unique_score_ids(ids, *, what="score id", sources=None):
+    """Reject duplicate stringified score identifiers."""
+    first = {}
+    for i, sid in enumerate(np.asarray(ids, dtype=object).ravel()):
+        key = str(sid)
+        if key in first:
+            extra = ""
+            if sources is not None:
+                extra = f" ({sources[first[key]]} and {sources[i]})"
+            raise ValueError(f"duplicate {what} {key!r}{extra}")
+        first[key] = i
+
+
 # ---------------------------------------------------------------------------
 # From PGS Catalog scoring files
 # ---------------------------------------------------------------------------
@@ -357,7 +380,8 @@ def panel_from_catalog(paths, plink, *, sample_path=None, drop_ambiguous=True,
     Parameters
     ----------
     paths : str or sequence of str
-        Scoring files, or a directory to take ``*.txt``/``*.txt.gz`` from.
+        Scoring files, or a directory of ``*.txt``/``*.tsv`` (gzipped forms
+        included). ``*.weights`` files in the same directory are ignored.
     plink : str
         PLINK prefix, or a ``.bgen`` path. Both formats are streamed over the
         union of matched variants in memory-bounded blocks.
@@ -373,7 +397,8 @@ def panel_from_catalog(paths, plink, *, sample_path=None, drop_ambiguous=True,
         Drop a score that matches fewer than this many target variants; a score
         resting on three variants is noise in a stack.
     on_error : {"raise", "skip"}
-        What to do when a file fails to parse or matches nothing.
+        What to do when a file fails to parse, cannot be aligned, or matches
+        nothing.
     block : int, optional
         Variants per streamed block. The default keeps a block near 64 MB.
     progress : callable, optional
@@ -389,11 +414,11 @@ def panel_from_catalog(paths, plink, *, sample_path=None, drop_ambiguous=True,
     """
     from ldpred3.genotype_io import read_bed, read_bim, read_fam, strip_ext
 
-    from .catalog import read_scoring_file
+    from .catalog import harmonize_scoring_file, read_scoring_file
 
     if on_error not in ("raise", "skip"):
         raise ValueError("on_error must be 'raise' or 'skip'")
-    files = _expand_paths(paths)
+    files = _expand_paths(paths, _CATALOG_SUFFIXES)
     if not files:
         raise ValueError(f"no scoring files found in {paths!r}")
 
@@ -423,9 +448,14 @@ def panel_from_catalog(paths, plink, *, sample_path=None, drop_ambiguous=True,
             continue
         if progress is not None:
             progress(i, len(files), sf.pgs_id)
-        from .catalog import harmonize_scoring_file
-        var_index, w, log = harmonize_scoring_file(
-            sf, variants, drop_ambiguous=drop_ambiguous)
+        try:
+            var_index, w, log = harmonize_scoring_file(
+                sf, variants, drop_ambiguous=drop_ambiguous)
+        except Exception:
+            if on_error == "raise":
+                raise
+            n_failed += 1
+            continue
         if var_index.size < min_matched:
             msg = (f"{sf.pgs_id}: only {var_index.size} of {len(sf)} variants "
                    f"matched the target (min_matched={min_matched})")
@@ -440,6 +470,9 @@ def panel_from_catalog(paths, plink, *, sample_path=None, drop_ambiguous=True,
         meta["path"] = str(path)
         metas.append(meta)
         per_score.append((var_index, w))
+
+    _require_unique_score_ids(
+        score_ids, sources=[m["path"] for m in metas])
 
     if not per_score:
         raise ValueError(f"none of the {len(files)} scoring files produced a "
@@ -498,9 +531,18 @@ def _smallest_index_dtype(size):
     raise ValueError("variant union is too large to index")
 
 
-def _expand_paths(paths, suffixes=(".txt", ".txt.gz", ".tsv", ".tsv.gz",
-                                   ".weights")):
-    """One path, a directory, or a mix of both, to a flat list of files."""
+_CATALOG_SUFFIXES = (".txt", ".txt.gz", ".tsv", ".tsv.gz")
+_WEIGHT_SUFFIXES = (".weights",)
+_SUMSTAT_SUFFIXES = (".tsv", ".tsv.gz", ".txt", ".txt.gz",
+                     ".sumstats", ".sumstats.gz")
+
+
+def _expand_paths(paths, suffixes):
+    """One path, a directory, or a mix of both, to a flat list of files.
+
+    Explicit files are kept regardless of suffix. Directory listings keep only
+    ``suffixes``, so a mixed work directory is not scanned as every route.
+    """
     if isinstance(paths, (str, os.PathLike)):
         paths = [paths]
     skip = {"metadata.tsv", "n_eff.tsv"}
@@ -863,7 +905,7 @@ def panel_from_sumstats(sumstats, plink, *, score_ids=None, ld_cache=None,
     elif hasattr(sumstats, "items"):
         items = [(sid, path, {}) for sid, path in sumstats.items()]
     else:
-        paths = [str(p) for p in _expand_paths(sumstats)]
+        paths = [str(p) for p in _expand_paths(sumstats, _SUMSTAT_SUFFIXES)]
         if score_ids is None:
             items = [(_stem(p), p, {}) for p in paths]
         else:
@@ -874,6 +916,9 @@ def panel_from_sumstats(sumstats, plink, *, score_ids=None, ld_cache=None,
             items = [(sid, path, {}) for sid, path in zip(ids, paths)]
     if not items:
         raise ValueError("no summary-statistic files given")
+    _require_unique_score_ids(
+        [sid for sid, _, _ in items],
+        sources=[path for _, path, _ in items])
 
     if n_jobs > 1 and len(items) > 1 and ld_prefix is not None \
             and ld_cache is None:
@@ -1309,7 +1354,7 @@ def panel_from_weights(paths, plink, *, sample_path=None, drop_ambiguous=True,
 
     if on_error not in ("raise", "skip"):
         raise ValueError("on_error must be 'raise' or 'skip'")
-    files = _expand_paths(paths)
+    files = _expand_paths(paths, _WEIGHT_SUFFIXES)
     if not files:
         raise ValueError(f"no weight files found in {paths!r}")
 
@@ -1344,7 +1389,13 @@ def panel_from_weights(paths, plink, *, sample_path=None, drop_ambiguous=True,
                       oa=wt.a2, beta=wt.weight, se=np.ones(m),
                       n_eff=np.ones(m), eaf=np.full(m, np.nan),
                       info=np.full(m, np.nan))
-        h = harmonize(ss, variants, drop_ambiguous=drop_ambiguous)
+        try:
+            h = harmonize(ss, variants, drop_ambiguous=drop_ambiguous)
+        except Exception:
+            if on_error == "raise":
+                raise
+            n_failed += 1
+            continue
         if len(h) < min_matched:
             msg = (f"{sid}: only {len(h)} of {m} variants matched the target "
                    f"(min_matched={min_matched})")
@@ -1366,6 +1417,9 @@ def panel_from_weights(paths, plink, *, sample_path=None, drop_ambiguous=True,
                       "has_scale": bool(wt.has_scale),
                       "harmonize_log": dict(h.log)})
         per_score.append((var_index, w))
+
+    _require_unique_score_ids(
+        score_ids, sources=[m["path"] for m in metas])
 
     if not per_score:
         raise ValueError(f"none of the {len(files)} weight files produced a "

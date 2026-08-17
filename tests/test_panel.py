@@ -107,6 +107,79 @@ def test_min_matched_rejects_a_thin_score(target):
                            min_matched=10_000, on_error="skip")
 
 
+def test_score_panel_rejects_duplicate_ids():
+    with pytest.raises(ValueError, match="duplicate score id"):
+        ScorePanel(
+            scores=np.zeros((2, 2)),
+            sample_fid=np.array(["a", "b"]),
+            sample_iid=np.array(["a", "b"]),
+            score_ids=np.array(["s", "s"]),
+            standardized=np.ones(2, dtype=bool))
+
+
+def test_index_of_and_select_share_stringified_unique_ids():
+    panel = _weight_panel([_weight_table("A", "G", 1.0),
+                           _weight_table("A", "G", 2.0)])
+    panel.score_ids = np.array([1, "two"], dtype=object)
+    assert panel.index_of(1) == 0
+    assert panel.index_of("1") == 0
+    assert list(panel.select(["two"]).score_ids) == ["two"]
+    panel.score_ids = np.array(["dup", "dup"], dtype=object)
+    with pytest.raises(ValueError, match="not unique"):
+        panel.index_of("dup")
+    with pytest.raises(ValueError, match="not unique"):
+        panel.select(["dup"])
+
+
+def test_catalog_rejects_duplicate_score_ids(target, tmp_path):
+    import shutil
+    a = tmp_path / "copy_a.txt"
+    b = tmp_path / "copy_b.txt"
+    shutil.copy(target["scoring_files"][0], a)
+    shutil.copy(target["scoring_files"][0], b)
+    with pytest.raises(ValueError, match="duplicate score id"):
+        panel_from_catalog([str(a), str(b)], target["prefix"])
+
+
+def test_expand_paths_uses_route_specific_suffixes(tmp_path):
+    import os
+    from multipgs.panel import (_CATALOG_SUFFIXES, _SUMSTAT_SUFFIXES,
+                                _WEIGHT_SUFFIXES, _expand_paths)
+
+    d = tmp_path / "mix"
+    d.mkdir()
+    (d / "PGS000001.txt").write_text("x", encoding="utf-8")
+    (d / "cad.weights").write_text("x", encoding="utf-8")
+    (d / "trait.sumstats").write_text("x", encoding="utf-8")
+    catalog = [os.path.basename(p) for p in _expand_paths(d, _CATALOG_SUFFIXES)]
+    weights = [os.path.basename(p) for p in _expand_paths(d, _WEIGHT_SUFFIXES)]
+    sumstats = [os.path.basename(p) for p in _expand_paths(d, _SUMSTAT_SUFFIXES)]
+    assert catalog == ["PGS000001.txt"]
+    assert weights == ["cad.weights"]
+    assert "cad.weights" not in sumstats
+    assert "trait.sumstats" in sumstats
+
+
+def test_catalog_skips_harmonize_failures(target, monkeypatch):
+    from multipgs import catalog
+
+    real = catalog.harmonize_scoring_file
+
+    def boom(sf, *args, **kwargs):
+        if str(sf.pgs_id) == "PGS000001":
+            raise RuntimeError("align failed")
+        return real(sf, *args, **kwargs)
+
+    monkeypatch.setattr(catalog, "harmonize_scoring_file", boom)
+    with pytest.raises(RuntimeError, match="align failed"):
+        panel_from_catalog(target["scoring_files"], target["prefix"])
+    panel = panel_from_catalog(target["scoring_files"], target["prefix"],
+                               on_error="skip")
+    assert panel.n_scores == 3
+    assert panel.log["n_failed"] == 1
+    assert "PGS000001" not in [str(s) for s in panel.score_ids]
+
+
 def test_unreadable_file_can_be_skipped(target, tmp_path):
     bad = tmp_path / "broken.txt"
     bad.write_text("#pgs_id=BAD\nnot_a_header_we_know\n", encoding="utf-8")

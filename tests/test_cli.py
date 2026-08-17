@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from multipgs import simulate_target
-from multipgs.cli import _read_score_vector, main
+from multipgs.cli import _read_score_vector, _read_table, main
 
 
 def _write_pheno(path, iid, values, name="PHENO"):
@@ -266,6 +266,24 @@ def test_fit_penalty_factors_are_aligned_by_score_id(tmp_path, monkeypatch):
     assert captured["assessment_folds"] == 3
 
 
+def test_headerless_numeric_fid_iid_stays_a_key(tmp_path):
+    path = tmp_path / "pheno.tsv"
+    path.write_text("1\t1\t0.5\n2\t2\t1.5\n", encoding="utf-8")
+    keys, values, columns = _read_table(str(path), name="pheno")
+    assert list(keys) == [("1", "1"), ("2", "2")]
+    assert values.shape == (2, 1)
+    assert values[:, 0].tolist() == [0.5, 1.5]
+    assert columns == ["col0"]
+
+
+def test_headerless_two_column_table_is_iid_plus_value(tmp_path):
+    path = tmp_path / "pheno.tsv"
+    path.write_text("1\t0.5\n2\t1.5\n", encoding="utf-8")
+    keys, values, _ = _read_table(str(path), name="pheno")
+    assert list(keys) == [("1", "1"), ("2", "2")]
+    assert values[:, 0].tolist() == [0.5, 1.5]
+
+
 def test_duplicate_individual_and_score_ids_are_rejected(tmp_path):
     duplicate_individual = tmp_path / "duplicate-individual.tsv"
     duplicate_individual.write_text(
@@ -296,8 +314,9 @@ def test_fit_rejects_duplicate_ids_in_npz_panel(tmp_path, duplicate):
         panel = ScorePanel(
             scores=np.zeros((2, 2)), sample_fid=np.array(["f1", "f2"]),
             sample_iid=np.array(["i1", "i2"]),
-            score_ids=np.array(["s", "s"]),
+            score_ids=np.array(["s", "t"]),
             standardized=np.ones(2, dtype=bool))
+        panel.score_ids = np.array(["s", "s"])
         message = "duplicate score id"
     panel_path = tmp_path / f"duplicate-{duplicate}.npz"
     save_panel(panel, panel_path)

@@ -97,7 +97,8 @@ on the allele-count scale and `log["standardized"]` is false; it is suitable for
 
 `ScorePanel` methods: `.select(columns)` by index, id or mask; `.align(other)` to
 match two panels on `FID:IID`; `.summary()` for matched-variant and weight-mass
-counts; `.index_of(score_id)`.
+counts; `.index_of(score_id)`. Construction requires unique stringified score
+ids; `.index_of` and `.select` use that same lookup.
 
 ## Scoring files
 

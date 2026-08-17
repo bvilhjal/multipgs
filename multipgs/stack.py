@@ -653,8 +653,23 @@ def multi_pgs_fit(scores, y, *, covar=None, family="gaussian", alpha=1.0,
         center=center, scale=scale, score_ids=score_ids, covar_ids=covar_ids,
         family=family, folds=fits, log=log)
 
+def _unique_score_lookup(ids):
+    """Map stringified score ids to a unique column index."""
+    lookup = {}
+    for i, value in enumerate(np.asarray(ids, dtype=object).ravel()):
+        key = str(value)
+        if key in lookup:
+            raise ValueError(f"score id {key!r} is not unique")
+        lookup[key] = i
+    return lookup
+
+
 def _resolve_columns(sel, ids, K):
-    """Turn indices, ids or a boolean mask into an integer index array."""
+    """Turn indices, ids or a boolean mask into an integer index array.
+
+    Integer arrays are positional. Everything else is a stringified id, and
+    that id must name exactly one column.
+    """
     sel = np.asarray(sel)
     if sel.dtype == bool:
         if sel.shape != (K,):
@@ -664,7 +679,7 @@ def _resolve_columns(sel, ids, K):
         if np.any(sel < 0) or np.any(sel >= K):
             raise ValueError("score index out of range")
         return sel.astype(int)
-    lookup = {str(v): i for i, v in enumerate(ids)}
+    lookup = _unique_score_lookup(ids)
     try:
         return np.array([lookup[str(v)] for v in np.atleast_1d(sel)], dtype=int)
     except KeyError as exc:

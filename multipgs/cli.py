@@ -30,8 +30,10 @@ def _read_table(path, *, value_columns=None, name="file",
     """Read a whitespace/TSV table keyed by ``FID IID`` or ``IID``.
 
     Returns ``(keys, values, columns)``. A header is detected by its first
-    field being FID, IID, ID, SCORE or SCORE_ID (case-insensitive); without
-    one, two leading non-numeric columns are read as FID/IID and one as IID.
+    field being FID, IID, ID, SCORE or SCORE_ID (case-insensitive). Without
+    one, two columns are ``IID`` plus a value; three or more are
+    ``FID IID <values...>``. Numeric PLINK identifiers stay keys — they are
+    not promoted into the design matrix.
     """
     rows = []
     header = None
@@ -53,7 +55,7 @@ def _read_table(path, *, value_columns=None, name="file",
     if header is not None:
         has_fid = header[0].upper() == "FID"
     else:
-        has_fid = width > 2 and not _is_number(rows[0][1])
+        has_fid = width > 2
     if require_single_id and has_fid:
         raise SystemExit(f"{name}: {path} must use one SCORE/ID column, not "
                          "FID IID")
@@ -118,14 +120,6 @@ def _object_vector(values):
     out = np.empty(len(values), dtype=object)
     out[:] = values
     return out
-
-
-def _is_number(text):
-    try:
-        float(text)
-    except (TypeError, ValueError):
-        return False
-    return True
 
 
 def _align(*tables):
@@ -321,7 +315,10 @@ def _cmd_panel(args):
 def _load_scores(args):
     if args.panel:
         from .panel import read_panel
-        panel = read_panel(args.panel)
+        try:
+            panel = read_panel(args.panel)
+        except ValueError as exc:
+            raise SystemExit(f"--panel: {exc}") from exc
         fid = np.asarray(panel.sample_fid).astype(str)
         iid = np.asarray(panel.sample_iid).astype(str)
         pairs = list(zip(fid, iid))

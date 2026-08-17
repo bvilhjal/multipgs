@@ -393,6 +393,17 @@ def test_align_to_reference_converts_catalog_weights_to_the_standardized_scale(
         bad_sd[0] = np.nan
         align_to_reference(target["scoring_files"], variants, sd=bad_sd)
 
+    mapping = {
+        "id": np.asarray(variants.id),
+        "chrom": np.asarray(variants.chrom),
+        "pos": np.asarray(variants.pos),
+        "a1": np.asarray(variants.a1),
+        "a2": np.asarray(variants.a2),
+    }
+    mapped, _, _ = align_to_reference(target["scoring_files"][:1], mapping)
+    assert len(mapped) == 1
+    assert mapped[0][0].size == raw[0][0].size
+
 
 # ---------------------------------------------------------------------------
 # Evaluation from an independent GWAS
