@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `multipgs/_numba.py` now binds its Numba decorators (`_jit_nogil`,
+  `_jit_parallel`, `prange`, `HAVE_NUMBA`) from LDpred3's new public
+  `ldpred3.shim` code-level surface instead of owning a duplicate of the same
+  try/except shim — one implementation across the sibling packages.
+  `warn_no_numba` stays local (its message names multipgs' own kernels), and
+  the LDpred3 floor advances to `>=0.5.3.dev0,<0.6` for the new module.
 - `multi_pgs_fit` and `multi_pgs_sumstats` warn once per process when the
   pure-Python no-Numba fallback is active (`multipgs._numba.warn_no_numba`):
   the NumPy solver twins compute the same answers but much slower, and the
