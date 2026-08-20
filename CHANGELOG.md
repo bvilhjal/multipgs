@@ -13,6 +13,32 @@
   and catalog / weight / sumstat directory scans use route-specific suffixes.
 - `align_to_reference` wraps a mapping variant table into an ldpred3
   `VariantTable` before calling `harmonize`.
+- **Summary-statistic QC defaults now applied by LDpred3 on multipgs' behalf.**
+  `panel_from_catalog` and the other fitting entry points call
+  `ldpred3.run_ldpred3_prs`, and LDpred3 0.5.3 changed three of its defaults.
+  multipgs passes none of them explicitly, so every panel fitted since the
+  `>=0.5.3.dev0` floor inherits all three, with no change to multipgs' own
+  code:
+
+  1. `impute_n=True` — per-variant effective sample sizes are imputed from the
+     standard errors and reference allele frequencies rather than the reported
+     total being reused for every variant.
+  2. The low-N filter is anchored on the **median** per-variant N rather than
+     the file maximum, keeping variants at `N >= 0.7 * median(N)`. On a
+     summary-statistic file that meta-analyses two arms of unequal size, the
+     old max anchor discarded most of the file; a measured two-arm case
+     retained 300/300 variants where the max anchor retained 60/300.
+  3. `gc_correct=True` — where LD-score regression establishes an intercept
+     significantly below one, the standard errors are rescaled by
+     `sqrt(intercept)` to undo genomic control. This changes `beta/se`, and so
+     every p-value-keyed filter downstream of it.
+
+  Weights and scores therefore move relative to multipgs 0.3.3 for the same
+  inputs. Pass the corresponding keyword through the `run_ldpred3_prs` kwargs
+  to restore the previous behaviour. See the LDpred3 changelog for the
+  derivations; this entry exists because the defaults are documented there and
+  the behaviour change lands here.
+
 - `multipgs/_numba.py` now binds its Numba decorators (`_jit_nogil`,
   `_jit_parallel`, `prange`, `HAVE_NUMBA`) from LDpred3's new public
   `ldpred3.shim` code-level surface instead of owning a duplicate of the same
