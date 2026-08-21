@@ -53,6 +53,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import zlib
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -125,6 +126,9 @@ def _request_json(url, *, cache_dir=None, timeout=30, retries=3, pause=_PAUSE):
     Retries 429 and 5xx and transport errors; a 4xx other than 429 is the
     caller's mistake and is raised immediately rather than hammered.
     """
+    retries = int(retries)
+    if retries < 1:
+        raise ValueError("retries must be at least 1")
     path = None
     if cache_dir:
         os.makedirs(cache_dir, exist_ok=True)
@@ -186,9 +190,10 @@ def _n_eff_from_samples(samples):
     """Effective sample size summed over a score's discovery sample sets.
 
     Case/control sets contribute ``4/(1/cases + 1/controls)``; sets reporting
-    only a total contribute that total. A set reporting neither contributes
-    nothing, and a score with no usable set at all gets ``nan`` rather than
-    zero — zero is a number a downstream gate would happily compare against.
+    only a total contribute that total. A set reporting only cases, only
+    controls, or neither contributes nothing, and a score with no usable set
+    at all gets ``nan`` rather than zero — zero is a number a downstream gate
+    would happily compare against.
     """
     from ldpred3 import n_eff_case_control
 
@@ -573,9 +578,12 @@ def _verify_scoring_file(path, pgs_id):
                 has_valid_row = has_id or has_position
                 # Keep reading to EOF: an intact header proves nothing about
                 # an interrupted body.
-    except (OSError, EOFError, gzip.BadGzipFile) as exc:
+    except (OSError, EOFError, zlib.error) as exc:
+        # zlib.error covers a corrupt (not merely truncated) deflate stream;
+        # BadGzipFile and EOFError cover bad or short containers. OSError
+        # subsumes the former, but naming it documents the intent.
         raise ValueError(f"{path} is not a readable gzip file — the download "
-                         f"was probably truncated: {exc}") from exc
+                         f"was probably truncated or corrupted: {exc}") from exc
 
     got = header.get("pgs_id", "")
     if not got:

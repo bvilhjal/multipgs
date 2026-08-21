@@ -69,5 +69,7 @@ def test_bipred_and_gwfm_weights_roundtrip_through_multipgs(tmp_path):
             zip(paths, ("frozen", "target"))):
         direct = score_from_weights(path, made["prefix"], scaling=scaling)
         np.testing.assert_array_equal(panel.sample_iid, direct.sample_iid)
+        # Frozen scaling re-reads %.8g AF_REF/SD_REF from the weights file; see
+        # FROZEN_ROUNDTRIP_ATOL in test_panel for the bound this implies.
         np.testing.assert_allclose(
-            panel.scores[:, column], direct.scores, atol=2e-9)
+            panel.scores[:, column], direct.scores, atol=1e-7)

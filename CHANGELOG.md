@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+- `multipgs fit` and `multipgs evaluate` treat `-9` (and any other numeric
+  code passed via the new `--missing-code` option) as a missing value in
+  `--pheno`, `--covar` and `--scores`: such rows are dropped and counted like
+  any other non-finite input instead of scored as data. Pass
+  `--missing-code none` to restore the old behaviour.
+- Header detection in CLI tables now requires every trailing field of the
+  candidate header row to be non-numeric, so an individual literally keyed
+  `ID`/`FID` in a headerless file is no longer silently swallowed as a header.
+- `save_panel`, `load_panel` and `read_panel` agree on the `.npz` suffix:
+  saving a path without one writes (and reports) `path.npz`, and reading a
+  suffix-less path finds it. TSV round trips document that scale flags are
+  not preserved.
+- `panel --out-panel` reports the path actually written, and `panel` warns
+  when an option has no effect for the chosen source branch (for example
+  `--standardize` with `--weights`). The `--ld-prefix`/`--ld-cache`
+  requirement message names `--traits` as well as `--sumstats`.
+- `_verify_scoring_file` also converts corrupt (not merely truncated) gzip
+  streams into its readable-gzip error instead of leaking `zlib.error`.
+- `_request_json` rejects `retries=0` explicitly instead of raising
+  `NameError` from an empty retry loop.
+- `read_scoring_file` judges harmonized-coordinate provenance across rsID,
+  chromosome and position together, recording `mixed_coordinate_warning` when
+  they disagree, rather than keying on the position column alone.
+- `combine_weights` skips zero-weight entries before per-variant
+  reconciliation; streamed target scoring lowers the block-size floor so the
+  ~64 MB dosage budget holds at biobank sample sizes.
+- The guide states that target-cohort AF/SD/imputation means are computed on
+  all individuals including future CV folds (unsupervised transductive use).
+- Frozen-scoring round-trip tests compare against the precision the weights
+  file format guarantees (`%.8g`) instead of an in-memory tolerance.
 - Panel constructors and `ScorePanel` itself reject duplicate stringified
   score ids. `index_of` and `select` share that stringified lookup and fail
   when an id is not unique, instead of first-hit versus last-wins.

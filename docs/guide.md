@@ -125,6 +125,14 @@ survived. Losing 5% of a score's variants means very different things depending
 on whether they carried 0.1% or 40% of its weight. A score at 0.4 mass is
 usually a genome-build mismatch, not a hard problem with the data.
 
+One scope note on leakage: the target cohort's own allele frequencies, dosage
+SDs and missing-call imputation means are computed on **all** of it, including
+individuals who later become cross-validation folds. The phenotype never enters
+panel construction, so this is unsupervised transductive use — standard PRS
+practice and second-order for `cv_r2` — but it is why panel construction cannot
+leak outcome information while fold-internal fitting (the `missing` handling in
+`multi_pgs_fit`) deliberately re-learns its means inside each training set.
+
 Scores that match almost nothing are best dropped outright:
 
 ```python

@@ -596,7 +596,10 @@ def _accumulate_scores(per_score, n_samples, n_total, plink, *, standardize,
     af = np.zeros(m)
     sd = np.zeros(m)
     if block is None:
-        block = int(np.clip(_BLOCK_ELEMS // max(n_samples, 1), 64, 8192))
+        # The 16-variant floor keeps per-block overhead bounded on small
+        # targets while honouring the _BLOCK_ELEMS budget at biobank n: a
+        # larger floor (n x 64) would hold 256 MB of dosage at n = 500k.
+        block = int(np.clip(_BLOCK_ELEMS // max(n_samples, 1), 16, 8192))
     block = max(1, int(block))
 
     if is_bgen:
@@ -1661,9 +1664,9 @@ def combine_weights(panel, fit, *, path=None):
         pos = np.asarray(metadata["pos"])
         a1 = np.asarray(metadata["a1"], dtype=object)
         a2 = np.asarray(metadata["a2"], dtype=object)
-        for j in range(w.size):
-            if w[j] == 0.0:
-                continue
+        # Non-zero weights only: the per-variant reconciliation below is
+        # Python-level, so dense-but-mostly-zero tables should not pay for it.
+        for j in np.flatnonzero(w):
             q = j if index is None else int(index[j])
             e1, e2 = str(a1[q]).upper(), str(a2[q]).upper()
             # The unordered allele pair distinguishes multiallelic variants at
@@ -1801,9 +1804,18 @@ def write_panel(panel, path):
 
 
 def read_panel(path):
-    """Read a panel written by :func:`write_panel` or :func:`save_panel`."""
+    """Read a panel written by :func:`write_panel` or :func:`save_panel`.
+
+    A TSV carries the score matrix only, so ``standardized`` comes back
+    all-``False`` and weights/metadata are empty regardless of what the panel
+    had when written; use the ``.npz`` form (:func:`save_panel`) to preserve
+    them. The flags are currently consulted only by :func:`combine_weights`,
+    which refuses weightless panels outright.
+    """
     if str(path).endswith(".npz"):
         return load_panel(path)
+    if os.path.exists(str(path) + ".npz"):
+        return load_panel(str(path) + ".npz")
     fid, iid, rows = [], [], []
     with open(path, "r", encoding="utf-8") as fh:
         header = fh.readline().rstrip("\n").split("\t")
@@ -1828,7 +1840,8 @@ def read_panel(path):
         sample_iid=np.array(iid, dtype=object),
         score_ids=np.array(header[2:], dtype=object),
         standardized=np.zeros(K, dtype=bool), weights=[], meta=[],
-        log={"source": str(path)})
+        log={"source": str(path),
+             "standardized_unknown": "TSV carries no scale flags; assumed raw"})
 
 
 def _jsonable(obj):
@@ -1891,6 +1904,11 @@ def save_panel(panel, path):
         for key in ("id", "chrom", "pos", "a1", "a2", "af", "sd"):
             payload[f"vt_{t}_{key}"] = np.asarray(vt[key])
     payload["n_variant_tables"] = np.array([len(tables)], dtype=np.int32)
+    # numpy appends ".npz" itself; doing it here first keeps the returned and
+    # readable path identical to what lands on disk.
+    path = str(path)
+    if not path.endswith(".npz"):
+        path += ".npz"
     np.savez_compressed(path, **payload)
     return path
 
@@ -1901,6 +1919,9 @@ def load_panel(path):
     Panel files contain NumPy object arrays and therefore require pickle while
     loading. Pickle can execute code: load only files from a source you trust.
     """
+    path = str(path)
+    if not path.endswith(".npz") and os.path.exists(path + ".npz"):
+        path += ".npz"
     with np.load(path, allow_pickle=True) as z:
         fmt = int(z["format"][0]) if "format" in z else 0
         if fmt != _PANEL_FORMAT:

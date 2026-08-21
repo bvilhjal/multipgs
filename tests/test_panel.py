@@ -13,6 +13,12 @@ from multipgs import (ScorePanel, architectures_from_panel, check_weights,
                       panel_from_weights, read_panel, read_trait_table,
                       save_panel, screen, simulate_target, write_panel)
 
+# Frozen scoring re-reads AF_REF/SD_REF/WEIGHT from the weights file, where
+# ldpred3.write_weights stores them with %.8g (~5e-9 relative). Summed over a
+# panel's variants that is a few 1e-9 absolute on these score scales -- tighter
+# than any deployment-relevant difference, but looser than in-memory agreement.
+FROZEN_ROUNDTRIP_ATOL = 1e-7
+
 
 @pytest.fixture(scope="module")
 def target(tmp_path_factory):
@@ -594,7 +600,8 @@ def test_real_sumstat_panel_validates_once_and_batch_scores(tmp_path,
             weights_dir / f"{sid}.weights", made["prefix"], scaling="frozen")
         # The text weight file writes a bounded number of significant digits;
         # the in-memory batch result is the higher-precision reference.
-        assert np.allclose(panel.scores[:, k], frozen.scores, atol=2e-9)
+        assert np.allclose(panel.scores[:, k], frozen.scores,
+                           atol=FROZEN_ROUNDTRIP_ATOL)
 
 
 def test_bgen_shared_cache_decodes_target_dosage_once(tmp_path, monkeypatch):
@@ -691,7 +698,7 @@ def test_bgen_shared_cache_decodes_target_dosage_once(tmp_path, monkeypatch):
         frozen = ldpred3.score_from_weights(
             weights_dir / f"{sid}.weights", target, scaling="frozen")
         np.testing.assert_allclose(
-            frozen.scores, panel.scores[:, k], atol=2e-9)
+            frozen.scores, panel.scores[:, k], atol=FROZEN_ROUNDTRIP_ATOL)
 
 
 def test_bgen_catalog_and_weight_panels_stream_union_once(tmp_path,

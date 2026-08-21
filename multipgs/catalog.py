@@ -236,12 +236,23 @@ def read_scoring_file(path, *, prefer_harmonized=True, drop_non_additive=True):
                    dtype=np.int64)
     weight = np.array(ws, dtype=float)
 
+    # Coordinate provenance must be judged across every matched field, not
+    # position alone: a file pairing hm_pos with an original-build chr_name
+    # would otherwise inherit hmpos_build metadata it does not satisfy. The
+    # Catalog ships hm_* columns all-or-nothing, so disagreement signals a
+    # malformed or hand-edited header.
+    coordinate_used = [str(used[name]).startswith("hm_")
+                       for name in ("id", "chrom", "pos") if used[name]]
+    harmonized_columns = bool(coordinate_used) and all(coordinate_used)
     log = {"n_rows": n_read, "n_kept": int(weight.size),
            "n_non_additive": n_flagged, "n_unparsable_weight": n_bad_weight,
            "n_inferred_other_allele": n_inferred_oa,
            "columns_used": {k: v for k, v in used.items() if v},
-           "harmonized_columns": bool(used["pos"]
-                                      and used["pos"].startswith("hm_"))}
+           "harmonized_columns": harmonized_columns}
+    if coordinate_used and not harmonized_columns:
+        log["mixed_coordinate_warning"] = (
+            "some but not all of the rsID/chromosome/position columns are "
+            "harmonized; coordinates may mix genome builds")
     if log["harmonized_columns"]:
         log["build_used"] = (meta.get("hmpos_build")
                              or meta.get("harmonized_build")

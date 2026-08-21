@@ -26,7 +26,7 @@ import numpy as np
 
 
 def _read_table(path, *, value_columns=None, name="file",
-                require_single_id=False):
+                require_single_id=False, missing_codes=(-9.0,)):
     """Read a whitespace/TSV table keyed by ``FID IID`` or ``IID``.
 
     Returns ``(keys, values, columns)``. A header is detected by its first
@@ -34,7 +34,13 @@ def _read_table(path, *, value_columns=None, name="file",
     one, two columns are ``IID`` plus a value; three or more are
     ``FID IID <values...>``. Numeric PLINK identifiers stay keys — they are
     not promoted into the design matrix.
+
+    Values equal to an entry of ``missing_codes`` become NaN, so the row is
+    later dropped by :func:`_drop_missing` with a count instead of scored as
+    data. The default ``(-9.0,)`` follows the PLINK phenotype/covariate
+    convention; unparseable strings ("NA", empty) are always NaN.
     """
+    codes = tuple(float(c) for c in missing_codes)
     rows = []
     header = None
     with open(path, "r", encoding="utf-8") as fh:
@@ -45,8 +51,16 @@ def _read_table(path, *, value_columns=None, name="file",
             parts = line.split("\t") if "\t" in line else line.split()
             if header is None and parts[0].lstrip("#").upper() in (
                     "FID", "IID", "ID", "SCORE", "SCORE_ID"):
-                header = [p.lstrip("#") for p in parts]
-                continue
+                # A header names every column; a data row carries numbers in
+                # its value columns (the identifier columns may be strings).
+                # Requiring every trailing field to be unparseable stops an
+                # individual literally keyed ID/FID from being swallowed as
+                # a header in a headerless file. The residual risk runs the
+                # safe way: a misdetected row surfaces as NaN values or a
+                # duplicate-key error instead of dropping samples silently.
+                if all(not _is_float(p) for p in parts[1:]):
+                    header = [p.lstrip("#") for p in parts]
+                    continue
             rows.append(parts)
     if not rows:
         raise SystemExit(f"{name}: {path} has no data rows")
@@ -97,10 +111,31 @@ def _read_table(path, *, value_columns=None, name="file",
     for i, row in enumerate(values):
         for j, v in enumerate(row):
             try:
-                out[i, j] = float(v)
+                number = float(v)
             except ValueError:
-                out[i, j] = np.nan
+                continue
+            out[i, j] = np.nan if any(number == c for c in codes) else number
     return _object_vector(keys), out, columns
+
+
+def _parse_missing_codes(text):
+    """Turn a ``--missing-code`` value into floats; ``none`` disables."""
+    entries = [entry.strip() for entry in str(text).split(",") if entry.strip()]
+    if not entries or [e.lower() for e in entries] == ["none"]:
+        return ()
+    try:
+        return tuple(float(e) for e in entries)
+    except ValueError:
+        raise SystemExit(f"--missing-code must be numeric values or 'none', "
+                         f"got {text!r}") from None
+
+
+def _is_float(text):
+    try:
+        float(text)
+    except ValueError:
+        return False
+    return True
 
 
 def _duplicates(values):
@@ -271,6 +306,30 @@ def _cmd_panel(args):
     if args.auto_chains is not None:
         extra["auto_chains"] = args.auto_chains
 
+    # Options that only one source branch consumes. Naming the ignored ones
+    # beats a silent no-op: a --standardize that does nothing on a weights
+    # panel changes nothing today but reads as if it scaled something.
+    _sumstats_only = [("--method", args.method), ("--infer", args.infer),
+                      ("--auto-chains", args.auto_chains),
+                      ("--no-preflight", args.no_preflight),
+                      ("--n-jobs", None if args.n_jobs == 1 else args.n_jobs),
+                      ("--ld-cache", args.ld_cache),
+                      ("--ld-prefix", args.ld_prefix),
+                      ("--weights-dir", args.weights_dir)]
+    _catalog_only = [("--standardize", args.standardize),
+                     ("--metadata", args.metadata)]
+    if args.catalog:
+        ignored = [flag for flag, value in _sumstats_only if value]
+    elif args.weights:
+        ignored = [flag for flag, value in _sumstats_only + _catalog_only
+                   if value]
+    else:
+        ignored = [flag for flag, value in _catalog_only if value]
+    if ignored and not args.quiet:
+        verb = "have" if len(ignored) > 1 else "has"
+        print(f"warning: {' '.join(ignored)} {verb} no effect with this "
+              "--panel source", file=sys.stderr)
+
     if args.catalog:
         panel = panel_from_catalog(
             args.catalog, args.plink, sample_path=args.sample,
@@ -287,8 +346,8 @@ def _cmd_panel(args):
         # --sumstats or --traits
         if args.ld_cache is None and args.ld_prefix is None:
             raise SystemExit(
-                "panel --sumstats needs --ld-prefix or --ld-cache so LD is "
-                "not built from the target cohort")
+                "panel --sumstats/--traits needs --ld-prefix or --ld-cache "
+                "so LD is not built from the target cohort")
         if (args.ld_cache is not None and args.ld_prefix is None
                 and not os.path.exists(args.ld_cache)):
             raise SystemExit(
@@ -301,14 +360,15 @@ def _cmd_panel(args):
             progress=progress, n_jobs=args.n_jobs,
             weights_dir=args.weights_dir, preflight=not args.no_preflight,
             traits=args.traits, **extra)
+    written = args.out
     if str(args.out).endswith(".npz"):
-        save_panel(panel, args.out)
+        written = save_panel(panel, args.out)
     else:
         write_panel(panel, args.out)
         if args.out_panel:
-            save_panel(panel, args.out_panel)
+            written = save_panel(panel, args.out_panel)
     print(panel.summary())
-    print(f"wrote {args.out}")
+    print(f"wrote {written}")
     return 0
 
 
@@ -347,11 +407,14 @@ def _cmd_fit(args):
     from .stack import multi_pgs_fit
 
     scores = _load_scores(args)
+    missing = _parse_missing_codes(args.missing_code)
     pheno = _read_table(args.pheno, value_columns=[args.pheno_name]
-                        if args.pheno_name else None, name="--pheno")
+                        if args.pheno_name else None, name="--pheno",
+                        missing_codes=missing)
     tables = [scores, pheno]
     if args.covar:
-        tables.append(_read_table(args.covar, name="--covar"))
+        tables.append(_read_table(args.covar, name="--covar",
+                                  missing_codes=missing))
     keys, arrays = _align(*tables)
     keys, arrays, n_dropped = _drop_missing(keys, arrays)
     S, Y = arrays[0], arrays[1]
@@ -500,12 +563,16 @@ def _cmd_evaluate(args):
     from .metrics import evaluate
 
     scores = _read_table(args.scores, value_columns=[args.score_name]
-                         if args.score_name else None, name="--scores")
+                         if args.score_name else None, name="--scores",
+                         missing_codes=_parse_missing_codes(args.missing_code))
     pheno = _read_table(args.pheno, value_columns=[args.pheno_name]
-                        if args.pheno_name else None, name="--pheno")
+                        if args.pheno_name else None, name="--pheno",
+                        missing_codes=_parse_missing_codes(args.missing_code))
     tables = [scores, pheno]
     if args.covar:
-        tables.append(_read_table(args.covar, name="--covar"))
+        tables.append(_read_table(args.covar, name="--covar",
+                                  missing_codes=_parse_missing_codes(
+                                      args.missing_code)))
     keys, arrays = _align(*tables)
     keys, arrays, n_dropped = _drop_missing(keys, arrays)
     if arrays[0].shape[1] != 1:
@@ -632,6 +699,11 @@ def build_parser():
     fit.add_argument("--pheno", required=True, help="phenotype table")
     fit.add_argument("--pheno-name", help="phenotype column to use")
     fit.add_argument("--covar", help="covariate table")
+    fit.add_argument("--missing-code", default="-9",
+                     help="numeric value(s) treated as missing in --pheno, "
+                          "--covar and --scores and dropped with a count "
+                          "(PLINK convention; comma-separated list; 'none' "
+                          "disables)")
     fit.add_argument("--out", required=True, help="output coefficients TSV")
     fit.add_argument("--out-score", help="also write the combined score")
     fit.add_argument("--family", default="gaussian",
@@ -690,6 +762,10 @@ def build_parser():
     ev.add_argument("--pheno", required=True)
     ev.add_argument("--pheno-name")
     ev.add_argument("--covar")
+    ev.add_argument("--missing-code", default="-9",
+                    help="numeric value(s) treated as missing and dropped "
+                         "with a count (PLINK convention; comma-separated; "
+                         "'none' disables)")
     ev.add_argument("--family", default="gaussian",
                     choices=("gaussian", "binomial"))
     ev.add_argument("--prevalence", type=float,
