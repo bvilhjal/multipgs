@@ -28,7 +28,7 @@
     "sumstat_r2_max": "0.4983",
     "sumstat_r2_min": "0.4973"
   },
-  "input_digest_sha256": "3230ef4ed842189f5a591fa30d4ff815f75c2cdee7f4a9cc4de720abfc2ac8ee",
+  "input_digest_sha256": "dc43004cccc3082ecfb09a49d609afb51edbddd9ae4844b258805cd1f45b2a1d",
   "inputs": [
     ".github/workflows/ci.yml",
     ".gitignore",
@@ -156,7 +156,7 @@
     "real_meta_direct": "(sqrtN,0.16416)(expected,0.17729)"
   },
   "schema_version": 1,
-  "source_revision": "e401b275d5b4",
+  "source_revision": "9a680a0ca967",
   "tests": {
     "count": 424,
     "ldpred3": "0.5.5.dev0",
