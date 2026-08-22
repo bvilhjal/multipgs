@@ -196,7 +196,11 @@ def liability_r2(r2_observed, prevalence, prop_cases):
     if not 0.0 < P < 1.0:
         raise ValueError("prop_cases must be in (0, 1)")
     nd = NormalDist()
-    t = nd.inv_cdf(1.0 - K)
+    # -inv_cdf(K), not inv_cdf(1 - K): the subtraction discards K below the
+    # float64 spacing of 1.0 and raises out of NormalDist for K <= 1.1e-16,
+    # while Phi^-1(1 - K) = -Phi^-1(K) holds exactly. Identical to the last bit
+    # for realistic prevalences; matches ltpred.thresholds and ldpred3.scale.
+    t = -nd.inv_cdf(K)
     z = nd.pdf(t)
     i = z / K
     c = (K * (1.0 - K)) ** 2 / (z * z * P * (1.0 - P))

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- `liability_r2` computes the liability threshold as `-inv_cdf(K)` rather than
+  `inv_cdf(1 - K)`. The identity `Phi^-1(1-K) = -Phi^-1(K)` is exact, so no
+  realistic prevalence changes by even one bit; the old spelling lost digits
+  below `K ~ 1e-9` and raised out of `NormalDist` for `K <= 1.1e-16`. Matches
+  `ltpred.thresholds` and `ldpred3.scale`.
 - `multipgs fit` and `multipgs evaluate` treat `-9` (and any other numeric
   code passed via the new `--missing-code` option) as a missing value in
   `--pheno`, `--covar` and `--scores`: such rows are dropped and counted like
