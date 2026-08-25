@@ -152,6 +152,7 @@ def read_scoring_file(path, *, prefer_harmonized=True, drop_non_additive=True):
     ScoringFile
     """
     meta, header, rows = {}, None, []
+    delimiter = None
     with _open_text(path) as fh:
         for line in fh:
             if line.startswith("#"):
@@ -163,11 +164,13 @@ def read_scoring_file(path, *, prefer_harmonized=True, drop_non_additive=True):
             line = line.rstrip("\n").rstrip("\r")
             if not line:
                 continue
-            fields = line.split("\t") if "\t" in line else line.split()
             if header is None:
-                header = fields
+                # The header fixes the delimiter for the whole file; sniffing
+                # per line would split a data row differently from its header.
+                delimiter = "\t" if "\t" in line else None
+                header = line.split(delimiter)
                 continue
-            rows.append(fields)
+            rows.append(line.split(delimiter))
 
     if header is None:
         raise ValueError(f"{path}: no column header found (only comment lines)")

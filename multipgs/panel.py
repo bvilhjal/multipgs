@@ -513,6 +513,7 @@ def panel_from_catalog(paths, plink, *, sample_path=None, drop_ambiguous=True,
         weights=weight_tables, meta=metas,
         log={"source": "pgs_catalog", "n_files": len(files), "n_scores": K,
              "n_failed": n_failed, "n_skipped": n_skipped,
+             "min_matched": int(min_matched),
              "target": str(plink), "standardize": bool(standardize),
              "drop_ambiguous": bool(drop_ambiguous)})
     sidecar = metadata if metadata is not None else _sidecar_metadata(files)
@@ -883,9 +884,11 @@ def panel_from_sumstats(sumstats, plink, *, score_ids=None, ld_cache=None,
     Notes
     -----
     Reusing one LD cache across traits requires a reference-wide cache, so this
-    function sets ``subset_to_sumstats=False`` when ``ld_cache`` is given.
-    LDpred3 takes an exact principal subset for each trait after harmonisation
-    and QC; the traits do not need identical rows or order. Fits use
+    function writes ``ld_cache`` with ``subset_to_sumstats=False``. Loaded
+    caches are then subset to each trait (LDpred3's default); passing
+    ``subset_to_sumstats=False`` on a read is rejected. LDpred3 takes an
+    exact principal subset after harmonisation and QC; the traits do not need
+    identical rows or order. Fits use
     ``score=False`` against one shared, immutable prepared-target context.
     Multipgs then applies all standardized fitted weights together and records
     the target AF/SD needed for frozen deployment. An existing external or
@@ -943,18 +946,29 @@ def panel_from_sumstats(sumstats, plink, *, score_ids=None, ld_cache=None,
     prepared_cache = None
     owns_prepared_cache = False
     if ld_cache is not None:
-        if kwargs.get("subset_to_sumstats") is True:
-            raise ValueError(
-                "panel_from_sumstats with ld_cache requires "
-                "subset_to_sumstats=False so disjoint traits share one "
-                "reference-wide cache")
-        kwargs["subset_to_sumstats"] = False
-        if isinstance(ld_cache, PreparedLDCache):
-            kwargs["ld_cache"] = ld_cache
-            prepared_cache = ld_cache
-        elif os.path.exists(os.fspath(ld_cache)):
-            kwargs["ld_cache"] = ld_cache
+        reading = (isinstance(ld_cache, PreparedLDCache)
+                   or os.path.exists(os.fspath(ld_cache)))
+        if reading:
+            # A loaded cache is subset to the current trait. False is only
+            # valid while writing a new reference-wide generation.
+            if kwargs.get("subset_to_sumstats") is False:
+                raise ValueError(
+                    "subset_to_sumstats=False applies only when building a "
+                    "new reference-wide cache; an existing ld_cache is "
+                    "subset to each trait automatically")
+            kwargs.pop("subset_to_sumstats", None)
+            if isinstance(ld_cache, PreparedLDCache):
+                kwargs["ld_cache"] = ld_cache
+                prepared_cache = ld_cache
+            else:
+                kwargs["ld_cache"] = ld_cache
         else:
+            if kwargs.get("subset_to_sumstats") is True:
+                raise ValueError(
+                    "panel_from_sumstats with ld_cache requires "
+                    "subset_to_sumstats=False so disjoint traits share one "
+                    "reference-wide cache")
+            kwargs["subset_to_sumstats"] = False
             # LDpred3 reads ld_cache immediately; a path being created must be
             # passed only as ld_out on the first successful fit. Promote it to
             # ld_cache below before dispatching the remaining traits.
@@ -1063,6 +1077,9 @@ def panel_from_sumstats(sumstats, plink, *, score_ids=None, ld_cache=None,
             if kwargs.pop("ld_out", None) is not None:
                 # The first successful fit produced this generation. Validate it
                 # once before sharing it with sequential or concurrent fits.
+                # Subsequent traits load the cache and must not keep the
+                # write-only subset_to_sumstats=False flag.
+                kwargs.pop("subset_to_sumstats", None)
                 if os.path.exists(os.fspath(ld_cache)):
                     prepared_cache = prepare_ld_cache(ld_cache)
                     owns_prepared_cache = True
@@ -1723,7 +1740,12 @@ def combine_weights(panel, fit, *, path=None):
     if not acc:
         raise ValueError("every selected score contributed no non-zero weight; "
                          "the fit is null, so there is nothing to deploy")
-    keys = sorted(acc, key=lambda kv: (str(kv[0]), kv[1], kv[2], kv[3]))
+    # Natural chromosome order: numeric chromosomes first in numeric order,
+    # then non-numeric ones — not "1", "10", "11", ..., "2".
+    def _chrom_key(chrom):
+        return (0, int(chrom)) if chrom.isdigit() else (1, chrom)
+
+    keys = sorted(acc, key=lambda kv: (_chrom_key(kv[0]), kv[1], kv[2], kv[3]))
     rows = []
     for key in keys:
         entry = acc[key]

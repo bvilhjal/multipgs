@@ -124,6 +124,29 @@ def test_evaluate_without_bootstrap_has_no_intervals():
     y = rng.normal(size=100)
     res = evaluate(y, rng.normal(size=100), n_boot=0)
     assert res.ci == {}
+    assert res.n_boot_skipped == 0
+
+
+def test_evaluate_counts_bootstrap_replicates_it_could_not_use(monkeypatch):
+    """A resample whose metric raises must be counted, not silently dropped."""
+    rng = np.random.default_rng(13)
+    n = 200
+    y = rng.normal(size=n)
+    y[0] = -5.0                          # the full-data metric must not fail
+    pred = 0.6 * y + rng.normal(size=n)
+    real_r2 = r2
+
+    def flaky(yy, pp):
+        if yy[0] > 0.0:
+            raise ValueError("this resample cannot be evaluated")
+        return real_r2(yy, pp)
+
+    monkeypatch.setattr("multipgs.metrics.r2", flaky)
+    res = evaluate(y, pred, n_boot=100, seed=0)
+    assert 0 < res.n_boot_skipped < 100
+    assert "skipped" in str(res)
+    again = evaluate(y, pred, n_boot=100, seed=0)
+    assert again.n_boot_skipped == res.n_boot_skipped
 
 
 def test_evaluate_validates_shapes_and_family():

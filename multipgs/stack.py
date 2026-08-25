@@ -159,6 +159,12 @@ class MultiPGSFit:
         order: ``on_error="skip"`` may drop a different file, and a list of
         paths does not sort the way a directory does. The result is silently
         wrong rather than an error, and badly so.
+
+        A 1-D ``scores`` means **one individual with K scores**, reshaped to
+        ``(1, K)`` — single-individual prediction is legitimate. When ``n ==
+        K`` this is ambiguous with ``n`` individuals and one score, which
+        passes the shape check silently; pass a 2-D ``(n, 1)`` array if that
+        is what you mean.
         """
         if hasattr(scores, "scores") and hasattr(scores, "score_ids"):
             if score_ids is None:
@@ -184,7 +190,9 @@ class MultiPGSFit:
         """Full linear predictor, including intercept and covariates.
 
         For ``family="binomial"`` this is on the log-odds scale; pass it
-        through :meth:`predict_proba` for probabilities.
+        through :meth:`predict_proba` for probabilities. As in
+        :meth:`multi_pgs`, a 1-D ``scores`` (or ``covar``) is one individual
+        with K scores, not K individuals with one score.
         """
         out = self.multi_pgs(scores) + self.intercept
         if self.covar_beta.size:
@@ -387,7 +395,11 @@ def multi_pgs_fit(scores, y, *, covar=None, family="gaussian", alpha=1.0,
     score_ids, covar_ids : sequence, optional
         Names, for reporting. Default to ``score_0 ...`` and ``covar_0 ...``.
     missing : {"raise", "mean"}
-        What to do about non-finite entries in ``scores``/``covar``.
+        What to do about non-finite entries in ``scores``/``covar``. With
+        ``"mean"`` the imputation means come from the full training set before
+        the CMSA fold split, so the returned CMSA's fold-level
+        :math:`(\alpha, \lambda)` selection is mildly optimistic, while
+        ``cv_r2`` re-imputes from outer-training rows only and stays honest.
     seed : int, optional
         Fold assignment. Set it if you need the fit to be reproducible.
     tol : float
@@ -565,9 +577,14 @@ def multi_pgs_fit(scores, y, *, covar=None, family="gaussian", alpha=1.0,
     cmsa_beta = beta_sum / len(fits)
     cmsa_intercept = intercept_sum / len(fits)
 
+    # The assessment partition must not come from the same stream as the CMSA
+    # partition above: seeded identically, the two would coincide for a given
+    # seed and the outer folds would mirror the tuning folds. Spawn an
+    # independent child seed instead; it stays deterministic for a fixed seed.
+    assessment_seed = np.random.SeedSequence(seed).spawn(1)[0]
     assessment = _nested_cv_assessment(
         X, y, pf, alphas, family, n_assess, assessment_inner, n_lambda,
-        lambda_min_ratio, n_abort, dfmax, tol, max_iter, K, seed,
+        lambda_min_ratio, n_abort, dfmax, tol, max_iter, K, assessment_seed,
         gaussian_stats=gaussian_stats, X_unimputed=X_unimputed,
         return_info=True)
     (cv_loss, cv_null_loss, cv_gain_se, inner_folds,

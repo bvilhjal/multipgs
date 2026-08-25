@@ -61,6 +61,31 @@ def test_gzipped_file_reads_identically(tmp_path):
     assert np.allclose(plain.weight, zipped.weight)
 
 
+def test_the_header_fixes_the_delimiter_for_the_whole_file(tmp_path):
+    """A data row without tabs must not switch to whitespace splitting."""
+    cols = ["rsID", "chr_name", "chr_position", "effect_allele",
+            "other_allele", "effect_weight"]
+    path = _write(tmp_path,
+                  [("rs1", 1, 100, "A", "G", 0.5),
+                   ("rs2", 2, 200, "C", "T", -0.25)],
+                  cols)
+    sf = read_scoring_file(path)
+    assert len(sf) == 2
+    assert np.allclose(sf.weight, [0.5, -0.25])
+
+    # Same tabbed header, but one row joined by spaces: it cannot be split on
+    # the file's delimiter, so it is a bad row, not six misaligned fields.
+    text = HEADER.format(weight_type="beta")
+    text += "\t".join(cols) + "\n"
+    text += "\t".join(["rs1", "1", "100", "A", "G", "0.5"]) + "\n"
+    text += " ".join(["rs2", "2", "200", "C", "T", "-0.25"]) + "\n"
+    mixed = tmp_path / "mixed.txt"
+    mixed.write_text(text, encoding="utf-8")
+    sf = read_scoring_file(str(mixed))
+    assert len(sf) == 1
+    assert sf.log["n_unparsable_weight"] == 1
+
+
 def test_odds_ratios_are_log_transformed(tmp_path):
     path = _write(tmp_path, [("rs1", 1, 100, "A", "G", 2.0),
                              ("rs2", 2, 200, "C", "T", 0.5)],

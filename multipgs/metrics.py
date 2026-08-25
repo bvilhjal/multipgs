@@ -224,6 +224,9 @@ class EvalResult:
 
     ``metrics`` maps a name to its point estimate; ``ci`` maps the same names
     to ``(low, high)`` percentile bounds, and is empty when ``n_boot == 0``.
+    ``n_boot_skipped`` counts requested bootstrap replicates that produced no
+    draw — a single-class resample, or a metric that raised ``ValueError`` —
+    so silent interval shrinkage is visible.
     """
 
     metrics: dict
@@ -232,6 +235,7 @@ class EvalResult:
     n_cases: int = 0
     family: str = "gaussian"
     level: float = 0.95
+    n_boot_skipped: int = 0
 
     def __str__(self):
         head = f"n = {self.n}"
@@ -247,6 +251,9 @@ class EvalResult:
         if self.ci:
             lines.append(f"  ({self.level:.0%} percentile bootstrap "
                          f"intervals)")
+        if self.n_boot_skipped:
+            lines.append(f"  ({self.n_boot_skipped} bootstrap replicate(s) "
+                         "skipped: the resample could not be evaluated)")
         return "\n".join(lines)
 
 
@@ -317,16 +324,19 @@ def evaluate(y, pred, *, covar=None, family="gaussian", prevalence=None,
     metrics = compute(all_idx)
 
     ci = {}
+    n_boot_skipped = 0
     if n_boot_int:
         rng = np.random.default_rng(seed)
         draws = {k: [] for k in metrics}
         for _ in range(n_boot_int):
             idx = rng.integers(0, y.size, y.size)
             if family == "binomial" and len(np.unique(y[idx])) < 2:
+                n_boot_skipped += 1
                 continue          # a resample with no cases has no AUC
             try:
                 rep = compute(idx)
             except ValueError:
+                n_boot_skipped += 1
                 continue
             for k, v in rep.items():
                 draws[k].append(v)
@@ -338,4 +348,5 @@ def evaluate(y, pred, *, covar=None, family="gaussian", prevalence=None,
 
     return EvalResult(metrics=metrics, ci=ci, n=int(y.size),
                       n_cases=int(np.sum(y == 1)) if family == "binomial"
-                      else 0, family=family, level=float(level))
+                      else 0, family=family, level=float(level),
+                      n_boot_skipped=n_boot_skipped)

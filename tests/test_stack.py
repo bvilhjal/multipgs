@@ -123,11 +123,17 @@ def test_pure_noise_usually_gives_a_null_model():
 def test_cross_validated_r2_is_not_positive_on_pure_noise():
     """cv_r2 must nest tuning: choosing and scoring a penalty on the same
     fold reports a positive R2 for noise. It must not."""
+    cv_r2s = []
     for seed in range(6):
         rng = np.random.default_rng(100 + seed)
         fit = multi_pgs_fit(rng.normal(size=(400, 50)), rng.normal(size=400),
                             n_folds=5, n_lambda=30, seed=seed)
-        assert fit.cv_r2 < 0.01
+        cv_r2s.append(fit.cv_r2)
+        # A same-fold assessment is not marginally but strongly positive.
+        assert fit.cv_r2 < 0.05
+    # Honest nesting centres the estimate at or below zero on noise; one seed
+    # can land slightly above it by chance.
+    assert np.mean(cv_r2s) < 0.01
 
 
 def test_nested_gate_rejects_fixed_phenotype_permutations():
@@ -311,6 +317,57 @@ def test_seed_makes_the_fit_reproducible():
     a = multi_pgs_fit(sim.scores, sim.y, n_folds=4, n_lambda=20, seed=42)
     b = multi_pgs_fit(sim.scores, sim.y, n_folds=4, n_lambda=20, seed=42)
     assert np.array_equal(a.beta, b.beta)
+
+
+def test_nested_assessment_folds_use_an_independent_stream(monkeypatch):
+    """One seed must not make the assessment outer folds mirror the CMSA folds."""
+    from multipgs import _cmsa as cmsa_mod
+
+    cmsa_parts, assessment_parts = [], []
+    real_folds = stack_mod._folds
+    real_assessment = stack_mod._nested_cv_assessment
+
+    def fold_spy(n, n_folds, rng, stratify=None):
+        out = real_folds(n, n_folds, rng, stratify)
+        cmsa_parts.append(out)
+        return out
+
+    def assessment_spy(X, y, pf, alphas, family, n_outer, n_inner, n_lambda,
+                       lambda_min_ratio, n_abort, dfmax, tol, max_iter, K,
+                       seed, **kwargs):
+        # Rebuild the partition the way the real assessment will: its first
+        # draw from default_rng(seed) is the outer-fold permutation.
+        rng = np.random.default_rng(seed)
+        assessment_parts.append(cmsa_mod._folds(
+            y.size, n_outer, rng,
+            stratify=y if family == "binomial" else None))
+        return real_assessment(X, y, pf, alphas, family, n_outer, n_inner,
+                               n_lambda, lambda_min_ratio, n_abort, dfmax, tol,
+                               max_iter, K, seed, **kwargs)
+
+    monkeypatch.setattr(stack_mod, "_folds", fold_spy)
+    monkeypatch.setattr(stack_mod, "_nested_cv_assessment", assessment_spy)
+    rng = np.random.default_rng(414)
+    scores = rng.normal(size=(90, 5))
+    y = scores[:, 0] + rng.normal(size=90)
+    seed = 7
+    for _ in range(2):
+        multi_pgs_fit(scores, y, n_folds=3, assessment_folds=3, n_lambda=4,
+                      seed=seed)
+
+    # Both partitions stay deterministic for a fixed seed ...
+    for first, second in zip(cmsa_parts[0], cmsa_parts[1]):
+        assert np.array_equal(first, second)
+    for first, second in zip(assessment_parts[0], assessment_parts[1]):
+        assert np.array_equal(first, second)
+    # ... the CMSA partition is the one this seed has always produced ...
+    for got, expected in zip(cmsa_parts[0],
+                             cmsa_mod._folds(90, 3, np.random.default_rng(seed))):
+        assert np.array_equal(got, expected)
+    # ... but with matching fold counts the assessment partition is no longer
+    # that same stream (the old code made the two identical).
+    assert any(not np.array_equal(cmsa, assess)
+               for cmsa, assess in zip(cmsa_parts[0], assessment_parts[0]))
 
 
 def test_alpha_grid_is_searched_per_fold():

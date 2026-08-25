@@ -226,6 +226,24 @@ def test_shape_validation():
                                   alpha=1.0, lambdas=np.array([0.1]))
 
 
+def test_gaussian_warm_start_needs_beta_and_gradient_together():
+    """Half a warm start is silently discarded; it must be an error."""
+    _, _, G, r = _problem()
+    pf = np.ones(G.shape[0])
+    beta, grad = _coord.unpenalized_fit(G, r, pf)
+    with pytest.raises(ValueError, match="together"):
+        _coord.enet_path_gaussian(G, r, pf=pf, alpha=1.0,
+                                  lambdas=np.array([0.1]), beta_init=beta)
+    with pytest.raises(ValueError, match="together"):
+        _coord.enet_path_gaussian(G, r, pf=pf, alpha=1.0,
+                                  lambdas=np.array([0.1]), grad_init=grad)
+    # Both given (or neither) still works.
+    coefs, n_fitted = _coord.enet_path_gaussian(
+        G, r, pf=pf, alpha=1.0, lambdas=np.array([0.1]), beta_init=beta,
+        grad_init=grad)
+    assert n_fitted == 1 and coefs.shape == (1, G.shape[0])
+
+
 def test_gaussian_path_optionally_reports_iteration_exhaustion():
     G = np.array([[1.0, 0.8], [0.8, 1.0]])
     r = np.array([1.0, -0.5])

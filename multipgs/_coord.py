@@ -374,7 +374,11 @@ def enet_path_gaussian(G, r, *, pf, alpha, lambdas, beta_init=None,
     K = G.shape[0]
     if G.shape != (K, K) or r.shape != (K,) or pf.shape != (K,):
         raise ValueError("G, r and pf must be (K, K), (K,) and (K,)")
-    if beta_init is None or grad_init is None:
+    if (beta_init is None) != (grad_init is None):
+        raise ValueError("beta_init and grad_init must be passed together: a "
+                         "warm start needs both the coefficients and their "
+                         "gradient")
+    if beta_init is None:
         beta, grad = unpenalized_fit(G, r, pf)
     else:
         beta = np.array(beta_init, dtype=np.float64)

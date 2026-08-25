@@ -55,6 +55,17 @@ def test_a_directory_of_scoring_files_is_accepted(target, tmp_path):
     assert panel.n_scores == 4
 
 
+def test_catalog_panel_log_records_the_min_matched_in_effect(target):
+    """The default admits single-variant scores; the log must say so."""
+    panel = panel_from_catalog(target["scoring_files"], target["prefix"])
+    assert panel.log["min_matched"] == 1
+    strict = panel_from_catalog(target["scoring_files"], target["prefix"],
+                                min_matched=3)
+    assert strict.log["min_matched"] == 3
+    # Per-score matched counts sit in the metadata next to it.
+    assert all(m["n_matched"] >= 3 for m in strict.meta)
+
+
 def test_panel_records_target_allele_frequency_and_sd(target):
     panel = panel_from_catalog(target["scoring_files"], target["prefix"])
     for table in panel.weights:
@@ -639,8 +650,9 @@ def test_bgen_shared_cache_decodes_target_dosage_once(tmp_path, monkeypatch):
         method="inf", h2=0.2, subset_to_sumstats=False,
         qc=False, sd_check=False, af_check=False, ld_int8=False, block_size=8)
     run_ldpred3_prs(left, target, ld_out=cache, score=False, **common)
+    read_kw = {k: v for k, v in common.items() if k != "subset_to_sumstats"}
     expected = np.column_stack([
-        run_ldpred3_prs(path, target, ld_cache=cache, **common).scores
+        run_ldpred3_prs(path, target, ld_cache=cache, **read_kw).scores
         for path in (left, right)])
 
     decoded_variants = 0
@@ -944,6 +956,24 @@ def test_combine_weights_preserves_multiallelic_variants_at_one_position():
     out = combine_weights(panel, fit)
     assert out["weight"].size == 2
     assert set(zip(out["a1"], out["a2"])) == {("A", "G"), ("A", "C")}
+
+
+def test_combine_weights_orders_chromosomes_naturally():
+    """String order would emit 1, 10, 11, 2; deployment order is numeric."""
+    chroms = ["10", "2", "1", "X", "11"]
+    table = {"id": np.array([f"rs{i}" for i in range(5)], dtype=object),
+             "chrom": np.array(chroms, dtype=object),
+             "pos": np.full(5, 100),
+             "a1": np.array(["A"] * 5, dtype=object),
+             "a2": np.array(["G"] * 5, dtype=object),
+             "weight": np.ones(5),
+             "af": np.full(5, 0.2),
+             "sd": np.ones(5)}
+    panel = _weight_panel([table])
+    fit = SimpleNamespace(beta=np.ones(1), score_ids=panel.score_ids)
+    out = combine_weights(panel, fit)
+    assert list(out["chrom"]) == ["1", "2", "10", "11", "X"]
+    assert list(out["id"]) == ["rs2", "rs1", "rs0", "rs4", "rs3"]
 
 
 def test_combine_weights_reports_exact_cancellation():
