@@ -534,7 +534,8 @@ LD, or accuracy proxies transportable to it.
 For a binary trait, R² on the observed 0/1 scale depends on the case fraction
 sampled and is not comparable across studies. Under the liability threshold
 model, let `π` be the population prevalence, `P` the sample case fraction,
-`t = Φ⁻¹(1-π)`, `d = φ(t)` and `i = d/π`:
+`t = −Φ⁻¹(π)` (equivalently `Φ⁻¹(1−π)`, computed tail-safely as the former),
+`d = φ(t)` and `i = d/π`:
 
 ```
 C_LT = [π(1-π)]² / (d² · P(1-P))

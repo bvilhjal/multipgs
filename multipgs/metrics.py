@@ -177,7 +177,8 @@ def liability_r2(r2_observed, prevalence, prop_cases):
 
     ``prevalence`` is the population disease risk ``K``; ``prop_cases`` is the
     case fraction ``P`` in the sample the R² was measured in. With
-    ``t = Φ⁻¹(1−K)``, ``z = φ(t)`` and ``i = z/K``::
+    ``t = −Φ⁻¹(K)`` (equivalently ``Φ⁻¹(1−K)``, computed tail-safely as the
+    former), ``z = φ(t)`` and ``i = z/K``::
 
         C  = [K(1−K)]² / (z² · P(1−P))
         θ  = i·(P−K)/(1−K) · [ i·(P−K)/(1−K) − t ]

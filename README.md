@@ -72,7 +72,7 @@ python -m pip install -e ".[fast,test]"
 python -m pip check
 ```
 
-The declared contract is `ldpred3>=0.5.3.dev0,<0.6` (and, for the optional
+The declared contract is `ldpred3>=0.6,<0.7` (and, for the optional
 screen, `bipred>=0.3.9.dev0,<0.4`). A resolver failure means the sibling
 checkouts are genuinely from different API generations; update them together.
 

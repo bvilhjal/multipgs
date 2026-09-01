@@ -583,8 +583,14 @@ def test_real_sumstat_panel_validates_once_and_batch_scores(tmp_path,
     reference = str(tmp_path / "reference")
     for suffix in (".bed", ".bim", ".fam"):
         shutil.copyfile(made["prefix"] + suffix, reference + suffix)
+    # LDpred3 0.6 reads an external PLINK reference either through
+    # ``load_genotypes`` (dense path) or lazily through a single
+    # ``_read_plink_metadata`` scan plus block-wise dosage streaming. Count
+    # both hooks: disjoint traits must still touch the reference files once,
+    # not once per trait.
     reference_loads = 0
     original_genotypes = pipeline_module.load_genotypes
+    original_metadata = pipeline_module._read_plink_metadata
 
     def counted_genotypes(path, **kwargs):
         nonlocal reference_loads
@@ -592,7 +598,15 @@ def test_real_sumstat_panel_validates_once_and_batch_scores(tmp_path,
             reference_loads += 1
         return original_genotypes(path, **kwargs)
 
+    def counted_metadata(path, *args, **kwargs):
+        nonlocal reference_loads
+        if str(path) == reference:
+            reference_loads += 1
+        return original_metadata(path, *args, **kwargs)
+
     monkeypatch.setattr(pipeline_module, "load_genotypes", counted_genotypes)
+    monkeypatch.setattr(pipeline_module, "_read_plink_metadata",
+                        counted_metadata)
     cache = tmp_path / "shared.npz"
     weights_dir = tmp_path / "weights"
     panel = panel_from_sumstats(

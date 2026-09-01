@@ -2,6 +2,49 @@
 
 ## Unreleased
 
+- **Re-baselined onto the LDpred3 0.6 line** (`ldpred3>=0.6,<0.7` in
+  `pyproject.toml` and the README install contract). The 0.5 ceiling had
+  been overtaken by events: the packaged methods-report evidence was
+  generated under ldpred3 0.6.0, out of the range the package declared.
+  The one observable API change on multipgs' seams is that an external
+  PLINK LD reference is now read through a single lazy metadata scan plus
+  block-wise dosage streaming instead of `ldpred3.pipeline.load_genotypes`;
+  the read-the-reference-once guarantee for disjoint traits is re-verified
+  against the new hooks in
+  `tests/test_panel.py::test_real_sumstat_panel_validates_once_and_batch_scores`,
+  and the full suite plus regenerated report evidence now run against
+  ldpred3 0.6.5. The 0.5 line is no longer supported.
+- `enet_path_gaussian` raises when exactly one of `beta_init`/`grad_init`
+  is passed, instead of silently discarding the half warm start and
+  falling back to the unpenalized fit.
+- The nested CV assessment draws its outer-fold partition from a spawned
+  child seed rather than the same `default_rng(seed)` stream as the CMSA
+  folds; the two partitions no longer coincide for a given seed. Nested-CV
+  outputs (`cv_r2` and downstream) differ from previous runs at a fixed
+  seed -- intended -- while the CMSA partition is unchanged.
+- `panel_from_catalog` records the effective `min_matched` in its build
+  log (per-score matched counts were already in `meta`/`summary()`).
+- `combine_weights` sorts chromosomes naturally (1, 2, ..., 10, 11, X)
+  instead of by string.
+- `evaluate` counts bootstrap replicates it could not use (single-class
+  binomial resamples, metrics that raised) as `n_boot_skipped` on
+  `EvalResult`, so silent interval shrinkage is visible.
+- `read_scoring_file` fixes the delimiter from the header line instead of
+  re-sniffing per row; a space-joined data row under a tab header now
+  counts as unparsable rather than silently misaligning columns.
+- `multi_pgs_fit` documents that 1-D `scores` means one individual with K
+  scores (ambiguous when n == K), and that `missing="mean"` learns
+  imputation means before the CMSA fold split, so fold-level (alpha,
+  lambda) selection is mildly optimistic while `cv_r2` stays honest.
+- `panel_from_sumstats` writes a new `ld_cache` reference-wide
+  (`subset_to_sumstats=False`) and then loads it with LDpred3's default
+  per-trait subset. Passing `subset_to_sumstats=False` against an
+  existing cache is rejected; LDpred3 only allows that flag while
+  building fresh LD.
+- The optional genetic-correlation screen's Bipred floor is
+  `bipred>=0.3.9.dev0,<0.4`, advanced from `>=0.3.8` alongside the 0.3.4
+  line's coordinated Bipred 0.3.9 (recorded here explicitly).
+
 - `liability_r2` computes the liability threshold as `-inv_cdf(K)` rather than
   `inv_cdf(1 - K)`. The identity `Phi^-1(1-K) = -Phi^-1(K)` is exact, so no
   realistic prevalence changes by even one bit; the old spelling lost digits
@@ -110,33 +153,6 @@
 - Docs and the methods note now distinguish this package from
   MIXPRS: multi-trait (or metadata same-trait) score stacking
   versus a same-trait ensemble of multi-population methods.
-- `enet_path_gaussian` raises when exactly one of `beta_init`/`grad_init`
-  is passed, instead of silently discarding the half warm start and
-  falling back to the unpenalized fit.
-- The nested CV assessment draws its outer-fold partition from a spawned
-  child seed rather than the same `default_rng(seed)` stream as the CMSA
-  folds; the two partitions no longer coincide for a given seed. Nested-CV
-  outputs (`cv_r2` and downstream) differ from previous runs at a fixed
-  seed -- intended -- while the CMSA partition is unchanged.
-- `panel_from_catalog` records the effective `min_matched` in its build
-  log (per-score matched counts were already in `meta`/`summary()`).
-- `combine_weights` sorts chromosomes naturally (1, 2, ..., 10, 11, X)
-  instead of by string.
-- `evaluate` counts bootstrap replicates it could not use (single-class
-  binomial resamples, metrics that raised) as `n_boot_skipped` on
-  `EvalResult`, so silent interval shrinkage is visible.
-- `read_scoring_file` fixes the delimiter from the header line instead of
-  re-sniffing per row; a space-joined data row under a tab header now
-  counts as unparsable rather than silently misaligning columns.
-- `multi_pgs_fit` documents that 1-D `scores` means one individual with K
-  scores (ambiguous when n == K), and that `missing="mean"` learns
-  imputation means before the CMSA fold split, so fold-level (alpha,
-  lambda) selection is mildly optimistic while `cv_r2` stays honest.
-- `panel_from_sumstats` writes a new `ld_cache` reference-wide
-  (`subset_to_sumstats=False`) and then loads it with LDpred3's default
-  per-trait subset. Passing `subset_to_sumstats=False` against an
-  existing cache is rejected; LDpred3 only allows that flag while
-  building fresh LD.
 
 ## 0.3.3 - 2026-08-13
 
