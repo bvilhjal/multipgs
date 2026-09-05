@@ -186,9 +186,9 @@ def test_sparse_blocks_multiply_only_the_active_score_columns(monkeypatch):
 
     def tracked(corr, rhs):
         seen.append(rhs.shape)
-        return np.asarray(corr) @ rhs
+        return rhs.T @ np.asarray(corr) @ rhs
 
-    monkeypatch.setattr(ldpred3.interop, "ld_matmul", tracked)
+    monkeypatch.setattr(ldpred3.interop, "ld_crossproducts", tracked)
     weights = []
     for score in range(40):
         variant = score % 4

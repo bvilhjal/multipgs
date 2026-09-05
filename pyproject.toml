@@ -14,16 +14,12 @@ authors = [{ name = "Bjarni Vilhjálmsson" }]
 # ldpred3 supplies genotype I/O, allele harmonisation, the LDpred model behind
 # panel_from_sumstats, and the shared LD/weight interoperability contracts.
 #
-# The 0.6 line is the current interoperability surface: it keeps the cache,
-# harmonisation, LD-representation and weight contracts of the 0.5 line and
-# moves external-reference reading to a single lazy metadata scan plus
-# block-wise dosage streaming (multipgs re-verified its read-the-reference-
-# once guarantee against those hooks). ldpred3.shim remains the published
-# code-level surface multipgs/_numba.py binds its Numba decorators through.
+# The 0.7 line shares cache, preparation and weight contracts with current
+# bipred and GWFM. ldpred3.shim supplies the compiled-helper interface.
 # These private sibling packages are installed from coordinated Git
 # checkouts; the range lets pip verify that the checkouts really belong to
 # the same API generation.
-dependencies = ["numpy>=1.20", "ldpred3>=0.6,<0.7"]
+dependencies = ["numpy>=1.20", "ldpred3>=0.7.12,<0.8"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.9",
@@ -46,7 +42,7 @@ Documentation = "https://github.com/bvilhjal/multipgs#documentation"
 multipgs = "multipgs.cli:main"
 
 [project.optional-dependencies]
-fast = ["ldpred3[fast]>=0.6,<0.7"]
+fast = ["ldpred3[fast]>=0.7.12,<0.8"]
 bipred = ["bipred>=0.3.9.dev0,<0.4"]
 test = ["pytest>=7", "scikit-learn>=1.0", "pypdf>=5"]
 lint = ["ruff>=0.5"]

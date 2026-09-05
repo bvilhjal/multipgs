@@ -481,6 +481,68 @@ def _ldpred3_result(*, fid=("F1", "F2"), iid=("I1", "I2"), inference=None):
         beta_adjusted=np.array([0.3]), af=np.array([0.2]), sd=np.array([0.5]))
 
 
+@pytest.mark.parametrize("policy", ["skip", "raise"])
+def test_trait_failures_are_consumed_before_more_sequential_work(tmp_path, monkeypatch, policy):
+    import weakref
+    import ldpred3
+    refs, calls, live = [], [], []
+
+    def fake(path, plink, **kwargs):
+        calls.append(path)
+        live.append(sum(ref() is not None for ref in refs))
+        if path == "first":
+            return _ldpred3_result()
+        work = np.ones(10_000)
+        refs.append(weakref.ref(work))
+        raise ValueError("failed trait")
+
+    monkeypatch.setattr(ldpred3, "run_ldpred3_prs", fake)
+    options = dict(ld_cache=tmp_path / "cache", on_error=policy)
+    inputs = {"first": "first", **{f"bad{i}": f"bad{i}" for i in range(8)}}
+    if policy == "raise":
+        with pytest.raises(RuntimeError, match="failed trait"):
+            panel_from_sumstats(inputs, "target", **options)
+        assert len(calls) == 2
+    else:
+        result = panel_from_sumstats(inputs, "target", **options)
+        assert result.log["n_failed"] == 8
+        assert max(live) == 0
+
+
+def test_parallel_trait_ready_window_is_bounded_and_ordered(tmp_path, monkeypatch):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    import ldpred3
+    release, fast_done, premature = threading.Event(), threading.Event(), threading.Event()
+    fast_count = []
+    lock = threading.Lock()
+
+    def fake(path, plink, **kwargs):
+        if path == "slow":
+            assert release.wait(5)
+        elif path.startswith("fast"):
+            with lock:
+                fast_count.append(path)
+                if len(fast_count) == 2:
+                    fast_done.set()
+                if len(fast_count) > 2 and not release.is_set():
+                    premature.set()
+        return _ldpred3_result()
+
+    monkeypatch.setattr(ldpred3, "run_ldpred3_prs", fake)
+    inputs = {"first": "first", "slow": "slow", **{f"fast{i}": f"fast{i}" for i in range(10)}}
+    with ThreadPoolExecutor(max_workers=1) as caller:
+        future = caller.submit(panel_from_sumstats, inputs, "target",
+                               ld_cache=tmp_path / "cache", n_jobs=3)
+        try:
+            assert fast_done.wait(5)
+            assert not premature.wait(.1)
+        finally:
+            release.set()
+        result = future.result(timeout=5)
+    assert list(result.score_ids) == list(inputs)
+
+
 def test_panel_from_sumstats_merges_per_trait_n_eff(monkeypatch, tmp_path):
     import ldpred3
 

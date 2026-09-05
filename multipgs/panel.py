@@ -39,7 +39,7 @@ import json
 import os
 import warnings
 from collections.abc import Mapping
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -1056,7 +1056,20 @@ def panel_from_sumstats(sumstats, plink, *, score_ids=None, ld_cache=None,
                     run_ldpred3_prs(str(path), plink,
                                     **_trait_kwargs(kwargs, trait)), None)
         except Exception as exc:
-            return sid, path, trait, None, exc
+            # Skip mode needs an explanation, not a traceback retaining the
+            # failed fit's GWAS, LD and sampler work arrays.
+            error = str(exc) if on_error == "skip" else exc
+            return sid, path, trait, None, error
+
+    def _accept(outcome):
+        nonlocal n_failed
+        sid, path, trait, res, exc = outcome
+        if exc is not None:
+            if on_error == "raise":
+                raise RuntimeError(f"LDpred3 failed on {sid} ({path}): {exc}") from exc
+            n_failed += 1
+        else:
+            _consume(sid, path, res, trait)
 
     try:
         remaining = list(enumerate(items))
@@ -1095,29 +1108,41 @@ def panel_from_sumstats(sumstats, plink, *, score_ids=None, ld_cache=None,
         _consume(*first)
 
         if n_jobs == 1 or not remaining:
-            later = []
             for i, (sid, path, trait) in remaining:
                 if progress is not None:
                     progress(i, n_items, sid)
-                later.append(_fit(sid, path, trait))
+                _accept(_fit(sid, path, trait))
         else:
-            for i, (sid, path, trait) in remaining:
-                if progress is not None:
-                    progress(i, n_items, sid)
             workers = min(n_jobs, len(remaining))
             with ThreadPoolExecutor(max_workers=workers) as pool:
-                later = list(pool.map(
-                    lambda item: _fit(item[1][0], item[1][1], item[1][2]),
-                    remaining))
-
-        for sid, path, trait, res, exc in later:
-            if exc is not None:
-                if on_error == "raise":
-                    raise RuntimeError(f"LDpred3 failed on {sid} ({path}): "
-                                       f"{exc}") from exc
-                n_failed += 1
-                continue
-            _consume(sid, path, res, trait)
+                pending, ready = {}, {}
+                submitted = consumed = 0
+                try:
+                    while consumed < len(remaining):
+                        while (submitted < len(remaining)
+                               and len(pending) + len(ready) < workers):
+                            i, (sid, path, trait) = remaining[submitted]
+                            if progress is not None:
+                                progress(i, n_items, sid)
+                            pending[pool.submit(_fit, sid, path, trait)] = submitted
+                            submitted += 1
+                        done = wait(pending, return_when=FIRST_COMPLETED)[0]
+                        for future in sorted(done, key=pending.__getitem__):
+                            position = pending.pop(future)
+                            outcome = future.result()
+                            if outcome[-1] is not None and on_error == "raise":
+                                _accept(outcome)  # observe late-index errors now
+                            ready[position] = outcome
+                        del done, future, outcome
+                        while consumed in ready:
+                            _accept(ready.pop(consumed))
+                            consumed += 1
+                except BaseException:
+                    for future in pending:
+                        future.cancel()
+                    # The pool waits for active fits before the shared mmap
+                    # owner is closed by the outer finally block.
+                    raise
     finally:
         if owns_prepared_cache and prepared_cache is not None:
             prepared_cache.close()

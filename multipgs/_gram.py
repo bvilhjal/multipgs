@@ -239,21 +239,12 @@ def _block_quadform(corr, block_w):
     ``r/k`` is about 0.29 — and this is where a genome-wide Gram spends its
     time.
 
-    Everything else, including dense int8 and float32 blocks and any
-    representation added later, falls through to ``ld_matmul``, which is also
-    the fallback if the pinned ldpred3 does not expose the dequantizer.
+    LDpred3 owns bounded decoding and factor contractions for every supported
+    representation, so compact storage is not followed by whole-block widening.
     """
-    from ldpred3.interop import LowRankLD, dequantize_ld, ld_matmul
+    from ldpred3.interop import ld_crossproducts
 
-    block = dequantize_ld(corr)
-    if not isinstance(block, LowRankLD):
-        return block_w.T @ np.asarray(ld_matmul(block, block_w), dtype=float)
-    # float64 throughout, so a compact block does not lower the Gram's
-    # precision — the same contract ld_matmul documents for its own return.
-    factor = np.asarray(block.U, dtype=np.float64)
-    residual = np.asarray(block.residual_diag, dtype=np.float64)
-    projected = factor.T @ block_w
-    return projected.T @ projected + (block_w * residual[:, None]).T @ block_w
+    return ld_crossproducts(corr, block_w)
 
 
 def _score_gram_from_coo(parsed, ld):

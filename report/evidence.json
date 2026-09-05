@@ -28,7 +28,7 @@
     "sumstat_r2_max": "0.4983",
     "sumstat_r2_min": "0.4973"
   },
-  "input_digest_sha256": "f804c2007f4660cbf63b370c438d433e18be26e5325c9a940a6ca1d245e86fcb",
+  "input_digest_sha256": "bd51247e99c0c3245fa9090f9403c0f1ba1e4cf217ce498080f32937ab6a44dc",
   "inputs": [
     ".github/workflows/ci.yml",
     ".gitignore",
@@ -135,7 +135,7 @@
     "tests/test_sumstat.py",
     "tests/test_sumstat_core_contracts.py"
   ],
-  "package_version": "0.3.4.dev0",
+  "package_version": "0.3.4.dev1",
   "plots": {
     "fit_best_single": "(A,0.08169)(B,0.20177)(C,0.08925)(D,0.22703)(E,0.09785)(F,0.24406)(G,0.08094)(H,0.20603)",
     "fit_multi": "(A,0.16985)(B,0.43249)(C,0.15522)(D,0.41961)(E,0.17398)(F,0.43857)(G,0.16131)(H,0.41576)",
@@ -156,10 +156,10 @@
     "real_meta_direct": "(sqrtN,0.16416)(expected,0.17729)"
   },
   "schema_version": 1,
-  "source_revision": "a636095b8527",
+  "source_revision": "4d2313dd7842",
   "tests": {
-    "count": 429,
-    "ldpred3": "0.6.5",
+    "count": 432,
+    "ldpred3": "0.7.12",
     "numpy": "2.4.6",
     "pytest": "9.1.1",
     "python": "3.14.6",

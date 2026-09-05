@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+Version `0.3.4.dev1`.
+
+- Advance to `ldpred3>=0.7.12,<0.8`, restoring a resolvable combination with
+  current bipred/GWFM and sharing bounded compact-LD score-Gram contractions.
+- Consume sequential trait outcomes immediately and bound pending plus ready
+  parallel fits. Failures no longer wait for every later fit; skipped failures
+  do not retain tracebacks and their working arrays. One-pass scoring remains.
+
 - **Re-baselined onto the LDpred3 0.6 line** (`ldpred3>=0.6,<0.7` in
   `pyproject.toml` and the README install contract). The 0.5 ceiling had
   been overtaken by events: the packaged methods-report evidence was

@@ -86,7 +86,7 @@ jobs:
       - name: Exercise the shared cache, representation, and weight seams
         run: >-
           python -m pytest -q
-          siblings/ldpred3/tests/test_interop.py
+          siblings/ldpred3/tests/test_sibling_surface.py
           siblings/bipred/tests/test_prepare.py
           siblings/gwfm/tests/test_ldpred3_bridge.py
           tests/test_ecosystem.py
