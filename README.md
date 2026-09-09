@@ -149,6 +149,10 @@ combined = meta_pgs(panel, expected_r2=expected_r2, method="expected_r2")
 prs = combined.multi_pgs(panel)
 ```
 
+`meta_pgs(None, n_eff=..., score_ids=..., center=..., scale=...)` needs no
+cohort at all, for a service that holds only summary statistics and an LD
+reference — see [docs/service.md](docs/service.md).
+
 `method="sqrt_n_eff"` needs only the discovery sample sizes.
 `method="expected_r2"` uses expected phenotypic R² proxies directly and is the
 appropriate choice for `daetwyler_r2` output when its transport assumptions are
@@ -222,6 +226,10 @@ The [guide](docs/guide.md) expands each point.
   goes wrong
 - [Theory](docs/theory.md) — why combining scores works, what each fitting route
   estimates, and what the resulting numbers mean, derived
+- [Running without a cohort](docs/service.md) — the contract for a service that
+  holds summary statistics and an LD reference and never sees target
+  genotypes: which routes survive, what the missing dosage SD costs, and which
+  regimes one uploaded GWAS can honestly support
 - [Algorithm notes](docs/algorithm.md) — the solver, the costs, and the
   measurements behind the defaults
 - [Benchmark harness](benchmarks/README.md) — commands, per-seed results, and

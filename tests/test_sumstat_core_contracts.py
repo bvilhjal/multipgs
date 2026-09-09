@@ -599,3 +599,17 @@ def test_weights_gwas_is_mandatory_even_for_identical_scales():
     with pytest.raises(ValueError, match="weights_gwas is required separately"):
         multi_pgs_sumstats(
             np.eye(2), np.array([0.1, 0.05]), np.eye(2), tune="none")
+
+
+@pytest.mark.parametrize("name", ["n_lambda", "max_iter"])
+@pytest.mark.parametrize("bad", ["100", np.array([100]), None])
+def test_integer_solver_controls_reject_non_scalars_and_strings(name, bad):
+    """One validator for both bounds, and stricter than ``int(value)``.
+
+    ``float("100")`` succeeds, so a plain coercion would let a numeric string
+    reach a solver control. A size-1 array is not a scalar either.
+    """
+    with pytest.raises(ValueError, match=name):
+        multi_pgs_sumstats(
+            np.eye(2), np.array([0.1, 0.05]), np.eye(2),
+            weights_gwas=np.eye(2), tune="none", **{name: bad})

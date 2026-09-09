@@ -2,7 +2,80 @@
 
 ## Unreleased
 
-Version `0.3.4.dev1`.
+Version `0.3.4.dev3`.
+
+### A packaged entry point for a genotype-free service
+
+- `fit_prepared_panel(ld_cache, trait, components)` is the whole
+  summary-statistic route in one call, the counterpart of
+  `gwfm.fit_prepared_trait`: the caller runs LDpred3's QC, harmonisation and
+  screen itself and hands over the resulting `PreparedTrait`, the LD cache and
+  LDpred3 weight files from earlier fits. It opens the cache, builds the
+  reference variant table from the cache's own allele/coordinate/frequency
+  metadata, aligns each component, scatters the trait's `z` into cache order,
+  fits, and folds the result into one deployable weight file.
+  `PreparedPanelFit` carries `regime`, `n_eff_policy`, `align_log`,
+  `trait_log` and `cache_provenance`, plus `coefficient_table()` and
+  `write_weights()`, so a dependent service renders rather than re-plumbs.
+  `weights_independent_of_z` stays an explicit acknowledgement and
+  `tune="independent"` is refused, because a second tuning GWAS needs its own
+  aligned panel and LD.
+- `align_weights_to_reference` harmonizes LDpred3 weight files to a reference's
+  variant table, reusing LDpred3's allele logic through the same
+  `Sumstats` wrapper `harmonize_scoring_file` uses. It **refuses a file whose
+  own `AF_REF`/`SD_REF` disagrees with the reference** at the variants it
+  matched: identifiers can match while the frequencies do not, and the
+  resulting Gram would describe a reference none of the scores were fitted on.
+  Allele-swapped matches are compared after flipping `af` to `1 - af`.
+  Per-score matched variant counts and squared-weight mass are logged.
+
+`0.3.4.dev3` is the floor a dependent service should pin: it is the first
+version with `fit_prepared_panel`, `align_weights_to_reference`,
+`multi_pgs_sumstats(progress=...)`, `ScorePanel.weights_only` and
+`meta_pgs(None, ...)`, so a version label alone tells a resolver whether the
+genotype-free entry points are present.
+
+The summary-statistic route already needed no cohort, but three of its steps
+still demanded one in their contracts. A caller holding GWAS and an LD
+reference and nothing else -- SMARTpred's position for every mode it serves --
+can now complete the whole route, and [`docs/service.md`](docs/service.md)
+states that contract: which routes cross the boundary, what the absent
+empirical dosage SD costs the deployed weight file, which regimes one uploaded
+GWAS can honestly support, and how LD encodings behave under a `K`-by-`K` Gram.
+
+- `multi_pgs_sumstats` takes `progress=`, called as
+  `progress(done, total, stage)` with stage `"ld"`, `"ld_tuning"` or
+  `"shrinkage"`. `score_gram` and `score_moments` take the same callback
+  without the stage. Streaming the LD reference dominates a genome-wide panel,
+  so it is the stage reported; `total` is the exact block count for a concrete
+  block list and `None` for a lazy stream, which is never consumed to obtain
+  one. Empty blocks are excluded from the total, so a driven counter reaches
+  it rather than stalling one short.
+- `ScorePanel.weights_only(weights, score_ids)` builds a panel of weight
+  tables with no individuals. `combine_weights` reads only weight tables,
+  `standardized` flags and score ids, so this is now a declared and tested
+  contract instead of a caller fabricating a `(0, K)` score matrix and relying
+  on that never being read.
+- `meta_pgs(None, ...)` combines same-trait scores with no cohort, requiring
+  both `center=` and `scale=` explicitly; for standardized components the
+  reference score SD is `sqrt(diag(G))` from `score_gram`. A missing half is
+  rejected rather than defaulting to a unit SD, which would silently reweight
+  the combination, and `method="decorrelated"` is refused because its `C` can
+  only be estimated from scored individuals. `log["n"]` is `None` and
+  `log["standardization"]` records `supplied` against `cohort`.
+
+### Tightened
+
+- One integer-argument validator, in `_validate`, replaces the two divergent
+  same-named implementations in `_validate` and `_gram`. The surviving
+  semantics are the stricter ones: a Boolean, a size-1 array and a numeric
+  *string* are all rejected. `float("100")` succeeds, so the previous
+  `_validate` spelling silently coerced `n_lambda="100"` and friends.
+- `SumstatEval.is_validation` and `is_assessment` were two identical
+  properties. `is_assessment` is now the single definition -- matching
+  `REGIMES["A"]`'s own wording -- and `is_validation` is a documented alias.
+- Removed a no-op `if dead.any(): pass` block in `meta_pgs`; its comment now
+  sits where the zero-variance handling actually happens.
 
 - Advance to `ldpred3>=0.7.12,<0.8`, restoring a resolvable combination with
   current bipred/GWFM and sharing bounded compact-LD score-Gram contractions.

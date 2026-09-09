@@ -16,7 +16,7 @@ from multipgs import (panel_from_catalog, multi_pgs_fit, multi_pgs_sumstats,
 |---|---|
 | `multi_pgs_fit` | learn a combination from a training phenotype (CMSA elastic net) |
 | `multi_pgs_sumstats` | learn a Gaussian combination of already-built scores from target GWAS statistics and external LD; not MIXPRS |
-| `meta_pgs` | combine consistently oriented same-trait scores with no phenotype, from `n_eff` or an expected target-accuracy proxy |
+| `meta_pgs` | combine consistently oriented same-trait scores with no phenotype, from `n_eff` or an expected target-accuracy proxy; `scores=None` with explicit `center`/`scale` needs no cohort at all |
 | `MultiPGSFit`, `SumstatFit`, `MetaPGS` | fitted combinations on the common raw-score coefficient contract |
 | `FoldFit` | one CMSA fold's selected alpha/lambda, held-out and baseline losses, sparsity, use flag, and convergence counters |
 
@@ -51,8 +51,10 @@ score coordinate.
 
 | Name | Purpose |
 |---|---|
+| `fit_prepared_panel`, `PreparedPanelFit` | the packaged genotype-free route: an LD cache, a `PreparedTrait` and LDpred3 weight files in, a fitted combination and a deployable weight file out |
 | `align_to_reference` | harmonize component weights to one data source's variant order and optionally convert them to standardized-genotype scale |
-| `score_gram` | compute `G = W_ld.T @ D @ W_ld`, streaming LD blocks and sparse scores |
+| `align_weights_to_reference` | harmonize LDpred3 weight files to an LD reference, refusing one whose own `AF_REF`/`SD_REF` describes a different panel |
+| `score_gram` | compute `G = W_ld.T @ D @ W_ld`, streaming LD blocks and sparse scores; `progress(done, total)` reports the stream |
 | `score_moments` | compute `(c, G)` from separate GWAS- and LD-scaled weights |
 | `multi_pgs_sumstats`, `SumstatFit` | fit and retain the score-space lasso/elastic-net path |
 | `pseudo_r2` | fixed-vector summary-statistic R²; it does not establish independence |
@@ -72,6 +74,11 @@ observed scalar `beta.T @ c`; changing an unused score cannot change the
 estimate. `SumstatFit.log` records fit- and tuning-path iteration exhaustion
 and the number of unconverged candidates excluded from selection.
 
+`multi_pgs_sumstats(progress=...)` is called as `progress(done, total, stage)`
+with stage `ld`, `ld_tuning` or `shrinkage`. Streaming the LD reference
+dominates a genome-wide panel, so those are the stages worth showing; `total`
+is `None` for a lazy block stream.
+
 `align_to_reference` converts raw Catalog weights only when empirical `sd=` is
 supplied or `hwe_genotype_sd=True` is requested. Otherwise its output remains
 on the allele-count scale and `log["standardized"]` is false; it is suitable for
@@ -87,6 +94,7 @@ on the allele-count scale and `log["standardized"]` is false; it is suitable for
 | `panel_from_sumstats` | fit each GWAS with LDpred3 and score it on the target; `n_jobs` parallelizes traits after the LD cache exists; `traits=` supplies per-GWAS `n_eff` / method / alpha |
 | `panel_from_weights` | score ldpred3 files in one genotype pass: target-standardized when reference scale is absent, frozen when `AF_REF`/`SD_REF` is present |
 | `ScorePanel` | the `n × K` matrix, its per-variant weights and provenance |
+| `ScorePanel.weights_only` | a panel of weight tables with no individuals, for deploying a summary-statistic fit |
 | `ScorePanel.concat` | place two panels side by side on shared `FID:IID` |
 | `combine_weights` | collapse a panel plus a fit into one deployable weight file |
 | `check_weights` | require frozen scoring to reproduce the fitted combination up to its unencoded intercept, with unit slope and negligible centred residuals |
@@ -94,6 +102,12 @@ on the allele-count scale and `log["standardized"]` is false; it is suitable for
 | `save_panel`, `load_panel` | full panel including weights, scale flags and metadata (`.npz`); load only files from trusted sources because the format contains NumPy object arrays |
 | `attach_metadata` | merge a Catalog `metadata.tsv` (including `N_EFF`) into `panel.meta` |
 | `read_trait_table` | read the per-GWAS table used by `panel_from_sumstats(traits=)` |
+
+A caller with no target genotypes normally wants `fit_prepared_panel`, which
+performs this whole route from an LD cache and a `PreparedTrait`; the pieces
+(`align_weights_to_reference`, `ScorePanel.weights_only`) are public for
+callers that need them separately. See [service.md](service.md) for that whole
+contract, including what the missing dosage SD costs.
 
 `ScorePanel` methods: `.select(columns)` by index, id or mask; `.align(other)` to
 match two panels on `FID:IID`; `.summary()` for matched-variant and weight-mass

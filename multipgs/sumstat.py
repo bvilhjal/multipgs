@@ -138,7 +138,7 @@ import numpy as np
 
 from . import _coord
 from ._numba import warn_no_numba
-from ._align import align_to_reference
+from ._align import align_to_reference, align_weights_to_reference
 from ._evaluate import REGIMES, SumstatEval, evaluate_sumstat
 from ._gram import (
     _collapse_parsed_weights,
@@ -171,8 +171,9 @@ from ._pumas import (
 from ._validate import _positive_integer
 
 __all__ = ["multi_pgs_sumstats", "SumstatFit", "score_gram", "score_moments",
-           "pseudo_r2", "align_to_reference", "evaluate_sumstat",
-           "SumstatEval", "REGIMES", "subsample_score_moments"]
+           "pseudo_r2", "align_to_reference", "align_weights_to_reference",
+           "evaluate_sumstat", "SumstatEval", "REGIMES",
+           "subsample_score_moments"]
 
 # ---------------------------------------------------------------------------
 # Fit
@@ -397,7 +398,7 @@ def multi_pgs_sumstats(weights_ld, z, ld, *, weights_gwas=None,
                        n_variants_ld_valid=None, tol=1e-7, max_iter=1000,
                        tune="auto", n_eff=None, n_repeats=4,
                        train_fraction=0.75, rng=None, ld_shrinkage=None,
-                       weights_independent_of_z=False):
+                       weights_independent_of_z=False, progress=None):
     """Learn a multi-PGS combination from summary statistics alone.
 
     Parameters
@@ -449,6 +450,14 @@ def multi_pgs_sumstats(weights_ld, z, ld, *, weights_gwas=None,
         Required acknowledgement for ``tune="pumas"``. The component weights
         must not have been trained or selected using the GWAS behind ``z``;
         PUMAS holds them fixed and therefore cannot remove that leakage.
+    progress : callable, optional
+        Called as ``progress(done, total, stage)`` from the calling thread.
+        ``stage`` is ``"ld"`` while the fitting Gram streams the LD reference,
+        ``"ld_tuning"`` for a separate tuning reference, and ``"shrinkage"``
+        once per ``ld_shrinkage`` grid point. ``total`` is ``None`` when the LD
+        blocks arrive as a stream of unknown length. Streaming LD dominates a
+        genome-wide panel; the ``K``-by-``K`` path fit is seconds beside it, so
+        the ``"ld"`` stages are the ones worth showing.
 
     Notes
     -----
@@ -538,9 +547,16 @@ def multi_pgs_sumstats(weights_ld, z, ld, *, weights_gwas=None,
     # Parsed once and used for both the Gram and the fit's weight digest. Sparse
     # panels become canonical COO arrays; dense panels remain dense, avoiding
     # three genome-wide arrays per non-zero entry.
+    def _stage(name):
+        """Adapt the two-argument Gram callback to the public three-argument one."""
+        if progress is None:
+            return None
+        return lambda done, total: progress(done, total, name)
+
     parsed_ld = _weight_columns(weights_ld, n_variants_ld)
     m_ld, k_ld, n_weight_entries_ld = _parsed_weight_info(parsed_ld)
-    gram_raw, score_var = _score_gram_from_coo(parsed_ld, ld)
+    gram_raw, score_var = _score_gram_from_coo(parsed_ld, ld,
+                                               progress=_stage("ld"))
     k = gram_raw.shape[0]
     if k_ld != k:
         raise RuntimeError("parsed weight columns do not match their Gram")
@@ -658,7 +674,8 @@ def multi_pgs_sumstats(weights_ld, z, ld, *, weights_gwas=None,
         else:
             parsed_ld_valid = _weight_columns(
                 weights_ld_valid, n_variants_ld_valid)
-            gram_v = _score_gram_from_coo(parsed_ld_valid, ld_valid)[0]
+            gram_v = _score_gram_from_coo(parsed_ld_valid, ld_valid,
+                                          progress=_stage("ld_tuning"))[0]
         m_ld_valid, k_valid, n_weight_entries_ld_valid = (
             _parsed_weight_info(parsed_ld_valid))
         if k_valid != k:
@@ -802,6 +819,10 @@ def multi_pgs_sumstats(weights_ld, z, ld, *, weights_gwas=None,
     best = None
     delta_audit = []
     for delta in deltas:
+        if progress is not None:
+            # Counted off the audit trail, so the two early ``continue`` paths
+            # below advance it exactly like a fitted grid point does.
+            progress(len(delta_audit), int(deltas.size), "shrinkage")
         gram_d = gram + float(delta) * np.diag(penalized)
         _, grad = _coord.unpenalized_fit(gram_d, r, pf)
         lambdas_d = _coord.lambda_grid(grad, pf, alpha, n_lambda=n_lambda,
@@ -873,6 +894,9 @@ def multi_pgs_sumstats(weights_ld, z, ld, *, weights_gwas=None,
         if mse_d[index] < best_value:
             best_value = float(mse_d[index])
             best = (float(delta), index, path_d, lambdas_d, r2_d, mse_d)
+
+    if progress is not None:
+        progress(int(deltas.size), int(deltas.size), "shrinkage")
 
     if best is None:
         n_exhausted = sum(

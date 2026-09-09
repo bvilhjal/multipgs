@@ -799,3 +799,195 @@ def test_int8_low_rank_blocks_are_dequantized_before_use():
     naive = naive @ naive.T + np.diag(residual)
     wrong, _ = score_gram(weights, [(naive, np.arange(m))], n_variants=m)
     assert np.abs(wrong).max() > 100.0 * np.abs(gram).max()
+
+
+def _blocked(ld, size=40):
+    """The same reference as contiguous ``(corr, idx)`` blocks tiling 0..m-1."""
+    return [(ld[i:i + size, i:i + size], np.arange(i, i + size))
+            for i in range(0, ld.shape[0], size)]
+
+
+def test_progress_reports_the_ld_stream_and_the_shrinkage_grid():
+    """A genome-wide fit spends its time streaming LD, so that is what reports.
+
+    The block count must be exact, not a hint: a service driving this shows
+    the fraction to a user, and a counter that stops short of its total reads
+    as a hang.
+    """
+    _x, w, _scores, _y, ld, z = _setup(seed=5)
+    blocks = _blocked(ld)
+    seen = []
+    fit = multi_pgs_sumstats(w, z, blocks, weights_gwas=w, tune="none",
+                             ld_shrinkage=[0.0, 0.05],
+                             progress=lambda done, total, stage:
+                                 seen.append((stage, done, total)))
+    ld_events = [event for event in seen if event[0] == "ld"]
+    assert [done for _s, done, _t in ld_events] == list(
+        range(1, len(blocks) + 1))
+    assert all(total == len(blocks) for _s, _d, total in ld_events)
+    assert ld_events[-1][1] == ld_events[-1][2]      # reaches its own total
+    shrinkage = [event for event in seen if event[0] == "shrinkage"]
+    assert shrinkage[-1] == ("shrinkage", 2, 2)
+    assert fit.n_selected >= 1
+
+
+def test_progress_reports_a_separate_tuning_reference_distinctly():
+    """Two LD streams are two stages; a caller must be able to tell them apart."""
+    _x, w, _scores, _y, ld, z = _setup(seed=6)
+    rng = np.random.default_rng(11)
+    z_valid = z + rng.normal(scale=0.01, size=z.size)
+    stages = set()
+    multi_pgs_sumstats(w, z, _blocked(ld), weights_gwas=w, tune="independent",
+                       z_valid=z_valid, ld_valid=_blocked(ld, size=50),
+                       weights_gwas_valid=w, weights_ld_valid=w,
+                       progress=lambda done, total, stage: stages.add(stage))
+    assert {"ld", "ld_tuning"} <= stages
+
+
+def test_score_gram_progress_total_is_unknown_for_a_lazy_stream():
+    """A generator is not consumed to count it, so the total is None."""
+    _x, w, _scores, _y, ld, _z = _setup(seed=7)
+    blocks = _blocked(ld)
+    seen = []
+    listed, _ = score_gram(w, blocks, progress=lambda done, total:
+                           seen.append((done, total)))
+    lazy, _ = score_gram(w, (block for block in blocks),
+                         progress=lambda done, total: seen.append((done, total)))
+    assert np.allclose(listed, lazy)
+    assert (len(blocks), len(blocks)) in seen      # concrete list: exact total
+    assert (len(blocks), None) in seen             # generator: unknown total
+
+
+def test_progress_total_skips_empty_blocks_so_the_counter_completes():
+    """An empty block is dropped by the validator; the total must agree."""
+    _x, w, _scores, _y, ld, _z = _setup(seed=8)
+    blocks = _blocked(ld)
+    padded = blocks + [(np.zeros((0, 0)), np.arange(0, dtype=int))]
+    seen = []
+    score_gram(w, padded, n_variants=ld.shape[0],
+               progress=lambda done, total: seen.append((done, total)))
+    assert seen[-1] == (len(blocks), len(blocks))
+
+
+def _reference_panel(rng, m=200):
+    """A reference variant table with its allele frequency and HWE dosage SD."""
+    from ldpred3.interop import VariantTable
+
+    vid = np.array([f"rs{i}" for i in range(m)], dtype=object)
+    chrom = np.ones(m, dtype=int)
+    pos = np.arange(1, m + 1)
+    a1 = np.array(["A"] * m, dtype=object)
+    a2 = np.array(["G"] * m, dtype=object)
+    af = rng.uniform(0.05, 0.95, size=m)
+    variants = VariantTable(id=vid, chrom=chrom, cm=np.zeros(m), pos=pos,
+                            a1=a1, a2=a2)
+    return variants, af, np.sqrt(2.0 * af * (1.0 - af))
+
+
+def _write_component(path, variants, sel, weight, af, sd, *, swap=False):
+    """Write one LDpred3 weight file over ``sel`` of the reference variants."""
+    from ldpred3.interop import write_weights
+
+    a1 = np.asarray(variants.a1)[sel]
+    a2 = np.asarray(variants.a2)[sel]
+    write_weights(
+        str(path), id=np.asarray(variants.id)[sel],
+        chrom=np.asarray(variants.chrom)[sel],
+        pos=np.asarray(variants.pos)[sel],
+        effect_allele=a2 if swap else a1, other_allele=a1 if swap else a2,
+        weight=-weight if swap else weight,
+        af=(1.0 - af[sel]) if swap else af[sel], sd=sd[sel], sd_source="hwe")
+    return str(path)
+
+
+def test_align_weights_to_reference_round_trips_an_ldpred3_weight_file(tmp_path):
+    """A score fitted on this reference must come back exactly as written.
+
+    This is the component-panel path for a service: the weight files it
+    combines are its own earlier LDpred3 fits against the same LD cache.
+    """
+    from multipgs import align_weights_to_reference
+
+    rng = np.random.default_rng(4)
+    variants, af, sd = _reference_panel(rng)
+    truth, paths = [], []
+    for k in range(3):
+        sel = np.sort(rng.choice(af.size, size=60, replace=False))
+        w = rng.normal(scale=0.05, size=sel.size)
+        paths.append(_write_component(tmp_path / f"t{k}.tsv", variants, sel, w,
+                                      af, sd))
+        truth.append((sel, w))
+
+    pairs, ids, tables, log = align_weights_to_reference(
+        paths, variants, af=af, sd=sd)
+    assert ids == ["t0", "t1", "t2"]
+    assert log["standardized"] and log["scale_checked"]
+    assert log["n_matched_median"] == 60
+    assert log["weight_mass_matched_min"] == pytest.approx(1.0)
+    for (idx, w), (sel, expected) in zip(pairs, truth):
+        assert np.array_equal(idx, sel)
+        assert np.allclose(w, expected, atol=1e-7)
+    # The tables carry the reference's own scale, so a combined file deploys
+    # on one consistent AF/SD rather than each component's.
+    for table, (sel, _w) in zip(tables, truth):
+        assert np.allclose(table["af"], af[sel])
+        assert np.allclose(table["sd"], sd[sel])
+
+
+def test_align_weights_to_reference_flips_a_swapped_allele(tmp_path):
+    """Counting the other allele flips the weight's sign and the frequency."""
+    from multipgs import align_weights_to_reference
+
+    rng = np.random.default_rng(5)
+    variants, af, sd = _reference_panel(rng)
+    sel = np.sort(rng.choice(af.size, size=40, replace=False))
+    w = rng.normal(scale=0.05, size=sel.size)
+    path = _write_component(tmp_path / "swapped.tsv", variants, sel, w, af, sd,
+                            swap=True)
+    (idx, aligned), = align_weights_to_reference(
+        [path], variants, af=af, sd=sd)[0]
+    assert np.array_equal(idx, sel)
+    assert np.allclose(aligned, w, atol=1e-7)
+
+
+def test_align_weights_to_reference_refuses_a_different_ld_panel(tmp_path):
+    """Matching identifiers do not make it the same reference.
+
+    A score fitted on another panel would contribute a Gram column describing
+    a reference none of the other scores were built on, and nothing downstream
+    could detect it.
+    """
+    from multipgs import align_weights_to_reference
+
+    rng = np.random.default_rng(6)
+    variants, af, sd = _reference_panel(rng)
+    sel = np.sort(rng.choice(af.size, size=40, replace=False))
+    w = rng.normal(scale=0.05, size=sel.size)
+    other = np.clip(af + 0.2, 0.0, 1.0)
+    path = _write_component(tmp_path / "other.tsv", variants, sel, w, other, sd)
+    with pytest.raises(ValueError, match="does not describe the supplied"):
+        align_weights_to_reference([path], variants, af=af, sd=sd)
+    # Skipping records it per score instead of failing the whole panel.
+    pairs, ids, tables, log = align_weights_to_reference(
+        [path], variants, af=af, sd=sd, on_error="skip")
+    assert pairs == [] and ids == []
+    assert "reference_mismatch" in log and log["n_failed"] == 1
+    # The check is the only thing standing in the way; without it, it aligns.
+    pairs, _ids, _tables, log = align_weights_to_reference(
+        [path], variants, af=af, sd=sd, check_scale=False)
+    assert len(pairs) == 1 and not log["scale_checked"]
+
+
+def test_align_weights_to_reference_validates_the_reference_scale(tmp_path):
+    from multipgs import align_weights_to_reference
+
+    rng = np.random.default_rng(7)
+    variants, af, sd = _reference_panel(rng)
+    sel = np.arange(10)
+    path = _write_component(tmp_path / "t.tsv", variants, sel,
+                            np.full(10, 0.01), af, sd)
+    with pytest.raises(ValueError, match="af has"):
+        align_weights_to_reference([path], variants, af=af[:5], sd=sd)
+    with pytest.raises(ValueError, match="score_ids has"):
+        align_weights_to_reference([path], variants, af=af, sd=sd,
+                                   score_ids=["a", "b"])

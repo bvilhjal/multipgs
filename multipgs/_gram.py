@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ._validate import _positive_integer
+from ._validate import _nonnegative_integer, _positive_integer
 
 
 def _integer_indices(values, label):
@@ -24,20 +24,6 @@ def _integer_indices(values, label):
     elif raw.dtype.kind == "u" and np.any(flat > np.iinfo(np.int64).max):
         raise ValueError(f"{label} contains an index outside int64 range")
     return flat.astype(np.int64, copy=False)
-
-
-def _nonnegative_integer(value, label):
-    """Validate a count before converting it to an integer."""
-    if isinstance(value, (bool, np.bool_)):
-        raise ValueError(f"{label} must be a non-negative integer")
-    raw = np.asarray(value)
-    if raw.ndim != 0 or raw.dtype.kind not in "iuf" or raw.dtype.kind == "b":
-        raise ValueError(f"{label} must be a non-negative integer")
-    number = float(raw)
-    if (not np.isfinite(number) or number < 0.0 or not number.is_integer()
-            or number > np.iinfo(np.int64).max):
-        raise ValueError(f"{label} must be a non-negative integer")
-    return int(number)
 
 
 def _as_blocks(ld, n_variants):
@@ -193,7 +179,7 @@ def _weight_columns(weights, n_variants=None):
             m, len(pairs))
 
 
-def score_gram(weights, ld, *, n_variants=None):
+def score_gram(weights, ld, *, n_variants=None, progress=None):
     """The ``K x K`` score covariance ``W^T D W`` from an LD reference.
 
     Streams the reference one LD block at a time, densifying only that block's
@@ -212,6 +198,11 @@ def score_gram(weights, ld, *, n_variants=None):
     n_variants : int, optional
         Reference size, needed only when the weights are sparse and no score
         touches the last variant.
+    progress : callable, optional
+        Called as ``progress(done, total)`` after each LD block is contracted,
+        with ``total=None`` when ``ld`` is a lazy stream of unknown length.
+        Streaming the reference is where a genome-wide Gram spends its time,
+        so this is the fraction of the real work.
 
     Returns
     -------
@@ -219,7 +210,8 @@ def score_gram(weights, ld, *, n_variants=None):
         ``gram`` is ``W^T D W`` (``K x K``); ``score_var`` is its diagonal, the
         variance of each score under the reference's LD.
     """
-    return _score_gram_from_coo(_weight_columns(weights, n_variants), ld)
+    return _score_gram_from_coo(_weight_columns(weights, n_variants), ld,
+                                progress=progress)
 
 
 def _block_quadform(corr, block_w):
@@ -247,21 +239,47 @@ def _block_quadform(corr, block_w):
     return ld_crossproducts(corr, block_w)
 
 
-def _score_gram_from_coo(parsed, ld):
+def _score_gram_from_coo(parsed, ld, *, progress=None):
     """:func:`score_gram` on already-parsed dense or sparse weights.
 
     Parsing a sparse weight set materializes three arrays over every non-zero
     entry, which for a genome-wide panel is the largest allocation in the whole
     fit. A caller that already holds the parse passes it here instead of
     handing the raw weights back to be parsed a second time.
+
+    ``progress(done, total)`` is invoked from this thread after each block, so
+    a caller driving a genome-wide reference can report the LD stream rather
+    than appear to hang. ``total`` is ``None`` for a lazy block stream.
     """
+    # A generator has no length and is not consumed to acquire one, so its
+    # total is reported as None rather than guessed. A concrete block list is
+    # counted over its index arrays only -- no LD payload is touched -- and
+    # skips the empty blocks ``_as_blocks`` drops, so ``done`` reaches ``total``
+    # instead of stalling one short of it. A malformed block list falls back to
+    # the raw length; ``_as_blocks`` raises the real diagnostic immediately.
+    total = None
+    if isinstance(ld, np.ndarray):
+        total = 1
+    elif hasattr(ld, "__len__"):
+        # ``__getitem__`` as well, so only a re-iterable sequence is walked
+        # twice; ldpred3's cache views subclass ``list``. Anything else keeps
+        # its raw length.
+        if hasattr(ld, "__getitem__"):
+            try:
+                total = sum(1 for _corr, idx in ld if np.size(idx))
+            except (TypeError, ValueError):
+                total = len(ld)
+        else:
+            total = len(ld)
     if isinstance(parsed, _DenseWeights):
         matrix = parsed.values
         blocks = _as_blocks(ld, parsed.m)
         gram = np.zeros((parsed.k, parsed.k), dtype=float)
-        for corr, idx in blocks:
+        for done, (corr, idx) in enumerate(blocks, start=1):
             lo, hi = int(idx[0]), int(idx[-1]) + 1
             gram += _block_quadform(corr, matrix[lo:hi])
+            if progress is not None:
+                progress(done, total)
         gram = 0.5 * (gram + gram.T)
         return gram, np.diag(gram).copy()
 
@@ -272,10 +290,13 @@ def _score_gram_from_coo(parsed, ld):
     rows, cols, vals = rows[order], cols[order], vals[order]
 
     gram = np.zeros((k, k), dtype=float)
-    for corr, idx in blocks:
+    for done, (corr, idx) in enumerate(blocks, start=1):
         lo, hi = int(idx[0]), int(idx[-1]) + 1
         start, stop = np.searchsorted(rows, (lo, hi))
         if start == stop:
+            # The block was still read and skipped; it counts as work done.
+            if progress is not None:
+                progress(done, total)
             continue
         # Catalog scores are sparse across both variants and blocks. Work only
         # on the scores touching this block; forming a B x K matrix and a full
@@ -285,6 +306,8 @@ def _score_gram_from_coo(parsed, ld):
         block_w = np.zeros((idx.size, active.size), dtype=float)
         block_w[rows[start:stop] - lo, local_cols] = vals[start:stop]
         gram[np.ix_(active, active)] += _block_quadform(corr, block_w)
+        if progress is not None:
+            progress(done, total)
 
     # W^T D W is symmetric in exact arithmetic; the accumulation is not, and an
     # asymmetric Gram makes the coordinate descent's covariance updates drift.
@@ -428,7 +451,7 @@ def _score_cross_moment_parsed(parsed, z, n_scores, label, *, n_entries=None):
 
 
 def score_moments(weights_ld, z, ld, *, weights_gwas=None,
-                  n_variants_ld=None):
+                  n_variants_ld=None, progress=None):
     """The score-space moments ``(c, G)`` for one set of summary statistics.
 
     The pair that :func:`evaluate_sumstat` scores against, and the same pair
@@ -441,6 +464,9 @@ def score_moments(weights_ld, z, ld, *, weights_gwas=None,
     individual-level Gaussian regression moments is exact for unadjusted data,
     or when genotypes and phenotype were jointly residualized on the identical
     covariate design—not for arbitrary adjusted marginal GWAS coefficients.
+
+    ``progress`` is forwarded to :func:`score_gram` as ``progress(done, total)``
+    over the LD blocks.
     """
     if weights_gwas is None:
         raise ValueError(
@@ -453,7 +479,7 @@ def score_moments(weights_ld, z, ld, *, weights_gwas=None,
     n_variants_ld = _ld_variant_count(
         weights_ld, ld, n_variants_ld, "n_variants_ld")
     parsed = _weight_columns(weights_ld, n_variants_ld)
-    gram, var = _score_gram_from_coo(parsed, ld)
+    gram, var = _score_gram_from_coo(parsed, ld, progress=progress)
     if weights_gwas is weights_ld:
         c, _, _ = _score_cross_moment_parsed(
             parsed, z, gram.shape[0], "weights_gwas")

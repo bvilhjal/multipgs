@@ -40,6 +40,11 @@ Getting the ``K`` scores is the other half of the problem.
 combination back into a single per-variant weight file, which is the artefact
 you deploy.
 
+:func:`multipgs.fit_prepared_panel` is the whole route for a caller that has no
+genotypes at all -- an LD cache, a trait LDpred3 has already prepared against
+it, and weight files from earlier fits go in; a fitted combination and one
+deployable weight file come out. See ``docs/service.md``.
+
 :mod:`multipgs.architecture` decides what deserves to be in the panel at all,
 using the summary-statistic screening of Hansen et al.
 (`Research Square, 2026 <https://doi.org/10.21203/rs.3.rs-9415305/v1>`_).
@@ -57,7 +62,7 @@ from __future__ import annotations
 
 import importlib
 
-__version__ = "0.3.4.dev1"
+__version__ = "0.3.4.dev3"
 
 # Public name -> submodule it lives in. No module name may equal one of its own
 # exported names: importing a submodule binds it on this package, and the cache
@@ -75,12 +80,14 @@ _EXPORTS = {
     "fetch": ["search_scores", "ScoreRecord", "download_scores",
               "write_score_metadata", "read_score_metadata", "cohort_overlap"],
     "sumstat": ["multi_pgs_sumstats", "SumstatFit", "score_gram", "pseudo_r2",
-                "align_to_reference", "evaluate_sumstat", "SumstatEval",
+                "align_to_reference", "align_weights_to_reference",
+                "evaluate_sumstat", "SumstatEval",
                 "score_moments", "REGIMES", "subsample_score_moments"],
     "architecture": ["Architecture", "daetwyler_r2", "architectures_from_panel",
                      "screen", "ScreenResult", "penalty_from_accuracy",
                      "penalty_from_relevance"],
     "rg": ["align_sumstats_to_cache", "ldsc_rg_screen", "RgScreen"],
+    "service": ["fit_prepared_panel", "PreparedPanelFit"],
     "metrics": ["evaluate", "EvalResult", "r2", "incremental_r2", "auc",
                  "nagelkerke_r2", "liability_r2"],
     "simulate": ["simulate_panel", "SimPanel", "simulate_same_trait_panel",

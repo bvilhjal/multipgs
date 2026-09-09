@@ -1185,3 +1185,69 @@ def test_combine_weights_requires_unique_score_binding():
     fit = SimpleNamespace(beta=np.ones(2), score_ids=panel.score_ids)
     with pytest.raises(ValueError, match="score_ids must be unique"):
         combine_weights(panel, fit)
+
+
+def test_weights_only_panel_deploys_a_summary_fit_without_individuals():
+    """The summary route ends in a weight file, and never scores a cohort.
+
+    ``combine_weights`` reads weight tables, ``standardized`` and score ids --
+    never the score columns -- so a panel with no individuals is enough to
+    fold a summary-statistic combination into one deployable file. Pinned
+    because a service with no target genotypes depends on exactly that.
+    """
+    from multipgs import multi_pgs_sumstats
+
+    rng = np.random.default_rng(3)
+    m, k, block = 240, 3, 80
+    ld = []
+    for start in range(0, m, block):
+        idx = np.arange(start, start + block)
+        ld.append((np.corrcoef(rng.normal(size=(400, block)), rowvar=False),
+                   idx))
+    af = rng.uniform(0.1, 0.9, size=m)
+    sd = np.sqrt(2.0 * af * (1.0 - af))
+    columns = [(np.sort(rng.choice(m, size=50, replace=False)),
+                rng.normal(scale=0.05, size=50)) for _ in range(k)]
+    z = np.zeros(m)
+    z[np.sort(rng.choice(m, size=200, replace=False))] = rng.normal(
+        scale=0.03, size=200)
+    ids = [f"aux{j}" for j in range(k)]
+    fit = multi_pgs_sumstats(columns, z, ld, weights_gwas=columns,
+                             score_ids=ids, n_variants_ld=m, tune="none")
+
+    tables = [{"id": np.array([f"rs{i}" for i in sel], dtype=object),
+               "chrom": np.ones(sel.size, dtype=int), "pos": sel + 1,
+               "a1": np.array(["A"] * sel.size, dtype=object),
+               "a2": np.array(["G"] * sel.size, dtype=object),
+               "weight": w, "af": af[sel], "sd": sd[sel]}
+              for sel, w in columns]
+    panel = ScorePanel.weights_only(tables, ids)
+    assert len(panel) == 0 and panel.n_scores == k
+    assert np.all(panel.standardized)
+    assert panel.log["source"] == "weights_only"
+
+    combined = combine_weights(panel, fit)
+    # Every variant carrying a selected component's weight survives the fold.
+    selected = {int(v) for j, (sel, _w) in enumerate(columns)
+                if fit.beta[j] != 0.0 for v in sel}
+    assert combined["id"].size == len(selected)
+    assert np.all(np.isfinite(combined["weight"]))
+
+
+def test_weights_only_panel_validates_its_arguments():
+    table = {"id": np.array(["rs1"], dtype=object),
+             "chrom": np.ones(1, dtype=int), "pos": np.ones(1, dtype=int),
+             "a1": np.array(["A"], dtype=object),
+             "a2": np.array(["G"], dtype=object),
+             "weight": np.array([0.1]), "af": np.array([0.3]),
+             "sd": np.array([0.6])}
+    with pytest.raises(ValueError, match="score_ids has"):
+        ScorePanel.weights_only([table], ["a", "b"])
+    with pytest.raises(ValueError, match="at least one score"):
+        ScorePanel.weights_only([], [])
+    with pytest.raises(ValueError, match="standardized"):
+        ScorePanel.weights_only([table], ["a"], standardized=[True, False])
+    # A scalar flag broadcasts; a per-score vector is kept as given.
+    assert ScorePanel.weights_only([table, table], ["a", "b"],
+                                   standardized=False).standardized.tolist() \
+        == [False, False]

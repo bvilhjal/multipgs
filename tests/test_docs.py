@@ -57,7 +57,7 @@ def test_bibliography_entries_are_well_formed():
 
 
 @pytest.mark.parametrize("name", ["theory.md", "guide.md", "algorithm.md",
-                                  "api.md", "references.md"])
+                                  "api.md", "references.md", "service.md"])
 def test_docs_exist_and_are_linked_from_the_readme(name):
     assert (ROOT / "docs" / name).exists()
     readme = (ROOT / "README.md").read_text(encoding="utf-8")

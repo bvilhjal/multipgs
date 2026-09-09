@@ -66,6 +66,7 @@ packages = ["multipgs"]
     "docs/api.md",
     "docs/guide.md",
     "docs/references.md",
+    "docs/service.md",
     "docs/theory.md",
 ]
 

@@ -43,14 +43,18 @@ class SumstatEval:
     log: dict = field(default_factory=dict)
 
     @property
-    def is_validation(self):
-        """Whether this is clean validation after every model choice was fixed."""
+    def is_assessment(self):
+        """Whether this is clean assessment after every model choice was fixed.
+
+        True only for regime A. Regime B is tuning and regime C is same-data
+        reuse; neither is an assessment, however large the number looks.
+        """
         return self.regime == "A"
 
     @property
-    def is_assessment(self):
-        """Whether this is clean assessment after every model choice was fixed."""
-        return self.regime == "A"
+    def is_validation(self):
+        """Alias for :attr:`is_assessment`, kept for older callers."""
+        return self.is_assessment
 
     def summary(self):
         lines = [f"summary-statistic evaluation (regime {self.regime}): "
@@ -59,7 +63,7 @@ class SumstatEval:
         if self.regime == "B":
             lines.append("  this was used for tuning — do not report it as a "
                          "clean assessment")
-        elif not self.is_validation:
+        elif not self.is_assessment:
             lines.append("  this is not a validation — do not report it as one")
         if self.log.get("warning"):
             lines.append(f"  {self.log['warning']}")

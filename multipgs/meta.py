@@ -152,10 +152,14 @@ def meta_pgs(scores, *, n_eff=None, expected_r2=None, method="sqrt_n_eff",
 
     Parameters
     ----------
-    scores : array ``(n, K)`` or :class:`~multipgs.panel.ScorePanel`
+    scores : array ``(n, K)``, :class:`~multipgs.panel.ScorePanel`, or None
         The scores in the cohort to be scored. They are used only for their
         means and standard deviations (and, for ``"decorrelated"``, their
-        correlation matrix) — no phenotype is read.
+        correlation matrix) — no phenotype is read. ``None`` is the
+        summary-only case: there is no cohort, so ``center`` and ``scale``
+        must both be supplied and ``score_ids`` is then required to name the
+        columns. ``"decorrelated"`` is unavailable that way, because its
+        ``C`` can only be estimated from scored individuals.
     n_eff : array ``(K,)``, optional
         Effective sample size of each discovery GWAS. Required for
         ``method="sqrt_n_eff"``. For case/control studies use
@@ -187,6 +191,15 @@ def meta_pgs(scores, *, n_eff=None, expected_r2=None, method="sqrt_n_eff",
         Standardization to apply instead of this cohort's own. Pass the
         training cohort's values to score a second cohort on the same scale.
 
+        With ``scores=None`` these are the whole standardization. For
+        components already on LDpred3's standardized-genotype scale, the score
+        SD under an LD reference is ``sqrt(diag(G))`` from
+        :func:`multipgs.score_gram` — the same ``G`` that
+        :func:`multipgs.multi_pgs_sumstats` fits — and ``center`` is zeros,
+        since such a score has mean zero under the reference by construction.
+        ``center`` is carried for provenance and by ``combine_weights``;
+        :meth:`MetaPGS.multi_pgs` does not subtract it.
+
     Returns
     -------
     MetaPGS
@@ -201,14 +214,37 @@ def meta_pgs(scores, *, n_eff=None, expected_r2=None, method="sqrt_n_eff",
               != [str(s) for s in panel_ids.ravel()]):
             raise ValueError("score_ids do not match the ScorePanel columns")
         scores = scores.scores
-    S = np.asarray(scores, dtype=float)
-    if S.ndim != 2:
-        raise ValueError("scores must be 2-dimensional")
-    if not np.all(np.isfinite(S)):
-        raise ValueError("scores contain non-finite values")
-    n, K = S.shape
-    if K == 0:
-        raise ValueError("scores must contain at least one score column")
+    if scores is None:
+        # Summary-only: no cohort exists, so the caller owns the whole
+        # standardization. Requiring both halves explicitly keeps a missing
+        # one from defaulting to an implied unit SD, which would silently
+        # reweight the combination.
+        if center is None or scale is None:
+            raise ValueError(
+                "scores=None needs both center= and scale=; for standardized "
+                "components the reference score SD is sqrt(diag(G)) from "
+                "score_gram and center is zeros")
+        if method == "decorrelated":
+            raise ValueError(
+                "method='decorrelated' estimates the score correlation matrix "
+                "from scored individuals, so it needs scores=; use "
+                "'expected_r2' or 'sqrt_n_eff' in the summary-only case")
+        if score_ids is None:
+            raise ValueError("scores=None needs score_ids= to name the columns")
+        K = int(np.asarray(score_ids, dtype=object).ravel().size)
+        if K == 0:
+            raise ValueError("score_ids must name at least one score")
+        n = None
+        S = None
+    else:
+        S = np.asarray(scores, dtype=float)
+        if S.ndim != 2:
+            raise ValueError("scores must be 2-dimensional")
+        if not np.all(np.isfinite(S)):
+            raise ValueError("scores contain non-finite values")
+        n, K = S.shape
+        if K == 0:
+            raise ValueError("scores must contain at least one score column")
     if score_ids is None:
         score_ids = np.array([f"score_{j}" for j in range(K)], dtype=object)
     score_ids = np.asarray(score_ids, dtype=object)
@@ -220,7 +256,7 @@ def meta_pgs(scores, *, n_eff=None, expected_r2=None, method="sqrt_n_eff",
         raise ValueError("score_ids must be unique")
 
     center = (S.mean(axis=0) if center is None
-              else np.asarray(center, dtype=float))
+              else np.asarray(center, dtype=float).ravel())
     if center.shape != (K,):
         raise ValueError(f"center must have shape ({K},), got {center.shape}")
     if not np.all(np.isfinite(center)):
@@ -228,7 +264,7 @@ def meta_pgs(scores, *, n_eff=None, expected_r2=None, method="sqrt_n_eff",
     if scale is None:
         scale = S.std(axis=0)
     else:
-        scale = np.asarray(scale, dtype=float)
+        scale = np.asarray(scale, dtype=float).ravel()
     if scale.shape != (K,):
         raise ValueError(f"scale must have shape ({K},), got {scale.shape}")
     if not np.all(np.isfinite(scale)):
@@ -241,18 +277,18 @@ def meta_pgs(scores, *, n_eff=None, expected_r2=None, method="sqrt_n_eff",
         raise ValueError("ridge must be finite and non-negative") from None
     if not np.isfinite(ridge_value) or ridge_value < 0:
         raise ValueError("ridge must be finite and non-negative")
+    # A constant score carries nothing. Give it a unit scale so it cannot
+    # divide the combination by ~0, then zero its accuracy so it takes no
+    # weight; ``beta`` is forced to zero for it at the end either way.
     dead = scale <= 1e-12
     scale = np.where(dead, 1.0, scale)
-    if dead.any():
-        # A constant score carries nothing; give it weight 0 rather than let it
-        # divide the combination by ~0.
-        pass
 
     rho = _accuracy_vector(method, n_eff, expected_r2, K)
     rho = np.where(dead, 0.0, rho)
 
-    log = {"method": method, "n": int(n), "n_scores": int(K),
-           "dead_scores": int(dead.sum())}
+    log = {"method": method, "n": None if n is None else int(n),
+           "n_scores": int(K), "dead_scores": int(dead.sum()),
+           "standardization": "supplied" if S is None else "cohort"}
 
     if method == "decorrelated":
         # Do the centering and scaling in place on one copy; ``(S-center)/scale``

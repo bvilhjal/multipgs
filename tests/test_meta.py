@@ -196,3 +196,43 @@ def test_decorrelated_records_but_does_not_police_rho_alignment():
     # It does describe what it claims to: an orthogonal panel needs no
     # correction, a duplicate-heavy one gets a large one.
     assert independent.log["rho_alignment"] > duplicated.log["rho_alignment"]
+
+
+def test_summary_only_meta_pgs_needs_no_individuals():
+    """The training-free rule is also cohort-free: no score matrix exists.
+
+    A service that never sees genotypes holds only the LD-reference score SD,
+    which for standardized components is ``sqrt(diag(G))``. The weights must
+    then match what the same rule produces with a cohort in hand.
+    """
+    ids = ["a", "b", "c"]
+    n_eff = np.array([4e4, 1e5, 2.5e5])
+    scale = np.array([0.4, 0.5, 0.6])
+    res = meta_pgs(None, n_eff=n_eff, score_ids=ids, center=np.zeros(3),
+                   scale=scale)
+    with_cohort = meta_pgs(np.zeros((0, 3)), n_eff=n_eff, score_ids=ids,
+                           center=np.zeros(3), scale=scale)
+    assert np.allclose(res.weight, with_cohort.weight)
+    assert np.allclose(res.beta, res.weight / scale)
+    assert res.weight[2] > res.weight[0]          # larger GWAS, larger weight
+    assert res.log["n"] is None
+    assert res.log["standardization"] == "supplied"
+
+
+@pytest.mark.parametrize("kwargs,match", [
+    ({"center": np.zeros(2)}, "needs both center"),
+    ({"scale": np.ones(2)}, "needs both center"),
+    ({"center": np.zeros(2), "scale": np.ones(2),
+      "method": "decorrelated"}, "decorrelated"),
+])
+def test_summary_only_meta_pgs_refuses_what_it_cannot_do(kwargs, match):
+    """A missing half of the standardization must not default to a unit SD."""
+    with pytest.raises(ValueError, match=match):
+        meta_pgs(None, n_eff=np.array([1e5, 1e5]), score_ids=["a", "b"],
+                 **kwargs)
+
+
+def test_summary_only_meta_pgs_names_its_columns():
+    with pytest.raises(ValueError, match="score_ids"):
+        meta_pgs(None, n_eff=np.array([1e5, 1e5]), center=np.zeros(2),
+                 scale=np.ones(2))

@@ -150,6 +150,13 @@ class ScorePanel:
     plus weights per score. ``standardized[k]`` says whether score ``k``'s
     weights apply to standardized genotypes (LDpred3) or raw allele counts
     (PGS Catalog).
+
+    ``n`` may be zero. A panel with ``scores`` of shape ``(0, K)`` carries the
+    ``K`` per-variant weight tables and no individuals, which is all
+    :func:`combine_weights` reads; it is what a summary-statistic-only caller
+    holds, and :meth:`weights_only` is the supported way to build one.
+    Anything that reads score columns — :meth:`align`, :meth:`concat`,
+    :meth:`summary`, every fitting route taking a cohort — needs a real ``n``.
     """
 
     scores: np.ndarray
@@ -185,6 +192,59 @@ class ScorePanel:
         if len(hits) > 1:
             raise ValueError(f"score id {key!r} is not unique")
         return int(hits[0])
+
+    @classmethod
+    def weights_only(cls, weights, score_ids, *, standardized=True, meta=None,
+                     log=None):
+        """A panel of per-variant weights with no individuals.
+
+        The summary-statistic route never scores a cohort: component weights
+        come from an LD reference and the combination is learned from moments,
+        so there is no ``n``-by-``K`` matrix to carry. This builds the panel
+        :func:`combine_weights` needs to fold such a combination into one
+        deployable weight file — the only step of that route that still wants a
+        panel — without inventing individuals to hold it.
+
+        Parameters
+        ----------
+        weights : sequence of mapping
+            One weight table per score, with ``id chrom pos a1 a2 weight`` and
+            the ``af``/``sd`` reference scale :func:`combine_weights` requires
+            for a frozen file. For a service with no target genotypes these are
+            the LD reference's own frequency and its HWE ``sqrt(2 f (1-f))``
+            dosage SD; record which, because the deployed file inherits it.
+        score_ids : sequence of str
+            Must match the fit's ``score_ids``, in order.
+        standardized : bool or array ``(K,)``
+            Whether each score's weights apply to standardized genotypes.
+            LDpred3-fitted components are standardized; raw PGS Catalog
+            weights are not.
+
+        Returns
+        -------
+        ScorePanel
+            With ``scores`` of shape ``(0, K)`` and no ``FID``/``IID``.
+        """
+        tables = list(weights)
+        ids = np.asarray(list(score_ids), dtype=object).ravel()
+        if ids.size != len(tables):
+            raise ValueError(f"score_ids has {ids.size} entries for "
+                             f"{len(tables)} weight tables")
+        if not tables:
+            raise ValueError("a weights-only panel needs at least one score")
+        flags = np.asarray(standardized, dtype=bool).ravel()
+        if flags.size == 1:
+            flags = np.repeat(flags, ids.size)
+        if flags.shape != (ids.size,):
+            raise ValueError(f"standardized must be a scalar or have "
+                             f"{ids.size} entries, got {flags.shape}")
+        return cls(
+            scores=np.zeros((0, ids.size), dtype=float),
+            sample_fid=np.empty(0, dtype=object),
+            sample_iid=np.empty(0, dtype=object),
+            score_ids=ids, standardized=flags, weights=tables,
+            meta=[{} for _ in tables] if meta is None else list(meta),
+            log=dict(log or {}, source="weights_only", n_individuals=0))
 
     def select(self, columns):
         """A panel restricted to ``columns`` (indices, ids, or a bool mask)."""
@@ -1626,7 +1686,10 @@ def combine_weights(panel, fit, *, path=None):
     ----------
     panel : ScorePanel
         Must carry ``weights`` — a panel read back with :func:`read_panel` from
-        a plain score matrix does not.
+        a plain score matrix does not. Only the weight tables, the
+        ``standardized`` flags and the score ids are read, never the score
+        columns, so a summary-statistic fit with no cohort passes
+        :meth:`ScorePanel.weights_only`.
     fit : MultiPGSFit, MetaPGS, or SumstatFit
         Its raw-score ``beta`` and ``score_ids`` must match the panel's, in
         order. In particular, ``SumstatFit.beta`` is already on this raw score
