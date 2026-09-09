@@ -2,7 +2,44 @@
 
 ## Unreleased
 
-Version `0.3.4.dev3`.
+Version `0.3.4.dev4`.
+
+### Mixed component panels, and an interval for the combined score
+
+- `Component(path, kind=...)` describes one panel member and how its weights
+  reach the standardized-genotype scale, so `fit_prepared_panel` can mix
+  LDpred3 weight files fitted against the reference with raw PGS
+  Catalog-format scoring files converted by the reference's HWE
+  `sqrt(2f(1-f))`. The two are not equivalent and the result never presents
+  them as such: `coefficient_table()` carries `scale_source` and
+  `scale_verified` per row, `align_log["n_hwe_approximated"]` counts the
+  approximated ones and names them in a warning, and `summary()` reports the
+  count. A panel with one approximated component folds into an approximated
+  weight file.
+- `accuracy_blocks(weights, z, ld, chrom=...)` returns the per-LD-block
+  `w_b' z_b` and `w_b' D_b w_b` of a combined score, plus each block's
+  chromosome. `D` is block-diagonal, so both sums are exactly additive and
+  the plug-in ratio they reproduce (checked to 1e-9 against the score-space
+  identity) gains a delete-one-block jackknife SE and an exact sign-flip
+  null. `fit_prepared_panel` computes them while the cache is open and stores
+  them on `PreparedPanelFit` as `accuracy_u`/`accuracy_v`/`accuracy_groups`,
+  with `accuracy_totals()` for the two sums.
+
+  multipgs does not import `ppb`: it publishes the decomposition and leaves
+  `ppb.corrected_r2`, `ppb.r2_block_jackknife` and `ppb.sign_flip_null` to a
+  caller that already depends on it. `docs/service.md` records the three
+  cautions on reading them -- a corrected R2 may be negative and is not
+  clamped, the sign-flip `z` is bounded by `sqrt(n_blocks)` and so measures
+  block coherence rather than significance, and chromosome groups are the
+  more conservative jackknife unit.
+- `PreparedPanelFit.n_eff` is now resolved from the trait whatever the tuning
+  mode, since a finite-sample correction needs it even when the pseudo-split
+  did not; `n_eff_policy["used_for_tuning"]` records which role it served. It
+  was previously `nan` under `tune="none"`.
+- `reference_weight_table` is factored out of the weight-file aligner, so both
+  alignment paths build a component's deployable table the same way -- from
+  the *reference's* frequency and dosage SD, which is what lets a mixed panel
+  fold onto one coordinate.
 
 ### A packaged entry point for a genotype-free service
 

@@ -51,7 +51,9 @@ score coordinate.
 
 | Name | Purpose |
 |---|---|
-| `fit_prepared_panel`, `PreparedPanelFit` | the packaged genotype-free route: an LD cache, a `PreparedTrait` and LDpred3 weight files in, a fitted combination and a deployable weight file out |
+| `fit_prepared_panel`, `PreparedPanelFit` | the packaged genotype-free route: an LD cache, a `PreparedTrait` and component scores in, a fitted combination and a deployable weight file out |
+| `Component` | one panel member and how its weights are scaled: an LDpred3 weight file whose reference scale can be verified, or a raw PGS Catalog scoring file converted by the HWE approximation |
+| `accuracy_blocks` | per-LD-block `w'z` and `w'Dw` of a combined score, so its plug-in accuracy gains a jackknife SE and a sign-flip null |
 | `align_to_reference` | harmonize component weights to one data source's variant order and optionally convert them to standardized-genotype scale |
 | `align_weights_to_reference` | harmonize LDpred3 weight files to an LD reference, refusing one whose own `AF_REF`/`SD_REF` describes a different panel |
 | `score_gram` | compute `G = W_ld.T @ D @ W_ld`, streaming LD blocks and sparse scores; `progress(done, total)` reports the stream |

@@ -30,9 +30,10 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from ._align import align_weights_to_reference
+from ._align import Component, align_components
+from ._gram import accuracy_blocks
 
-__all__ = ["fit_prepared_panel", "PreparedPanelFit"]
+__all__ = ["fit_prepared_panel", "PreparedPanelFit", "Component"]
 
 #: Tuning mode -> the regime the resulting numbers belong to.
 _TUNE_REGIME = {"none": "C", "pumas": "B", "independent": "B"}
@@ -163,6 +164,15 @@ class PreparedPanelFit:
     independent tuning GWAS and ``"C"`` when selection reused the fitting
     moments; neither is a clean assessment, and no arrangement of one target
     GWAS produces one.
+
+    ``accuracy_u``/``accuracy_v`` are the per-LD-block ``w_b' z_b`` and
+    ``w_b' D_b w_b`` of the *combined* score, with ``accuracy_groups`` labelling
+    each block's chromosome. They are kept raw and dependency-free because the
+    plug-in ratio they sum to is a point estimate with no correction, no
+    interval and no null; a caller that has :mod:`ppb` can hand them straight
+    to ``ppb.r2_block_jackknife``, ``ppb.sign_flip_null`` and (with the two
+    sums) ``ppb.corrected_r2`` to get all three. See
+    :meth:`accuracy_totals`.
     """
 
     fit: object
@@ -175,6 +185,9 @@ class PreparedPanelFit:
     align_log: dict
     trait_log: dict
     cache_provenance: dict
+    accuracy_u: object = None
+    accuracy_v: object = None
+    accuracy_groups: object = None
     log: dict = field(default_factory=dict)
 
     @property
@@ -195,23 +208,52 @@ class PreparedPanelFit:
         component that matched the reference poorly is visible next to its
         coefficient rather than only in a log.
         """
-        mass = (self.align_log or {}).get("weight_mass_matched") or {}
+        log = self.align_log or {}
+        mass = log.get("weight_mass_matched") or {}
+        per_component = log.get("components") or {}
         beta = np.asarray(self.fit.beta, dtype=float)
         beta_std = np.asarray(self.fit.beta_std, dtype=float)
         rows = []
         for j, sid in enumerate(self.score_ids):
             table = self.panel.weights[j]
+            detail = per_component.get(str(sid), {})
             rows.append({
                 "score_id": sid,
                 "beta": float(beta[j]),
                 "beta_std": float(beta_std[j]),
                 "selected": bool(beta[j] != 0.0),
                 "n_variants": int(np.asarray(table["weight"]).size),
-                "weight_mass": (None if sid not in mass
-                                else float(mass[sid])),
+                # Only computable where the component's own weights are
+                # known; a Catalog scoring file reports none, and that is a
+                # None rather than a zero.
+                "weight_mass": (None if mass.get(str(sid)) is None
+                                else float(mass[str(sid)])),
+                # How this component's weights reached the standardized scale,
+                # so an HWE-approximated score is never shown as equivalent to
+                # one whose reference scale was verified.
+                "kind": detail.get("kind"),
+                "scale_source": detail.get("scale_source"),
+                "scale_verified": bool(detail.get("scale_verified")),
             })
         rows.sort(key=lambda row: -abs(row["beta_std"]))
         return rows
+
+    def accuracy_totals(self):
+        """``(numerator, denominator, n_blocks)`` of the plug-in accuracy.
+
+        ``self.n_eff`` completes the triple ``ppb.corrected_r2`` needs; it is
+        resolved from the trait whether or not tuning used it.
+
+        ``numerator**2 / (denominator * var_y)`` is the combined score's
+        plug-in R², and the pair is what ``ppb.corrected_r2`` takes for its
+        finite-sample correction. ``None`` when the block decomposition was
+        not computed.
+        """
+        if self.accuracy_u is None or self.accuracy_v is None:
+            return None
+        u = np.asarray(self.accuracy_u, dtype=float)
+        v = np.asarray(self.accuracy_v, dtype=float)
+        return float(u.sum()), float(v.sum()), int(u.size)
 
     def write_weights(self, path):
         """Write the folded combination as an LDpred3 weight file.
@@ -247,6 +289,10 @@ class PreparedPanelFit:
         if self.align_log.get("all_zero_scores"):
             lines.append("  all-zero component(s): "
                          + ", ".join(self.align_log["all_zero_scores"]))
+        if self.align_log.get("n_hwe_approximated"):
+            lines.append(
+                f"  {self.align_log['n_hwe_approximated']} component(s) on the "
+                "HWE-approximated scale, not a measured dosage SD")
         return "\n".join(lines)
 
 
@@ -266,10 +312,17 @@ def fit_prepared_panel(ld_cache, trait, components, *, score_ids=None,
         The **target** trait, prepared against this same cache. Only its
         ``indices``, ``z`` and (for PUMAS) ``n_eff`` are read; no phenotype
         and no genotypes are involved.
-    components : sequence of str or WeightsTable
-        One LDpred3 weight file per component score, each fitted against this
-        same reference. ``check_scale`` verifies that claim against the file's
-        own ``AF_REF``/``SD_REF``.
+    components : sequence of str, WeightsTable, or Component
+        The panel. A bare path or table is an LDpred3 weight file fitted
+        against this same reference, and ``check_scale`` verifies that claim
+        against the file's own ``AF_REF``/``SD_REF``. A
+        :class:`~multipgs.Component` with ``kind="scoring_file"`` is a PGS
+        Catalog-format file counting raw alleles, converted with the
+        reference's HWE ``sqrt(2 f (1-f))`` approximation because no target
+        dosages exist to measure the real dosage SD. Mixing the two is
+        allowed and recorded per component: the folded weight file inherits
+        the weaker of the two scale assumptions, so which components carry
+        which has to remain visible.
     score_ids : sequence of str, optional
         Component names; default is each file's stem.
     tune : {"pumas", "none"}
@@ -308,25 +361,52 @@ def fit_prepared_panel(ld_cache, trait, components, *, score_ids=None,
     with _opened(ld_cache, validate) as cache:
         variants, af, sd = _reference(cache)
         n_cache = int(af.size)
-        pairs, ids, tables, align_log = align_weights_to_reference(
-            components, variants, af=af, sd=sd, score_ids=score_ids,
-            sd_source=sd_source, check_scale=check_scale,
-            progress=_stage("align"))
+        described = list(components)
+        if score_ids is not None:
+            named = list(score_ids)
+            if len(named) != len(described):
+                raise ValueError(f"score_ids has {len(named)} entries for "
+                                 f"{len(described)} components")
+            described = [
+                item if isinstance(item, Component)
+                else Component(item, score_id=name)
+                for item, name in zip(described, named)]
+        pairs, ids, tables, align_log = align_components(
+            described, variants, af=af, sd=sd, sd_source=sd_source,
+            check_scale=check_scale, progress=_stage("align"))
         if not pairs:
             raise ValueError(
                 "no component score aligned to this LD reference; "
                 f"{align_log.get('errors') or 'see the alignment log'}")
         z, trait_index = _target_moment(trait, n_cache)
-        scalar_n_eff, n_eff_policy = (
-            _scalar_n_eff(trait, n_eff) if tune == "pumas"
-            else (float(n_eff) if n_eff is not None else float("nan"),
-                  {"policy": "unused"}))
+        # Always resolved, not only for PUMAS: the pseudo-split needs it, and
+        # so does any finite-sample correction of the plug-in accuracy, which
+        # a caller may apply whatever the tuning mode was. `used_for_tuning`
+        # records which of the two it served here.
+        scalar_n_eff, n_eff_policy = _scalar_n_eff(trait, n_eff)
+        n_eff_policy = dict(n_eff_policy, used_for_tuning=(tune == "pumas"))
         fit = multi_pgs_sumstats(
             pairs, z, cache.blocks, weights_gwas=pairs, score_ids=ids,
             n_variants_ld=n_cache, tune=tune,
             n_eff=scalar_n_eff if tune == "pumas" else None,
             weights_independent_of_z=weights_independent_of_z,
             progress=progress, **fit_kwargs)
+        # The combined weights on the reference basis, decomposed per LD
+        # block while the cache is still open. Done here because the blocks
+        # are gone once it closes, and because a point estimate with no
+        # interval and no null is the weakest part of this whole route.
+        accuracy_u = accuracy_v = accuracy_groups = None
+        try:
+            collapsed = fit.frozen_variant_weights(pairs,
+                                                   n_variants_ld=n_cache)
+            accuracy_u, accuracy_v, accuracy_groups = accuracy_blocks(
+                collapsed, z, cache.blocks, chrom=np.asarray(variants.chrom),
+                progress=_stage("accuracy"))
+        except Exception as exc:                              # noqa: BLE001
+            # A missing interval must not cost the fit itself; record why.
+            accuracy_error = f"{type(exc).__name__}: {exc}"
+        else:
+            accuracy_error = None
         cache_provenance = {
             "n_variants": n_cache,
             "n_ref": _scalar(cache.metadata.get("n_ref")),
@@ -344,7 +424,10 @@ def fit_prepared_panel(ld_cache, trait, components, *, score_ids=None,
                    "n_cache": n_cache,
                    "coverage": float(trait_index.size) / n_cache},
         cache_provenance=cache_provenance,
+        accuracy_u=accuracy_u, accuracy_v=accuracy_v,
+        accuracy_groups=accuracy_groups,
         log={"tune": tune, "n_components": len(ids),
+             "accuracy_blocks_error": accuracy_error,
              "weights_independent_of_z": bool(weights_independent_of_z),
              "n_combined_variants": int(np.asarray(weights["id"]).size)})
 

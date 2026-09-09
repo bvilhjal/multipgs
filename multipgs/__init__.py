@@ -62,7 +62,7 @@ from __future__ import annotations
 
 import importlib
 
-__version__ = "0.3.4.dev3"
+__version__ = "0.3.4.dev4"
 
 # Public name -> submodule it lives in. No module name may equal one of its own
 # exported names: importing a submodule binds it on this package, and the cache
@@ -81,13 +81,15 @@ _EXPORTS = {
               "write_score_metadata", "read_score_metadata", "cohort_overlap"],
     "sumstat": ["multi_pgs_sumstats", "SumstatFit", "score_gram", "pseudo_r2",
                 "align_to_reference", "align_weights_to_reference",
+                "accuracy_blocks",
                 "evaluate_sumstat", "SumstatEval",
                 "score_moments", "REGIMES", "subsample_score_moments"],
     "architecture": ["Architecture", "daetwyler_r2", "architectures_from_panel",
                      "screen", "ScreenResult", "penalty_from_accuracy",
                      "penalty_from_relevance"],
     "rg": ["align_sumstats_to_cache", "ldsc_rg_screen", "RgScreen"],
-    "service": ["fit_prepared_panel", "PreparedPanelFit"],
+    "service": ["fit_prepared_panel", "PreparedPanelFit",
+                "Component"],
     "metrics": ["evaluate", "EvalResult", "r2", "incremental_r2", "auc",
                  "nagelkerke_r2", "liability_r2"],
     "simulate": ["simulate_panel", "SimPanel", "simulate_same_trait_panel",

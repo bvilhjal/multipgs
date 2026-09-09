@@ -991,3 +991,73 @@ def test_align_weights_to_reference_validates_the_reference_scale(tmp_path):
     with pytest.raises(ValueError, match="score_ids has"):
         align_weights_to_reference([path], variants, af=af, sd=sd,
                                    score_ids=["a", "b"])
+
+
+def test_accuracy_blocks_decompose_the_score_space_identity_exactly():
+    """(sum u)^2 / sum v must equal the score-space plug-in R2 exactly.
+
+    The point of the decomposition is that D is block-diagonal, so the
+    numerator and denominator are additive over blocks. If that identity
+    drifts, every interval and null built on it is measuring something else.
+    """
+    from multipgs import accuracy_blocks
+
+    _x, w, _scores, _y, ld, z = _setup(seed=9)
+    blocks = _blocked(ld)
+    fit = multi_pgs_sumstats(w, z, blocks, weights_gwas=w, tune="none")
+    collapsed = fit.frozen_variant_weights(w, n_variants_ld=z.size)
+    u, v, groups = accuracy_blocks(collapsed, z, blocks)
+    assert u.size == v.size == len(blocks)
+    assert groups is None
+    assert (u.sum() ** 2) / v.sum() == pytest.approx(
+        pseudo_r2(fit.beta, fit.gram, fit.r), rel=1e-9)
+    # v is a quadratic form on a correlation block, so it cannot be negative
+    # by more than numerical noise.
+    assert np.all(v > -1e-12)
+
+
+def test_accuracy_blocks_label_groups_by_chromosome():
+    """Chromosomes are the more conservative jackknife unit when block sizes
+    are uneven, so the caller has to be able to ask for them."""
+    from multipgs import accuracy_blocks
+
+    _x, w, _scores, _y, ld, z = _setup(seed=10)
+    blocks = _blocked(ld, size=40)
+    fit = multi_pgs_sumstats(w, z, blocks, weights_gwas=w, tune="none")
+    collapsed = fit.frozen_variant_weights(w, n_variants_ld=z.size)
+    # On a block boundary, so no block straddles the two chromosomes.
+    boundary = 2 * 40
+    chrom = np.where(np.arange(z.size) < boundary, "1", "2")
+    u, v, groups = accuracy_blocks(collapsed, z, blocks, chrom=chrom)
+    assert groups is not None and groups.size == u.size
+    assert set(groups.tolist()) == {"1", "2"}
+    # Grouping cannot change the estimate itself, only its jackknife units.
+    u2, v2, _ = accuracy_blocks(collapsed, z, blocks)
+    assert np.allclose(u, u2) and np.allclose(v, v2)
+
+
+def test_accuracy_blocks_warns_when_a_block_straddles_chromosomes():
+    from multipgs import accuracy_blocks
+
+    _x, w, _scores, _y, ld, z = _setup(seed=11)
+    blocks = _blocked(ld, size=40)
+    fit = multi_pgs_sumstats(w, z, blocks, weights_gwas=w, tune="none")
+    collapsed = fit.frozen_variant_weights(w, n_variants_ld=z.size)
+    # A boundary deliberately inside the first block.
+    chrom = np.where(np.arange(z.size) < 5, "1", "2")
+    with pytest.warns(UserWarning, match="span more than one chromosome"):
+        accuracy_blocks(collapsed, z, blocks, chrom=chrom)
+
+
+def test_accuracy_blocks_validate_their_inputs():
+    from multipgs import accuracy_blocks
+
+    _x, w, _scores, _y, ld, z = _setup(seed=12)
+    blocks = _blocked(ld)
+    good = np.zeros(z.size)
+    with pytest.raises(ValueError, match="reference's order"):
+        accuracy_blocks(good[:-1], z, blocks)
+    with pytest.raises(ValueError, match="chrom covers"):
+        accuracy_blocks(good, z, blocks, chrom=np.array(["1"]))
+    with pytest.raises(ValueError, match="must be finite"):
+        accuracy_blocks(np.full(z.size, np.nan), z, blocks)

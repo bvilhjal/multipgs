@@ -108,6 +108,67 @@ memory is `O(block_size · K)`.
 weight tables, `standardized` flags and score ids, never score columns, and
 this is the supported way to say so rather than fabricating an empty cohort.
 
+### Mixing internal and external components
+
+`fit_prepared_panel` accepts a `Component` per panel member, so one panel may
+mix weight files fitted against this reference with PGS Catalog-format scoring
+files downloaded from elsewhere:
+
+```python
+from multipgs import Component, fit_prepared_panel
+
+result = fit_prepared_panel(ld_cache, focal_trait, [
+    Component("job_a.weights.tsv", score_id="T2D"),          # verified scale
+    Component("PGS000014.txt", kind="scoring_file",          # HWE-approximated
+              score_id="PGS000014"),
+], tune="pumas", weights_independent_of_z=True)
+```
+
+The two are **not** equivalent and the result says so per component.
+`kind="weights"` has an `AF_REF`/`SD_REF` that is checked against the
+reference; `kind="scoring_file"` counts raw alleles and can only reach the
+standardized scale through the reference's HWE `sqrt(2f(1−f))`, which ignores
+imputation uncertainty and departures from equilibrium.
+`coefficient_table()` carries `scale_source` and `scale_verified` per row, and
+`align_log["n_hwe_approximated"]` counts them. The folded weight file inherits
+the weaker assumption, so a panel with one approximated component is an
+approximated panel.
+
+Sample overlap is the sharper hazard for downloaded scores. Many PGS Catalog
+scores are UK Biobank-derived; if the target GWAS draws on the same cohort the
+accuracy is inflated and no check here can detect it
+([theory.md](theory.md#sample-overlap)).
+
+### An interval and a null for the combined score
+
+The plug-in accuracy is a point estimate with no correction, no uncertainty
+and no null, and it can leave `[0, 1]` entirely when the reference cannot
+estimate the score covariance. `PreparedPanelFit` therefore carries the
+per-block decomposition `accuracy_u`, `accuracy_v` and `accuracy_groups`
+(`accuracy_blocks` computes them while the cache is open), because `D` is
+block-diagonal and both sums are exactly additive over blocks.
+
+Those arrays are what [ppb](https://github.com/bvilhjal/ppb) consumes:
+
+```python
+import ppb
+numerator, denominator, n_blocks = result.accuracy_totals()
+raw, corrected, se = ppb.corrected_r2(numerator, denominator, result.n_eff)
+jackknife = ppb.r2_block_jackknife(result.accuracy_u, result.accuracy_v,
+                                   groups=result.accuracy_groups)
+null = ppb.sign_flip_null(result.accuracy_u, result.accuracy_v)
+```
+
+multipgs deliberately does not import ppb — it publishes the decomposition and
+leaves the composition to a caller that has it. Three cautions on reading the
+output: a corrected R² may be negative when the numerator is noise and is not
+clamped; the sign-flip `z` is bounded by `sqrt(n_blocks)` by Cauchy–Schwarz,
+so it measures how coherently blocks agree rather than significance, and is
+not comparable across references with different block counts; and chromosome
+groups are the more conservative jackknife unit when block sizes are uneven.
+
+None of this makes a regime B number an assessment.
+
 ## 3. What the missing cohort changes
 
 **Genotype SD.** `G` and `c` are defined with each source's *empirical* dosage

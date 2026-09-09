@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 
 import numpy as np
@@ -313,6 +314,94 @@ def _score_gram_from_coo(parsed, ld, *, progress=None):
     # asymmetric Gram makes the coordinate descent's covariance updates drift.
     gram = 0.5 * (gram + gram.T)
     return gram, np.diag(gram).copy()
+
+
+def accuracy_blocks(weights, z, ld, *, n_variants=None, chrom=None,
+                    progress=None):
+    """Per-block ``(u, v)`` for one collapsed variant-weight vector.
+
+    ``u_b = w_b' z_b`` and ``v_b = w_b' D_b w_b``, so the genome-wide plug-in
+    accuracy is ``(sum u)^2 / (sum v * var_y)`` -- the same identity
+    :func:`pseudo_r2` computes in score space, decomposed by LD block.
+
+    The decomposition is what turns that point estimate into an interval and a
+    null. ``D`` is block-diagonal, so both sums are exactly additive over
+    blocks: a delete-one-block jackknife gives a standard error, and flipping
+    the sign of every weight in a block negates ``u_b`` while leaving ``v_b``
+    identical, which is a negative control costing no extra pass.
+    :mod:`ppb` consumes these arrays directly (``ppb.r2_block_jackknife``,
+    ``ppb.sign_flip_null``).
+
+    Parameters
+    ----------
+    weights : array_like, shape (m,)
+        The combined per-variant weights on the LD reference's standardized
+        basis and in its variant order -- what
+        :meth:`multipgs.SumstatFit.frozen_variant_weights` returns.
+    z : array_like, shape (m,)
+        Target-trait standardized marginal effects in that same order, zero
+        where the trait has no usable variant.
+    ld : sequence of (corr_block, idx), or ndarray
+        The same LD reference the weights are aligned to.
+    chrom : array_like, shape (m,), optional
+        Per-variant chromosome. When given, the returned ``groups`` labels each
+        block by the chromosome it falls in, which is the more conservative
+        jackknife unit when block sizes are very uneven. A block spanning two
+        chromosomes is labelled by its first variant and counted, since the
+        reference is supposed to tile within chromosomes.
+
+    Returns
+    -------
+    (u, v, groups) : (ndarray, ndarray, ndarray or None)
+    """
+    weights = np.asarray(weights, dtype=float).ravel()
+    z = np.asarray(z, dtype=float).ravel()
+    if weights.size != z.size:
+        raise ValueError(f"weights cover {weights.size} variants but z covers "
+                         f"{z.size}; both must be in the reference's order")
+    if weights.size == 0:
+        raise ValueError("weights are empty")
+    if not np.all(np.isfinite(weights)) or not np.all(np.isfinite(z)):
+        raise ValueError("weights and z must be finite")
+    m = _nonnegative_integer(n_variants, "n_variants") \
+        if n_variants is not None else weights.size
+    if m != weights.size:
+        raise ValueError(f"n_variants={m} but weights cover {weights.size}")
+    if chrom is not None:
+        chrom = np.asarray(chrom).ravel()
+        if chrom.size != m:
+            raise ValueError(f"chrom covers {chrom.size} variants, expected {m}")
+
+    total = None
+    if isinstance(ld, np.ndarray):
+        total = 1
+    elif hasattr(ld, "__len__") and hasattr(ld, "__getitem__"):
+        try:
+            total = sum(1 for _corr, idx in ld if np.size(idx))
+        except (TypeError, ValueError):
+            total = len(ld)
+    u, v, groups, n_split = [], [], [], 0
+    for done, (corr, idx) in enumerate(_as_blocks(ld, m), start=1):
+        lo, hi = int(idx[0]), int(idx[-1]) + 1
+        block_w = weights[lo:hi]
+        u.append(float(block_w @ z[lo:hi]))
+        # A one-column quadratic form through the same bounded contraction the
+        # Gram uses, so every LD representation is handled in its own form.
+        v.append(float(_block_quadform(corr, block_w[:, None])[0, 0]))
+        if chrom is not None:
+            labels = chrom[lo:hi]
+            groups.append(labels[0])
+            if labels.size and not np.all(labels == labels[0]):
+                n_split += 1
+        if progress is not None:
+            progress(done, total)
+    if n_split:
+        warnings.warn(
+            f"{n_split} LD block(s) span more than one chromosome; each was "
+            "labelled by its first variant. Chromosome jackknife groups are "
+            "only as clean as the reference's blocking", stacklevel=2)
+    return (np.asarray(u, dtype=float), np.asarray(v, dtype=float),
+            np.asarray(groups) if chrom is not None else None)
 
 
 def _weight_digest(rows, cols, vals, n_variants, n_scores):

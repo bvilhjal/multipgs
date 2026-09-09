@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -154,6 +155,28 @@ def align_to_reference(scoring_files, variants, *, sd=None, af=None,
     return pairs, ids, log
 
 
+def reference_weight_table(index, weight, variants, af, sd) -> dict:
+    """One deployable weight table on the reference's own scale.
+
+    :func:`multipgs.combine_weights` needs per-variant ``af``/``sd`` to write a
+    frozen file, and every component of one panel must share them or the folded
+    file describes no single scale. Taking both from the *reference* rather
+    than from each component's own file is what makes a mixed panel -- some
+    components fitted here, some downloaded -- fold onto one coordinate.
+    """
+    index = np.asarray(index, dtype=np.int64)
+    return {
+        "id": np.asarray(variants.id)[index],
+        "chrom": np.asarray(variants.chrom)[index],
+        "pos": np.asarray(variants.pos)[index],
+        "a1": np.asarray(variants.a1)[index],
+        "a2": np.asarray(variants.a2)[index],
+        "weight": np.asarray(weight, dtype=float),
+        "af": np.asarray(af, dtype=float)[index],
+        "sd": np.asarray(sd, dtype=float)[index],
+    }
+
+
 def _weights_as_sumstats(table):
     """Wrap a :class:`ldpred3.WeightsTable` so ``harmonize`` can align it.
 
@@ -280,13 +303,8 @@ def align_weights_to_reference(weight_files, variants, *, af, sd,
             mass.append(float(w @ w) / total if total > 0.0 else 0.0)
             pairs.append((idx, w))
             ids.append(label)
-            tables.append({
-                "id": np.asarray(variants.id)[idx],
-                "chrom": np.asarray(variants.chrom)[idx],
-                "pos": np.asarray(variants.pos)[idx],
-                "a1": np.asarray(variants.a1)[idx],
-                "a2": np.asarray(variants.a2)[idx],
-                "weight": w, "af": af[idx], "sd": sd[idx]})
+            tables.append(
+                reference_weight_table(idx, w, variants, af, sd))
             matched.append(int(idx.size))
         except Exception as exc:                      # noqa: BLE001
             if on_error == "raise":
@@ -365,3 +383,166 @@ def _scale_disagreement(table, harmonized, af, sd, atol):
             return (f"reference dosage SD differs by up to "
                     f"{float(gap[worst]):.4g}")
     return None
+
+
+@dataclass
+class Component:
+    """One component score of a panel, and how its weights are scaled.
+
+    ``kind="weights"`` is an LDpred3 weight file -- typically a fit made
+    against this same reference -- whose own ``AF_REF``/``SD_REF`` can be
+    checked against it. ``kind="scoring_file"`` is a PGS Catalog-format file
+    counting raw alleles, which has no reference scale of its own: it must be
+    converted with the HWE ``sqrt(2 f (1-f))`` approximation from the
+    reference's frequencies, and that approximation is recorded per component
+    rather than averaged into one panel-wide claim.
+
+    The distinction is not cosmetic. A verified component's scale was measured
+    on the reference; an approximated one ignores imputation uncertainty and
+    departures from equilibrium, and a panel mixing the two folds into a file
+    whose accuracy inherits the weaker assumption.
+    """
+
+    path: object
+    kind: str = "weights"
+    score_id: object = None
+
+    def __post_init__(self):
+        if self.kind not in ("weights", "scoring_file"):
+            raise ValueError(
+                f"component kind must be 'weights' or 'scoring_file', got "
+                f"{self.kind!r}")
+
+
+#: How each component kind's weights reached the standardized-genotype scale.
+SCALE_SOURCES = {
+    "weights": "ldpred3_weight_file",
+    "scoring_file": "hwe_from_af",
+}
+
+
+def align_components(components, variants, *, af, sd, sd_source=None,
+                     check_scale=True, drop_ambiguous=True,
+                     on_error="raise", progress=None):
+    """Align a mixed panel of component scores to one LD reference.
+
+    Accepts :class:`Component` descriptors, or bare paths for the
+    LDpred3-weight-file case. Every component is returned on the reference's
+    index space and standardized-genotype scale, with ``log["scale_source"]``
+    naming per score how it got there -- so a caller can show which components
+    carry a verified reference scale and which are HWE-approximated instead of
+    presenting them as equivalent.
+
+    Returns ``(pairs, ids, tables, log)``, the same shape as
+    :func:`align_weights_to_reference`.
+    """
+    if on_error not in ("raise", "skip"):
+        raise ValueError(f"on_error must be 'raise' or 'skip', got {on_error!r}")
+    described = [item if isinstance(item, Component) else Component(item)
+                 for item in components]
+    if not described:
+        raise ValueError("a panel needs at least one component score")
+    variants = _as_variant_table(variants)
+    af = np.asarray(af, dtype=float).ravel()
+    sd = np.asarray(sd, dtype=float).ravel()
+
+    pairs, ids, tables = [], [], []
+    scale_source, per_component, errors = {}, {}, {}
+    matched, mass = [], {}
+    for position, item in enumerate(described):
+        try:
+            if item.kind == "weights":
+                sub_pairs, sub_ids, sub_tables, sub_log = \
+                    align_weights_to_reference(
+                        [item.path], variants, af=af, sd=sd,
+                        score_ids=None if item.score_id is None
+                        else [item.score_id],
+                        sd_source=sd_source, check_scale=check_scale,
+                        drop_ambiguous=drop_ambiguous)
+            else:
+                # Raw allele counts: the only conversion available without
+                # target dosages is the reference's HWE approximation, and it
+                # is requested explicitly rather than defaulted.
+                sub_pairs, sub_ids, sub_log = align_to_reference(
+                    [item.path], variants, af=af, hwe_genotype_sd=True,
+                    drop_ambiguous=drop_ambiguous)
+                if not sub_log.get("standardized"):
+                    raise ValueError(
+                        "the scoring file was not converted to the "
+                        "standardized-genotype scale; its weights cannot "
+                        "enter a Gram built on that scale")
+                if item.score_id is not None:
+                    sub_ids = [str(item.score_id)]
+                sub_tables = [
+                    reference_weight_table(index, weight, variants, af, sd)
+                    for index, weight in sub_pairs]
+            if not sub_pairs:
+                raise ValueError(
+                    sub_log.get("errors")
+                    or "no variant aligned to this LD reference")
+            pairs.extend(sub_pairs)
+            ids.extend(str(name) for name in sub_ids)
+            tables.extend(sub_tables)
+            sub_mass = sub_log.get("weight_mass_matched") or {}
+            for name in sub_ids:
+                key = str(name)
+                scale_source[key] = SCALE_SOURCES[item.kind]
+                matched.append(int(sub_log.get("n_matched_median") or 0))
+                # Squared-weight mass is only computable where the source's
+                # own weights are known; the Catalog path does not report it.
+                mass[key] = (float(sub_mass[key]) if key in sub_mass
+                             else None)
+                per_component[key] = {
+                    "kind": item.kind,
+                    "scale_source": SCALE_SOURCES[item.kind],
+                    "scale_verified": item.kind == "weights" and check_scale,
+                    "n_matched": int(sub_log.get("n_matched_median") or 0),
+                    "weight_mass": mass[key],
+                }
+        except Exception as exc:                              # noqa: BLE001
+            label = str(item.score_id or item.path)
+            if on_error == "raise":
+                raise ValueError(f"{label}: {exc}") from exc
+            errors[label] = str(exc)
+        if progress is not None:
+            progress(position + 1, len(described),
+                     str(item.score_id or item.path))
+
+    if len(set(ids)) != len(ids):
+        raise ValueError(
+            "component score ids must be unique across the whole panel; "
+            f"got {ids}")
+    approximated = sorted(name for name, source in scale_source.items()
+                          if source == "hwe_from_af")
+    log = {"n_requested": len(described), "n_aligned": len(pairs),
+           "n_failed": len(errors),
+           "n_reference_variants": int(af.size),
+           "standardized": True,
+           # Whether the reference-scale check was requested. It can only
+           # ever apply to the weight-file components; a scoring file has no
+           # reference scale of its own to check.
+           "scale_checked": bool(check_scale),
+           "scale_source": scale_source,
+           "components": per_component,
+           "n_hwe_approximated": len(approximated)}
+    if matched:
+        log["n_matched_median"] = int(np.median(matched))
+        log["n_matched_min"] = int(min(matched))
+    if mass:
+        log["weight_mass_matched"] = dict(mass)
+        known = [value for value in mass.values() if value is not None]
+        log["weight_mass_matched_min"] = float(min(known)) if known else None
+    empty = [name for name, table in zip(ids, tables)
+             if not np.any(table["weight"])]
+    if empty:
+        log["all_zero_scores"] = empty
+    if errors:
+        log["errors"] = errors
+    if approximated:
+        log["warning"] = (
+            f"{len(approximated)} component(s) were converted to the "
+            "standardized-genotype scale with the reference's HWE "
+            "sqrt(2 f (1-f)) approximation, which ignores imputation "
+            "uncertainty and departures from equilibrium: "
+            + ", ".join(approximated))
+    return pairs, ids, tables, log

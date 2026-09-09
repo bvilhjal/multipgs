@@ -141,6 +141,7 @@ from ._numba import warn_no_numba
 from ._align import align_to_reference, align_weights_to_reference
 from ._evaluate import REGIMES, SumstatEval, evaluate_sumstat
 from ._gram import (
+    accuracy_blocks,
     _collapse_parsed_weights,
     _ld_variant_count,
     _parsed_weight_digest,
@@ -172,7 +173,7 @@ from ._validate import _positive_integer
 
 __all__ = ["multi_pgs_sumstats", "SumstatFit", "score_gram", "score_moments",
            "pseudo_r2", "align_to_reference", "align_weights_to_reference",
-           "evaluate_sumstat", "SumstatEval", "REGIMES",
+           "accuracy_blocks", "evaluate_sumstat", "SumstatEval", "REGIMES",
            "subsample_score_moments"]
 
 # ---------------------------------------------------------------------------

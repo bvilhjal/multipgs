@@ -182,3 +182,107 @@ def test_fit_prepared_panel_borrows_a_caller_owned_cache(reference):
         fit_prepared_panel(context,
                            _trait(reference, np.random.default_rng(8)),
                            reference["components"], tune="none")
+
+
+def _catalog_scoring_file(path, reference, rng, size=70):
+    """A PGS Catalog-format file: raw allele-count weights, no reference scale."""
+    m = reference["m"]
+    sel = np.sort(rng.choice(m, size=size, replace=False))
+    weight = rng.normal(scale=0.05, size=sel.size)
+    from ldpred3 import load_ld_blocks
+    blocks, ids, meta = load_ld_blocks(reference["cache"], return_metadata=True)
+    close = getattr(blocks, "close", None)
+    ids = np.asarray(ids)
+    ea = np.asarray(meta["counted_allele"])
+    oa = np.asarray(meta["other_allele"])
+    if close:
+        close()
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("#pgs_id=PGS000001\n#genome_build=GRCh37\n")
+        fh.write("rsID\teffect_allele\tother_allele\teffect_weight\n")
+        for i, value in zip(sel, weight):
+            fh.write(f"{ids[i]}\t{ea[i]}\t{oa[i]}\t{value:.8g}\n")
+    return str(path)
+
+
+def test_a_mixed_panel_records_each_component_s_scale(reference, tmp_path):
+    """An HWE-approximated component must never look like a verified one.
+
+    A Catalog scoring file counts raw alleles and carries no AF_REF/SD_REF, so
+    it can only reach the standardized scale through the reference's HWE
+    approximation. The folded weight file inherits that weaker assumption, so
+    which components carry which has to stay visible.
+    """
+    from multipgs import Component
+
+    rng = np.random.default_rng(21)
+    catalog = _catalog_scoring_file(tmp_path / "PGS000001.txt", reference, rng)
+    components = [Component(reference["components"][0], score_id="job0"),
+                  Component(reference["components"][1], score_id="job1"),
+                  Component(catalog, kind="scoring_file",
+                            score_id="PGS000001")]
+    result = fit_prepared_panel(
+        reference["cache"], _trait(reference, np.random.default_rng(22)),
+        components, tune="none")
+
+    by_id = {row["score_id"]: row for row in result.coefficient_table()}
+    assert by_id["job0"]["scale_source"] == "ldpred3_weight_file"
+    assert by_id["job0"]["scale_verified"] is True
+    assert by_id["PGS000001"]["scale_source"] == "hwe_from_af"
+    assert by_id["PGS000001"]["scale_verified"] is False
+    assert by_id["PGS000001"]["kind"] == "scoring_file"
+    assert result.align_log["n_hwe_approximated"] == 1
+    assert "HWE" in result.align_log["warning"]
+    assert "PGS000001" in result.align_log["warning"]
+    assert "HWE-approximated" in result.summary()
+    # It still folds into one deployable file on the reference's scale.
+    assert result.log["n_combined_variants"] > 0
+
+
+def test_component_kind_is_validated():
+    from multipgs import Component
+
+    with pytest.raises(ValueError, match="component kind must be"):
+        Component("x", kind="sumstats")
+
+
+def test_duplicate_component_ids_are_refused(reference):
+    from multipgs import Component
+
+    same = reference["components"][0]
+    with pytest.raises(ValueError, match="unique across the whole panel"):
+        fit_prepared_panel(
+            reference["cache"], _trait(reference, np.random.default_rng(23)),
+            [Component(same, score_id="dup"), Component(same, score_id="dup")],
+            tune="none")
+
+
+def test_the_fit_carries_a_per_block_accuracy_decomposition(reference):
+    """The plug-in R2 is a point estimate with no interval and no null.
+
+    Keeping the per-block sums is what lets a caller attach both, so they are
+    computed while the cache is open and checked against the identity here.
+    """
+    result = fit_prepared_panel(
+        reference["cache"], _trait(reference, np.random.default_rng(24)),
+        reference["components"], score_ids=reference["score_ids"],
+        tune="none")
+    assert result.log["accuracy_blocks_error"] is None
+    u, v = np.asarray(result.accuracy_u), np.asarray(result.accuracy_v)
+    assert u.size == v.size == reference["n_blocks"]
+    numerator, denominator, n_blocks = result.accuracy_totals()
+    assert n_blocks == reference["n_blocks"]
+    assert numerator == pytest.approx(u.sum())
+    assert denominator == pytest.approx(v.sum())
+    # Chromosome labels, the more conservative jackknife unit.
+    assert result.accuracy_groups is not None
+    assert set(np.asarray(result.accuracy_groups).tolist()) <= {"1", "2"}
+    # ppb consumes these directly; check the three readouts it provides.
+    ppb = pytest.importorskip("ppb")
+    raw, corrected, se = ppb.corrected_r2(numerator, denominator, result.n_eff)
+    assert np.isfinite(raw) and np.isfinite(corrected) and se >= 0
+    assert ppb.r2_block_jackknife(u, v).se >= 0
+    assert ppb.r2_block_jackknife(u, v, groups=result.accuracy_groups).se >= 0
+    null = ppb.sign_flip_null(u, v)
+    # Cauchy-Schwarz bounds the coherence statistic by sqrt(n_blocks).
+    assert abs(null.z) <= np.sqrt(u.size) + 1e-9
