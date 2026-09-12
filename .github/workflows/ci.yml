@@ -19,10 +19,10 @@ jobs:
       - uses: actions/checkout@v4
       - name: Require private ldpred3 access
         env:
-          LDPRED3_READ_TOKEN: ${{ secrets.LDPRED3_READ_TOKEN }}
+          LDPRED3_READ_TOKEN: ${{ secrets.LDPRED3_READ_TOKEN || secrets.LDPRED3_TOKEN }}
         run: |
           if [ -z "$LDPRED3_READ_TOKEN" ]; then
-            echo "::error title=Missing ldpred3 token::Configure the repository secret LDPRED3_READ_TOKEN with read access to bvilhjal/ldpred3."
+            echo "::error title=Missing ldpred3 token::Configure the repository secret LDPRED3_READ_TOKEN (or LDPRED3_TOKEN) with read access to bvilhjal/ldpred3."
             exit 1
           fi
       - uses: actions/checkout@v4
@@ -30,7 +30,7 @@ jobs:
           repository: bvilhjal/ldpred3
           ref: master
           path: ldpred3
-          token: ${{ secrets.LDPRED3_READ_TOKEN }}
+          token: ${{ secrets.LDPRED3_READ_TOKEN || secrets.LDPRED3_TOKEN }}
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
@@ -47,10 +47,10 @@ jobs:
       - uses: actions/checkout@v4
       - name: Require sibling repository access
         env:
-          LDPRED3_READ_TOKEN: ${{ secrets.LDPRED3_READ_TOKEN }}
+          LDPRED3_READ_TOKEN: ${{ secrets.LDPRED3_READ_TOKEN || secrets.LDPRED3_TOKEN }}
         run: |
           if [ -z "$LDPRED3_READ_TOKEN" ]; then
-            echo "::error title=Missing sibling token::Configure LDPRED3_READ_TOKEN with read access to the private LDpred3, Bipred, and GWFM repositories."
+            echo "::error title=Missing sibling token::Configure LDPRED3_READ_TOKEN (or LDPRED3_TOKEN) with read access to the private LDpred3, Bipred, and GWFM repositories."
             exit 1
           fi
       - uses: actions/checkout@v4
@@ -58,19 +58,19 @@ jobs:
           repository: bvilhjal/ldpred3
           ref: master
           path: siblings/ldpred3
-          token: ${{ secrets.LDPRED3_READ_TOKEN }}
+          token: ${{ secrets.LDPRED3_READ_TOKEN || secrets.LDPRED3_TOKEN }}
       - uses: actions/checkout@v4
         with:
           repository: bvilhjal/bipred
           ref: main
           path: siblings/bipred
-          token: ${{ secrets.LDPRED3_READ_TOKEN }}
+          token: ${{ secrets.LDPRED3_READ_TOKEN || secrets.LDPRED3_TOKEN }}
       - uses: actions/checkout@v4
         with:
           repository: bvilhjal/gwfm
           ref: master
           path: siblings/gwfm
-          token: ${{ secrets.LDPRED3_READ_TOKEN }}
+          token: ${{ secrets.LDPRED3_READ_TOKEN || secrets.LDPRED3_TOKEN }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -103,10 +103,10 @@ jobs:
       - run: python -m pip install --upgrade build twine numpy "pypdf>=5"
       - name: Require private ldpred3 access
         env:
-          LDPRED3_READ_TOKEN: ${{ secrets.LDPRED3_READ_TOKEN }}
+          LDPRED3_READ_TOKEN: ${{ secrets.LDPRED3_READ_TOKEN || secrets.LDPRED3_TOKEN }}
         run: |
           if [ -z "$LDPRED3_READ_TOKEN" ]; then
-            echo "::error title=Missing ldpred3 token::Configure the repository secret LDPRED3_READ_TOKEN with read access to bvilhjal/ldpred3."
+            echo "::error title=Missing ldpred3 token::Configure the repository secret LDPRED3_READ_TOKEN (or LDPRED3_TOKEN) with read access to bvilhjal/ldpred3."
             exit 1
           fi
       - uses: actions/checkout@v4
@@ -114,7 +114,7 @@ jobs:
           repository: bvilhjal/ldpred3
           ref: master
           path: ldpred3
-          token: ${{ secrets.LDPRED3_READ_TOKEN }}
+          token: ${{ secrets.LDPRED3_READ_TOKEN || secrets.LDPRED3_TOKEN }}
       - run: python report/generate_evidence.py --check
       - run: python -m build
       - run: python -m twine check dist/*

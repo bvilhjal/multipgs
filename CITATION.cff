@@ -1,0 +1,218 @@
+cff-version: 1.2.0
+message: "If you use multipgs, please cite the method your analysis actually used. The references below cover the implemented estimators and their direct interpretation; there is no multipgs paper."
+title: "multipgs: combining many polygenic scores into one"
+abstract: >-
+  A Python package that combines many polygenic scores into one: score stacking
+  in a training cohort, a summary-statistic route over score-space moments, and
+  training-free combination of same-trait scores, plus the machinery to acquire
+  input scores and fold a fitted combination back into a single deployable
+  per-variant weight file. Built on ldpred3 for genotype I/O, allele
+  harmonisation, and the LDpred model behind score construction.
+type: software
+authors:
+  - family-names: "Vilhjálmsson"
+    given-names: "Bjarni Jóhann"
+repository-code: "https://github.com/bvilhjal/multipgs"
+license: MIT
+version: 0.3.4.dev4
+date-released: "2026-09-09"
+keywords:
+  - polygenic score
+  - multi-PGS
+  - meta-PGS
+  - score stacking
+  - elastic net
+  - selection index
+  - GWAS
+references:
+  # The learned combination
+  - type: article
+    title: "Multi-PGS enhances polygenic prediction by combining 937 polygenic scores"
+    authors:
+      - family-names: Albiñana
+        given-names: Clara
+      - family-names: Zhu
+        given-names: Zhihong
+      - family-names: Schork
+        given-names: "Andrew J."
+      - family-names: Ingason
+        given-names: Andrés
+      - family-names: Aschard
+        given-names: Hugues
+      - family-names: Brikell
+        given-names: Isabell
+      - family-names: Bulik
+        given-names: "Cynthia M."
+      - family-names: Petersen
+        given-names: "Liselotte V."
+      - family-names: Agerbo
+        given-names: Esben
+      - family-names: Grove
+        given-names: Jakob
+      - family-names: Nordentoft
+        given-names: Merete
+      - family-names: Hougaard
+        given-names: "David M."
+      - family-names: Werge
+        given-names: Thomas
+      - family-names: Børglum
+        given-names: "Anders D."
+      - family-names: Mortensen
+        given-names: "Preben Bo"
+      - family-names: McGrath
+        given-names: "John J."
+      - family-names: Neale
+        given-names: "Benjamin M."
+      - family-names: Privé
+        given-names: Florian
+      - family-names: Vilhjálmsson
+        given-names: "Bjarni J."
+    journal: "Nature Communications"
+    volume: 14
+    start: 4702
+    year: 2023
+    doi: 10.1038/s41467-023-40330-w
+  # Summary-statistic quadratic and pseudotuning
+  - type: article
+    title: "Polygenic scores via penalized regression on summary statistics"
+    authors:
+      - family-names: Mak
+        given-names: "Timothy Shin Heng"
+      - family-names: Porsch
+        given-names: "Robert Milan"
+      - family-names: Choi
+        given-names: "Shing Wan"
+      - family-names: Zhou
+        given-names: Xueya
+      - family-names: Sham
+        given-names: "Pak Chung"
+    journal: "Genetic Epidemiology"
+    volume: 41
+    issue: 6
+    start: 469
+    end: 480
+    year: 2017
+    doi: 10.1002/gepi.22050
+  - type: article
+    title: "PUMAS: fine-tuning polygenic risk scores with GWAS summary statistics"
+    authors:
+      - family-names: Zhao
+        given-names: Zhipeng
+      - family-names: Wu
+        given-names: Yuchang
+      - family-names: Miao
+        given-names: Jiacheng
+      - family-names: Song
+        given-names: Yixuan
+      - family-names: Zhong
+        given-names: Xiaoyuan
+    journal: "Genome Biology"
+    volume: 22
+    start: 257
+    year: 2021
+    doi: 10.1186/s13059-021-02479-9
+  # Model selection
+  - type: article
+    title: "Efficient Implementation of Penalized Regression for Genetic Risk Prediction"
+    authors:
+      - family-names: Privé
+        given-names: Florian
+      - family-names: Aschard
+        given-names: Hugues
+      - family-names: Blum
+        given-names: "Michael G. B."
+    journal: "Genetics"
+    volume: 212
+    issue: 1
+    start: 65
+    end: 74
+    year: 2019
+    doi: 10.1534/genetics.119.302019
+  # Training-free combination and the architecture screen
+  - type: article
+    title: "Improving genetic prediction by leveraging genetic correlations among human diseases and traits"
+    authors:
+      - family-names: Maier
+        given-names: "Robert M."
+      - family-names: Visscher
+        given-names: "Peter M."
+      - family-names: Robinson
+        given-names: "Matthew R."
+      - family-names: Wray
+        given-names: "Naomi R."
+    journal: "Nature Communications"
+    volume: 9
+    start: 989
+    year: 2018
+    doi: 10.1038/s41467-017-02769-6
+  - type: article
+    title: "Accuracy of predicting the genetic risk of disease using a genome-wide approach"
+    authors:
+      - family-names: Daetwyler
+        given-names: "Hans D."
+      - family-names: Villanueva
+        given-names: Beatriz
+      - family-names: Woolliams
+        given-names: "John A."
+    journal: "PLoS ONE"
+    volume: 3
+    issue: 10
+    year: 2008
+    doi: 10.1371/journal.pone.0003395
+  - type: article
+    title: "Mapping genetic architecture of thousands of complex traits using GWAS summary statistics"
+    authors:
+      - family-names: Hansen
+        given-names: O.
+    journal: "Research Square (preprint, not peer reviewed)"
+    year: 2026
+    doi: 10.21203/rs.3.rs-9415305/v1
+  # Score construction
+  - type: article
+    title: "Modeling Linkage Disequilibrium Increases Accuracy of Polygenic Risk Scores"
+    authors:
+      - family-names: Vilhjálmsson
+        given-names: "Bjarni J."
+      - family-names: Yang
+        given-names: Jian
+      - family-names: Finucane
+        given-names: "Hilary K."
+      - family-names: Gusev
+        given-names: Alexander
+      - family-names: Lindström
+        given-names: Sara
+      - family-names: Ripke
+        given-names: Stephan
+      - family-names: Price
+        given-names: "Alkes L."
+    journal: "The American Journal of Human Genetics"
+    volume: 97
+    issue: 4
+    start: 576
+    end: 592
+    year: 2015
+    doi: 10.1016/j.ajhg.2015.09.001
+  # Boundary of scope — cite only if the analysis actually ran MIXPRS
+  - type: article
+    title: "MIXPRS enables multi-population and multi-method polygenic risk scores using summary statistics"
+    authors:
+      - family-names: Xu
+        given-names: L.
+      - family-names: Dong
+        given-names: Y.
+      - family-names: Zeng
+        given-names: X.
+      - family-names: Bian
+        given-names: Z.
+      - family-names: Zhou
+        given-names: G.
+      - family-names: Guan
+        given-names: L.
+      - family-names: Zhao
+        given-names: H.
+    journal: "Nature Genetics"
+    volume: 58
+    start: 1583
+    end: 1594
+    year: 2026
+    doi: 10.1038/s41588-026-02637-4

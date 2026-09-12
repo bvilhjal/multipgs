@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import warnings
 
-from ldpred3.shim import HAVE_NUMBA, _jit_nogil, _jit_parallel, prange
+from ldpred3.shim import (HAVE_NUMBA, jit_nogil as _jit_nogil,
+                          jit_parallel as _jit_parallel, prange)
 
 __all__ = ["HAVE_NUMBA", "_jit_nogil", "_jit_parallel", "prange",
            "warn_no_numba"]

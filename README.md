@@ -53,9 +53,11 @@ estimands the same. See [theory.md](docs/theory.md#three-objects-that-get-combin
 ## Install
 
 Python 3.9–3.14. Numba is strongly recommended. These sibling packages are not
-on PyPI, so Git installs need authenticated GitHub read access. Install the
-coordinated LDpred3 0.7 line first; install Bipred only for the optional
-genetic-correlation screen:
+on PyPI — the
+[family map](https://github.com/bvilhjal/ldpred3/blob/master/docs/family.md)
+shows how they fit together — so Git installs need authenticated GitHub read
+access. Install the coordinated LDpred3 0.7 line first; install Bipred only for
+the optional genetic-correlation screen:
 
 ```bash
 python -m pip install "ldpred3[fast] @ git+https://github.com/bvilhjal/ldpred3.git@master"
@@ -135,7 +137,9 @@ the score-space analogue of lassosum, not SNP-level lassosum. The contract:
   `log["standardized"]` before using its output as standardized-score weights.
 
 The full workflow, including the alignment code, is in
-[the guide](docs/guide.md#fitting-from-summary-statistics).
+[the guide](docs/guide.md#fitting-from-summary-statistics); preparing the LD
+reference itself is covered by ldpred3's canonical
+[LD-reference guide](https://github.com/bvilhjal/ldpred3/blob/master/docs/ld-references.md).
 
 ## Training-free combination
 
