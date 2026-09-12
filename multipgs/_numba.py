@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import warnings
 
-from ldpred3.shim import (HAVE_NUMBA, jit_nogil as _jit_nogil,
-                          jit_parallel as _jit_parallel, prange)
+# The underscore spellings are the only ones the declared ldpred3 floor
+# (>=0.7.12) publishes; the non-underscore aliases exist only from ldpred3
+# v0.7.23, which keeps the underscore names as aliases.
+from ldpred3.shim import HAVE_NUMBA, _jit_nogil, _jit_parallel, prange
 
 __all__ = ["HAVE_NUMBA", "_jit_nogil", "_jit_parallel", "prange",
            "warn_no_numba"]
