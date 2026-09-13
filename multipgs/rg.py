@@ -12,6 +12,19 @@ from dataclasses import dataclass
 
 import numpy as np
 
+try:
+    # The scalar-N anchor helpers landed after the pinned ldpred3 floor
+    # (>=0.7.12); on an older ldpred3 a scalar n_eff keeps its historical
+    # flatten-to-constant behaviour.
+    from ldpred3.sumstats import (
+        detect_columns as _lp_detect,
+        _rescale_or_constant_n,
+        _warn_n_eff_rescale,
+    )
+    _HAVE_N_ANCHOR = True
+except ImportError:
+    _HAVE_N_ANCHOR = False
+
 
 __all__ = ["align_sumstats_to_cache", "ldsc_rg_screen", "RgScreen"]
 
@@ -86,11 +99,26 @@ def _align_sumstats(sumstats, variants, *, n_eff=None, qc=True):
         standardize_betas,
     )
 
-    ss = read_sumstats(sumstats, n_eff=n_eff)
+    rescale_record = None
+    if (n_eff is not None and not isinstance(n_eff, str)
+            and _HAVE_N_ANCHOR and "n_eff" in _lp_detect(sumstats)[1]):
+        # The file carries a per-variant N column: read it without the
+        # scalar, then anchor the column's median at the supplied value
+        # (downward only) so its relative pattern survives.
+        ss = read_sumstats(sumstats)
+        rescale_record = _rescale_or_constant_n(ss, n_eff)
+        _warn_n_eff_rescale(rescale_record, stacklevel=4)
+    else:
+        # A string n_eff selects a column; a numeric scalar with no N
+        # column -- or any scalar on an older ldpred3 -- applies as a
+        # constant on read.
+        ss = read_sumstats(sumstats, n_eff=n_eff)
     qc_log = {}
     if qc:
         keep, qc_log = qc_sumstats(ss)
         ss = ss.subset(keep)
+    if rescale_record is not None:
+        qc_log["n_eff_rescale"] = rescale_record
     h = harmonize(ss, variants, drop_ambiguous=True)
     m = int(variants.id.size)
     beta = np.full(m, np.nan)
@@ -112,6 +140,14 @@ def align_sumstats_to_cache(sumstats, ld_cache, *, n_eff=None, qc=True):
 
     Unmatched or QC-dropped variants are ``nan``. Returns
     ``(beta_hat, n_eff_vector, log)``.
+
+    A numeric ``n_eff`` anchors the file's per-variant N column: the column
+    is rescaled downward-only so its median sits at the supplied value
+    (``log["qc"]["n_eff_rescale"]`` records the transform; an upward rescale
+    is refused with a warning). With no N column the scalar applies as a
+    constant; a string ``n_eff`` names the column to use. On an ldpred3
+    older than the anchor helpers a numeric scalar flattens every variant
+    instead.
     """
     with _cache_contents(ld_cache) as (_blocks, ids, meta):
         variants = _cache_variants(ids, meta)
@@ -152,8 +188,12 @@ def ldsc_rg_screen(focal, auxiliaries, ld_cache, *, n_eff_focal=None,
 
     ``auxiliaries`` is a mapping ``score_id -> path`` or a sequence of
     ``(score_id, path)``. ``n_eff`` is an optional mapping of auxiliary
-    effective sample sizes. The LDSC chi-square cap is applied to regression
-    rows only; it does not change the model's ``m_snps``.
+    effective sample sizes, and ``n_eff_focal`` the focal's: each scalar
+    anchors that file's per-variant N column (median rescaled onto the
+    scalar, downward only; a constant when the file has no usable N column)
+    exactly as in :func:`align_sumstats_to_cache`. The LDSC chi-square cap
+    is applied to regression rows only; it does not change the model's
+    ``m_snps``.
 
     ``min_snps`` is a computational safeguard, not evidence that an estimate
     is scientifically reliable; LDSC needs a genome-wide, well-QCed marker

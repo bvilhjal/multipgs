@@ -272,6 +272,19 @@ GWAS can honestly support, and how LD encodings behave under a `K`-by-`K` Gram.
   MIXPRS: multi-trait (or metadata same-trait) score stacking
   versus a same-trait ensemble of multi-population methods.
 
+### Changed
+
+- `align_sumstats_to_cache` and `ldsc_rg_screen` (the LDSC path, both
+  `n_eff_focal` and the per-auxiliary `n_eff` map) now treat a numeric
+  `n_eff` as an *anchor* for the file's per-variant N column instead of a
+  flattening override: the column is rescaled downward-only so its median
+  sits at the scalar, the transform is recorded under
+  `log["qc"]["n_eff_rescale"]`, and an upward rescale is refused with a
+  warning. With no usable N column the scalar still applies as a constant,
+  and a string `n_eff` remains a pure column selection. The helpers are
+  feature-detected, so an ldpred3 older than the anchor API keeps the
+  previous flatten-to-constant behaviour.
+
 ## 0.3.3 - 2026-08-13
 
 Correctness and release integrity:

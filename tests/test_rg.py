@@ -146,6 +146,116 @@ def test_real_ldpred3_cache_alignment_uses_variant_table(tmp_path):
     assert log["n_matched"] == 2
 
 
+def _n_anchor_guard():
+    import multipgs.rg as rg
+    if not rg._HAVE_N_ANCHOR:
+        pytest.skip("installed ldpred3 predates the n_eff anchor helpers")
+
+
+def _three_variant_cache(tmp_path):
+    from ldpred3.ld import save_ld_blocks
+    cache = tmp_path / "ld.npz"
+    save_ld_blocks(
+        cache, [(np.eye(3, dtype=np.float32), np.arange(3))],
+        np.array(["rs1", "rs2", "rs3"], dtype=object),
+        counted_allele=np.array(["A", "A", "A"]),
+        other_allele=np.array(["C", "C", "C"]),
+        chrom=np.array(["1", "1", "1"]), pos=np.array([10, 20, 30]),
+        reference_af=np.array([0.2, 0.3, 0.4]), n_ref=500, ridge=0.0)
+    return cache
+
+
+def _three_variant_gwas(tmp_path, ns, name="gwas.tsv", n_header="N"):
+    path = tmp_path / name
+    header = "SNP\tCHR\tBP\tA1\tA2\tBETA\tSE" + (f"\t{n_header}" if n_header else "")
+    lines = [header]
+    for (rsid, pos), n in zip((("rs1", 10), ("rs2", 20), ("rs3", 30)), ns):
+        row = f"{rsid}\t1\t{pos}\tA\tC\t0.10\t0.05"
+        lines.append(row + (f"\t{n}" if n_header else ""))
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def test_scalar_n_eff_anchors_the_files_n_column(tmp_path):
+    """scalar + per-variant N: median anchored, relative pattern kept."""
+    _n_anchor_guard()
+    from multipgs import align_sumstats_to_cache
+    cache = _three_variant_cache(tmp_path)
+    gwas = _three_variant_gwas(tmp_path, (4_000, 8_000, 16_000))
+    with pytest.warns(UserWarning, match="rescaled by factor"):
+        beta, n_eff, log = align_sumstats_to_cache(
+            gwas, cache, n_eff=4_000, qc=False)
+    # median 8_000 -> anchored at 4_000 (factor 0.5); 1:2:4 ratios preserved
+    np.testing.assert_allclose(n_eff, [2_000, 4_000, 8_000])
+    record = log["qc"]["n_eff_rescale"]
+    assert record["applied"] and record["factor"] == pytest.approx(0.5)
+    assert record["source_median"] == pytest.approx(8_000)
+    assert record["target_effective_n"] == 4_000
+    assert not record["upward_scaling_refused"]
+
+
+def test_scalar_n_eff_above_the_column_median_is_refused(tmp_path):
+    _n_anchor_guard()
+    from multipgs import align_sumstats_to_cache
+    cache = _three_variant_cache(tmp_path)
+    gwas = _three_variant_gwas(tmp_path, (4_000, 8_000, 16_000))
+    with pytest.warns(UserWarning, match="upward rescale refused"):
+        beta, n_eff, log = align_sumstats_to_cache(
+            gwas, cache, n_eff=40_000, qc=False)
+    np.testing.assert_allclose(n_eff, [4_000, 8_000, 16_000])
+    record = log["qc"]["n_eff_rescale"]
+    assert record["upward_scaling_refused"] and not record["applied"]
+
+
+def test_scalar_n_eff_without_an_n_column_stays_constant(tmp_path):
+    from multipgs import align_sumstats_to_cache
+    cache = _three_variant_cache(tmp_path)
+    gwas = _three_variant_gwas(tmp_path, (None, None, None), n_header=None)
+    beta, n_eff, log = align_sumstats_to_cache(
+        gwas, cache, n_eff=4_000, qc=False)
+    np.testing.assert_allclose(n_eff, [4_000, 4_000, 4_000])
+    assert "n_eff_rescale" not in log["qc"]
+
+
+def test_rg_screen_anchors_focal_and_per_auxiliary_n_eff(
+        tmp_path, monkeypatch):
+    """The n_eff map rescales each auxiliary file's own N column."""
+    _n_anchor_guard()
+    import ldpred3
+    import multipgs.rg as rg
+
+    cache = _three_variant_cache(tmp_path)
+    focal = _three_variant_gwas(tmp_path, (4_000, 8_000, 16_000), "focal.tsv")
+    aux_a = _three_variant_gwas(tmp_path, (4_000, 8_000, 16_000), "a.tsv")
+    aux_b = _three_variant_gwas(tmp_path, (2_000, 4_000, 8_000), "b.tsv")
+
+    fake_bipred = types.ModuleType("bipred")
+    fake_bipred.ldsc_chi2_mask = lambda beta, n: np.ones(beta.size, dtype=bool)
+    fake_bipred.ldsc_rg = lambda *args, **kwargs: SimpleNamespace(
+        rg=0.3, rg_se=0.04)
+    fake_bipred.estimate_sample_overlap = lambda *args: {
+        "overlap_corr": 0.1, "cross_corr_valid": True}
+    monkeypatch.setitem(sys.modules, "bipred", fake_bipred)
+    monkeypatch.setattr(ldpred3, "ld_scores", lambda blocks: np.ones(3))
+
+    with pytest.warns(UserWarning, match="rescaled by factor"):
+        result = rg.ldsc_rg_screen(
+            focal, [("a", aux_a), ("b", aux_b)], cache,
+            n_eff_focal=4_000, n_eff={"a": 4_000, "b": 500},
+            qc=False, min_snps=2)
+
+    focal_rec = result.log["focal"]["qc"]["n_eff_rescale"]
+    assert focal_rec["applied"] and focal_rec["factor"] == pytest.approx(0.5)
+    rec_a = result.log["aux"]["a"]["qc"]["n_eff_rescale"]
+    assert rec_a["factor"] == pytest.approx(0.5)
+    assert rec_a["target_effective_n"] == 4_000
+    rec_b = result.log["aux"]["b"]["qc"]["n_eff_rescale"]
+    # aux-b's own column (median 4_000) anchors at its own scalar 500
+    assert rec_b["factor"] == pytest.approx(0.125)
+    assert rec_b["target_effective_n"] == 500
+    assert result.n_used.tolist() == [3, 3]
+
+
 def test_rg_alignment_borrows_prepared_cache_without_reloading(
         tmp_path, monkeypatch):
     """A caller-owned prepared cache remains open and is never reloaded."""
