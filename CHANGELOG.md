@@ -284,6 +284,15 @@ GWAS can honestly support, and how LD encodings behave under a `K`-by-`K` Gram.
   and a string `n_eff` remains a pure column selection. The helpers are
   feature-detected, so an ldpred3 older than the anchor API keeps the
   previous flatten-to-constant behaviour.
+- The alignment log also composes `log["qc"]["n_eff"]`, ldpred3's
+  whole-story sample-size record: the file's N column and its
+  pre-transform usable/total counts and median, the supplied scalar, the
+  `n_eff_rescale` transform record, and the matched panel's fitted N
+  distribution. `RgScreen.summary()` adds one line -- `N anchored at
+  supplied scalar: focal (×0.5), 2 auxiliaries` -- only where a transform
+  actually scaled a per-variant column. The composer is feature-detected;
+  an ldpred3 without the report helpers keeps recording
+  `n_eff_rescale` alone.
 
 ## 0.3.3 - 2026-08-13
 

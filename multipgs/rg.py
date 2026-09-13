@@ -25,6 +25,17 @@ try:
 except ImportError:
     _HAVE_N_ANCHOR = False
 
+try:
+    # The composed qc_log["n_eff"] report helpers landed later still; on an
+    # ldpred3 without them the screen keeps recording n_eff_rescale alone.
+    from ldpred3.sumstats import (
+        _n_eff_offered_stats as _lp_n_offered,
+        _n_eff_report_block as _lp_n_report,
+    )
+    _HAVE_N_REPORT = True
+except ImportError:
+    _HAVE_N_REPORT = False
+
 
 __all__ = ["align_sumstats_to_cache", "ldsc_rg_screen", "RgScreen"]
 
@@ -99,13 +110,22 @@ def _align_sumstats(sumstats, variants, *, n_eff=None, qc=True):
         standardize_betas,
     )
 
+    # One header read resolves the file's N column for both the anchor
+    # routing and the report block's file_column.
+    mapping = {}
+    if _HAVE_N_ANCHOR:
+        _, mapping = _lp_detect(
+            sumstats,
+            **({"n_eff": n_eff} if isinstance(n_eff, str) else {}))
     rescale_record = None
     if (n_eff is not None and not isinstance(n_eff, str)
-            and _HAVE_N_ANCHOR and "n_eff" in _lp_detect(sumstats)[1]):
+            and _HAVE_N_ANCHOR and "n_eff" in mapping):
         # The file carries a per-variant N column: read it without the
         # scalar, then anchor the column's median at the supplied value
         # (downward only) so its relative pattern survives.
         ss = read_sumstats(sumstats)
+        offered = (None if not _HAVE_N_REPORT
+                   else _lp_n_offered(ss.n_eff, len(ss)))
         rescale_record = _rescale_or_constant_n(ss, n_eff)
         _warn_n_eff_rescale(rescale_record, stacklevel=4)
     else:
@@ -113,6 +133,9 @@ def _align_sumstats(sumstats, variants, *, n_eff=None, qc=True):
         # column -- or any scalar on an older ldpred3 -- applies as a
         # constant on read.
         ss = read_sumstats(sumstats, n_eff=n_eff)
+        offered = (None if not _HAVE_N_REPORT
+                   else _lp_n_offered(
+                       ss.n_eff if mapping.get("n_eff") else None, len(ss)))
     qc_log = {}
     if qc:
         keep, qc_log = qc_sumstats(ss)
@@ -130,6 +153,16 @@ def _align_sumstats(sumstats, variants, *, n_eff=None, qc=True):
         std, _ = standardize_betas(h.beta, h.se, h.n_eff)
         beta[index] = std
         n_vec[index] = np.asarray(h.n_eff, dtype=float)
+    if _HAVE_N_REPORT:
+        # Same block ldpred3 composes: the offered column, the supplied
+        # scalar, the transform record and the fitted (matched-panel) N
+        # distribution.
+        qc_log["n_eff"] = _lp_n_report(
+            file_column=mapping.get("n_eff"),
+            offered=offered,
+            supplied_scalar=(None if n_eff is None or isinstance(n_eff, str)
+                             else float(n_eff)),
+            transform=rescale_record, fitted_n=h.n_eff)
     log = {"n_cache": m, "n_matched": int(len(h)), "qc": qc_log,
            "harmonize": dict(h.log)}
     return beta, n_vec, log
@@ -147,7 +180,10 @@ def align_sumstats_to_cache(sumstats, ld_cache, *, n_eff=None, qc=True):
     is refused with a warning). With no N column the scalar applies as a
     constant; a string ``n_eff`` names the column to use. On an ldpred3
     older than the anchor helpers a numeric scalar flattens every variant
-    instead.
+    instead. When ldpred3 publishes the report helpers, ``log["qc"]["n_eff"]``
+    carries the composed sample-size record (offered column and its
+    pre-transform counts/median, supplied scalar, transform record, fitted
+    N distribution).
     """
     with _cache_contents(ld_cache) as (_blocks, ids, meta):
         variants = _cache_variants(ids, meta)
@@ -178,6 +214,28 @@ class RgScreen:
             np.isfinite(self.overlap_corr) & (np.abs(self.overlap_corr) > 0.05)))
         if n_overlap:
             lines.append(f"  {n_overlap} pair(s) have |overlap_corr| > 0.05")
+        # Report the scalar anchor only where a transform actually scaled a
+        # per-variant column -- a refused upward rescale or a constant
+        # fallback is not an anchoring.
+        def _scaled(qc):
+            rec = (qc or {}).get("n_eff_rescale")
+            if (isinstance(rec, dict) and rec.get("applied")
+                    and rec.get("method") == "downward median rescale"):
+                return rec.get("factor")
+            return None
+        focal_factor = _scaled((self.log.get("focal") or {}).get("qc"))
+        n_aux_scaled = sum(
+            _scaled((log or {}).get("qc")) is not None
+            for log in (self.log.get("aux") or {}).values())
+        if focal_factor is not None or n_aux_scaled:
+            parts = []
+            if focal_factor is not None:
+                parts.append(f"focal (×{focal_factor:.4g})")
+            if n_aux_scaled:
+                parts.append(f"{n_aux_scaled} auxiliar"
+                             + ("y" if n_aux_scaled == 1 else "ies"))
+            lines.append("  N anchored at supplied scalar: "
+                         + ", ".join(parts))
         return "\n".join(lines)
 
 

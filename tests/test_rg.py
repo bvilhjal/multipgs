@@ -217,6 +217,98 @@ def test_scalar_n_eff_without_an_n_column_stays_constant(tmp_path):
     assert "n_eff_rescale" not in log["qc"]
 
 
+def _n_report_guard():
+    import multipgs.rg as rg
+    if not rg._HAVE_N_REPORT:
+        pytest.skip("installed ldpred3 predates the n_eff report helpers")
+
+
+def test_align_sumstats_composes_the_n_eff_report(tmp_path):
+    """qc.n_eff reports offered/supplied/transform/fitted together."""
+    _n_report_guard()
+    from multipgs import align_sumstats_to_cache
+    cache = _three_variant_cache(tmp_path)
+    gwas = _three_variant_gwas(tmp_path, (4_000, 8_000, 16_000))
+    with pytest.warns(UserWarning, match="rescaled by factor"):
+        beta, n_eff, log = align_sumstats_to_cache(
+            gwas, cache, n_eff=4_000, qc=False)
+    report = log["qc"]["n_eff"]
+    # File stats are pre-transform: the column median was 8_000 before the
+    # anchor halved it.
+    assert report["file_column"] == "N"
+    assert report["file_n_usable"] == 3
+    assert report["file_n_total"] == 3
+    assert report["file_median"] == pytest.approx(8_000)
+    assert report["supplied_scalar"] == 4_000.0
+    assert report["transform"] is log["qc"]["n_eff_rescale"]
+    # The fitted summary describes the matched panel's post-transform N.
+    assert report["fitted"]["n_variants"] == 3
+    assert report["fitted"]["median"] == pytest.approx(4_000)
+    assert report["fitted"]["min"] == pytest.approx(2_000)
+    assert report["fitted"]["max"] == pytest.approx(8_000)
+
+    # No scalar: the column is used as offered; nothing supplied, no
+    # transform ran.
+    beta, n_eff, log = align_sumstats_to_cache(gwas, cache, qc=False)
+    report = log["qc"]["n_eff"]
+    assert report["file_column"] == "N"
+    assert report["file_median"] == pytest.approx(8_000)
+    assert report["supplied_scalar"] is None
+    assert report["transform"] is None
+    assert report["fitted"]["median"] == pytest.approx(8_000)
+
+    # No column + scalar: the file offered nothing; the scalar went in as
+    # a constant and the fitted panel is flat.
+    bare = _three_variant_gwas(tmp_path, (None, None, None),
+                               name="bare.tsv", n_header=None)
+    beta, n_eff, log = align_sumstats_to_cache(
+        bare, cache, n_eff=4_000, qc=False)
+    report = log["qc"]["n_eff"]
+    assert report["file_column"] is None
+    assert report["file_n_usable"] == 0
+    assert report["file_n_total"] == 3
+    assert report["supplied_scalar"] == 4_000.0
+    assert report["transform"] is None
+    assert report["fitted"]["median"] == pytest.approx(4_000)
+    assert report["fitted"]["min"] == report["fitted"]["max"]
+
+
+def test_rg_screen_summary_reports_n_anchoring(tmp_path, monkeypatch):
+    """The summary line names the focal and counts anchored auxiliaries."""
+    _n_report_guard()
+    import ldpred3
+    import multipgs.rg as rg
+
+    cache = _three_variant_cache(tmp_path)
+    focal = _three_variant_gwas(tmp_path, (4_000, 8_000, 16_000), "focal.tsv")
+    aux_a = _three_variant_gwas(tmp_path, (4_000, 8_000, 16_000), "a.tsv")
+    aux_b = _three_variant_gwas(tmp_path, (2_000, 4_000, 8_000), "b.tsv")
+
+    fake_bipred = types.ModuleType("bipred")
+    fake_bipred.ldsc_chi2_mask = lambda beta, n: np.ones(beta.size, dtype=bool)
+    fake_bipred.ldsc_rg = lambda *args, **kwargs: SimpleNamespace(
+        rg=0.3, rg_se=0.04)
+    fake_bipred.estimate_sample_overlap = lambda *args: {
+        "overlap_corr": 0.1, "cross_corr_valid": True}
+    monkeypatch.setitem(sys.modules, "bipred", fake_bipred)
+    monkeypatch.setattr(ldpred3, "ld_scores", lambda blocks: np.ones(3))
+
+    with pytest.warns(UserWarning, match="rescaled by factor"):
+        result = rg.ldsc_rg_screen(
+            focal, [("a", aux_a), ("b", aux_b)], cache,
+            n_eff_focal=4_000, n_eff={"a": 4_000, "b": 500},
+            qc=False, min_snps=2)
+    line = [ln for ln in result.summary().splitlines()
+            if "anchored" in ln]
+    assert line == ["  N anchored at supplied scalar: focal (×0.5), "
+                    "2 auxiliaries"]
+
+    # Without a supplied scalar nothing anchored: no such line.
+    result = rg.ldsc_rg_screen(
+        focal, [("a", aux_a)], cache, qc=False, min_snps=2)
+    assert "anchored" not in result.summary()
+
+
 def test_rg_screen_anchors_focal_and_per_auxiliary_n_eff(
         tmp_path, monkeypatch):
     """The n_eff map rescales each auxiliary file's own N column."""
